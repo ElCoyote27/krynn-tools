@@ -1,0 +1,477 @@
+head	1.1;
+access;
+symbols;
+locks
+	root:1.1; strict;
+comment	@# @;
+
+
+1.1
+date	2015.01.27.22.41.26;	author root;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@#!/bin/bash
+
+# $Id: FDcheck.sh 1.1 2012/12/13 17:54:32 root Exp $
+
+# #############################################################################
+# File descriptors status checker - fdcheck
+# Created to check FDs limits against PAM limits
+#  
+# Adrien Mahieux <adrien@@mahieux.net> - Author
+# Franck Jouvanceau <franck.jouvanceau@@socgen.com> - Awk Guru
+# 
+# #############################################################################
+# 
+# Request and bug : http://dev.mahieux.net/redmine/projects/fdcheck
+# 
+# Get latest version : git clone http://dev.mahieux.net/git/fdcheck.git
+# 
+# #############################################################################
+
+FDC_VERSION="0.5"
+FDC_SCRIPT="$0"
+
+#. $(dirname $0)/fd_libs.sh
+# standalone include
+
+
+findfullpath () {
+ 
+    # Calling function without bin to find
+    [ $# -ne 1 ] && return 1
+ 
+    MYBIN="$1"
+     
+    # If var MYPATH not defined, use default PATH
+    MYPATH=${MYPATH:-$PATH}
+    BINPATH=""
+ 
+    OIFS="$IFS"
+    IFS=":"
+    for path in $MYPATH; do
+        # If current path is executable, use it and stop
+        [ -x "$path/$MYBIN" ] && {
+            BINPATH="$path/$MYBIN"
+            break
+        }
+    done
+    IFS="$OIFS"
+     
+    # didnt find the binary
+    [ -z "$BINPATH" ] && return 1
+     
+    # Binary found. echo the path and return success
+    echo $BINPATH
+    return 0
+}
+
+# Try to set some general paths 
+MYPATH="/bin:/sbin:/usr/bin:/usr/sbin:/usr/xpg4/bin/:/usr/ucb:/usr/sfw/bin:$PATH"
+MYERR=""
+
+
+# And now look for the binaries
+BIN_LS="$(findfullpath ls)" || MYERR="$MYERR ls"
+BIN_PS="$(findfullpath ps)" || MYERR="$MYERR ps"
+BIN_AWK="$(findfullpath awk)" || MYERR="$MYERR awk"
+BIN_ID="$(findfullpath id)" || MYERR="$MYERR id"
+BIN_UNAME="$(findfullpath uname)" || MYERR="$MYERR uname"
+BIN_GETENT="$(findfullpath getent)" || MYERR="$MYERR getent"
+BIN_TR="$(findfullpath tr)" || MYERR="$MYERR tr"
+
+
+MYOS=$($BIN_UNAME);
+
+[ "$MYOS" == "SunOS" ] && {
+    BIN_PLIMIT="$(findfullpath plimit)" || MYERR="$MYERR plimit"
+	# Nawk for replacement on solaris
+	BIN_AWK="$(findfullpath nawk)" || MYERR="$MYERR nawk"
+    
+	# Non mandatory binary : pargs
+	BIN_PARGS="$(findfullpath pargs)"
+
+    MYUID="$($BIN_ID |$BIN_AWK '{ split($1, a, "="); split(a[2], b, "("); print b[1] }')"
+}
+[ "$MYOS" == "Linux" ] && {
+    MYUID=$($BIN_ID -u)                                                                                                           
+}
+
+
+# Stop here if we had errors...
+[ -n "$MYERR" ] && {
+    echo "Unable to find binaries : $MYERR"
+    exit 1
+}
+
+
+# Get the UID
+# arg1: uid or username
+# out: uid
+getuid () {
+	USER=$1
+
+	# Query the base for user data. return if not found
+	STR="$($BIN_GETENT passwd $USER 2>/dev/null)"
+	[ $? -ne 0 ] && return $?
+	
+	echo $STR|$BIN_AWK 'BEGIN{FS=":";}{print $3}'
+	return $?
+}
+
+# Get the username
+# arg1: uid or username
+# out: username 
+getusername () {
+	USER=$1
+
+	# Query the base for user data. return if not found
+	STR="$($BIN_GETENT passwd $USER 2>/dev/null)"
+	[ $? -ne 0 ] && return $?
+	
+	echo $STR|$BIN_AWK 'BEGIN{FS=":";}{print $1}'
+	return $?
+}
+
+# Get the current users
+getusers () {
+	$BIN_LS -l /proc 2>/dev/null |$BIN_AWK '
+		$NF~/^[0-9]+$/{
+			users[$3]++
+		} 
+		END{
+			for(user in users) { 
+				if (user != "") { 
+					print user
+				}
+			}
+		}'
+}
+
+# Get the process list for a user
+# arg1: regex for the username
+# out: list of PIDs
+getuserprocess () {
+	UNAME=$1
+	[ -z "$UNAME" ] && return 1
+
+	$BIN_LS -l /proc 2>/dev/null |$BIN_AWK '$3~/^'$UNAME'$/ && $NF~/^[0-9]+$/ { print $NF}'
+	return 0
+}
+
+# end standalone include
+
+typeset ERR=""
+typeset MYUSER="$(getusername $MYUID)"
+typeset USER="$MYUSER"
+typeset -i MODE_HELP=0
+typeset -i MODE_USER=0
+typeset -i MODE_SYSTEM=0
+typeset -i MODE_DETAILED=0
+typeset -i MODE_RETURN=0
+typeset -i MODE_MAXUSAGE=0
+typeset -i MODE_QUIET=0
+typeset -i RETURN=0
+typeset -i DISP_THRESHOLD=30
+
+usage () {
+	
+	echo "Unix Filedescriptor usage checker v$FDC_VERSION"
+	echo
+	echo "Usage : $FDC_SCRIPT [options]"
+	echo
+	echo "Options:"
+	echo " -t PCT	 Threshold value over which the process is marked as low"
+	echo "			on available FD and displayed (if not in detailed mode"
+	echo "			Current value : $DISP_THRESHOLD"
+	echo
+	echo " -d		 Use detailed display mode"
+	echo 
+	echo " -u USER	Display the user fd usage"
+	echo "			Detailed: Display per process usage and limit"
+	echo 
+	echo " -r		 Return mode. In this mode, the script will return the number"
+	echo "			of lines displated (so, the number of process with usage"
+	echo "			higher than the threshold value. Useful for automatic checks"
+	echo
+	echo " -m		 Max usage. Display only the process with the maximum percentage usage"
+	echo
+	echo " -q		 Quiet mode. Don't display headers or information. Only process list"
+	echo 
+
+}
+
+
+
+# Options parsing
+while getopts ":t:u:mrdhq" opt; do
+	case $opt in
+		
+		# Set threshold value
+		t)
+			# Check argument presence
+			[ -z "$OPTARG" ] && {
+				ERR="${ERR}Threshold value is mandatory\n"
+				continue
+			}
+			
+			# Check integer validity
+			typeset -i TMP="$OPTARG"
+			[ "$OPTARG" != "$TMP" ] && {
+				ERR="${ERR}Threshold value must be a number\n"
+				continue
+			}
+			
+			# Check range value
+			[ $TMP -gt 100 -o $TMP -lt 0 ] && {
+				ERR="${ERR}Threshold must be in range 0-100\n"
+				continue
+			}
+			
+			# All test ok, set the value
+			DISP_THRESHOLD=$TMP
+			;;
+
+		# Custom user mode
+		u)
+			MODE_USER=1
+
+			# Specific user requested
+			[ -n "$OPTARG" ] && {
+				USER="$(getusername $OPTARG)"
+			} 
+
+			[ -z "$USER" ] && {
+				ERR="${ERR}Cannot get username for $OPTARG\n"
+			}
+			;;
+
+		# Max mode
+		m)
+			MODE_MAXUSAGE=1
+			;;
+
+		# Detailed mode
+		d)
+			MODE_DETAILED=1
+			;;
+		
+		# Return mode
+		r)
+			MODE_RETURN=1
+			;;
+
+		# Help
+		h)
+			MODE_HELP=1
+			;;
+
+		# Quiet mode
+		q)
+			MODE_QUIET=1
+			;;
+
+		# Unknown option
+		\?)
+			ERR="${ERR}Unknown option : $OPTARG\n"
+			;;
+	esac
+done
+
+# Check for at least one mode, or go default
+#[ $(($MODE_USER + $MODE_SYSTEM)) -eq 0 ] && {
+	MODE_USER=1
+#}
+
+# If return mode and detailed mode, doesnt make sense
+[ $MODE_RETURN -ne 0 ] && [ $MODE_DETAILED -ne 0 ] && {
+	ERR="${ERR}Return mode and Detailed mode at the same time doesn't make sense\n"
+}
+
+# Mode max usage is exclusive
+[ $MODE_MAXUSAGE -ne 0 ] &&	[ $MODE_DETAILED -ne 0 -o $MODE_RETURN -ne 0 ] && {
+	ERR="${ERR}Mode max usage is exclusive with modes \"return\" and \"detailed\"\n"
+}
+
+# Monitoring another user processes needs root privs
+[ -n "$USER" ] && [ "$MYUSER" != "$USER" ] && [ "$MYUSER" != "root" ] && {
+    ERR="${ERR}Cannot monitor another user process without being root (current: $MYUSER requested: $USER)\n" 
+}
+
+# Stop if any error occured during conf & pre-checks
+[ -n "$ERR" ] && {
+	echo -ne "Errors occured : $ERR" > /dev/stderr
+	exit 1
+}
+
+# Display help and exit
+[ $MODE_HELP -ne 0 ] && {
+	usage
+	exit 0
+}
+
+
+typeset -i NB_LINES=0
+
+# Display user mode 
+[ $MODE_USER -ne 0 ] && {
+	
+	BLKAWK_BIN_PS="$BIN_PS -o args= -p"
+	BLKAWK_LIM_SUNOS=""
+	BLKAWK_LIM_LINUX=""
+	[ "$MYOS" == "SunOS" ] && {
+
+		BLKAWK_LIM_SUNOS='
+			gsub("\\|"," ",pslist);
+			cmd="'$BIN_PLIMIT' "pslist" 2>/dev/null";
+			while(cmd|getline >0){
+				if(/^[0-9]+:/) {
+					sub(":","");
+					pid=$1;
+				}
+				if(/nofiles/) { 
+					tlims[pid]=$2;
+					tlimh[pid]=$3;
+				}
+			}
+			close(cmd);';
+
+		# Workaround : in max mode, use the full cmdline if available
+		[ "$MODE_MAXUSAGE" -ne 0 ] && [ -n "$BIN_PARGS" ] && {
+			BLKAWK_BIN_PS="$BIN_PARGS -l"
+		}
+	}
+	[ "$MYOS" == "Linux" ] && {
+		BLKAWK_LIM_LINUX='
+				file="/proc/"pid"/limits";
+				while (getline <file >0) {
+					if($2$3=="openfiles") {
+						tlims[pid]=$4;
+						tlimh[pid]=$5;
+					}
+				}
+				close(file);
+				';
+	}
+	
+	
+	getuserprocess $USER | $BIN_AWK \
+		-v mdet=$MODE_DETAILED 		\
+		-v mret=$MODE_RETURN 		\
+		-v mmax=$MODE_MAXUSAGE		\
+		-v quiet=$MODE_QUIET		\
+		-v thres=$DISP_THRESHOLD	\
+		'
+		BEGIN{
+			# Create the ps list from STDIN
+			while(getline >0)
+				pslist=pslist"|"$1
+
+			# If no process is found, stop here
+			if (pslist~/^\s*$/) exit 0;
+
+			# Get all process FD listing
+			cmd="ksh -pc \"'$BIN_LS' -d /proc/@@("pslist")/fd/*\" 2>/dev/null";
+			FS="/";
+			while(cmd|getline >0)
+				tfdcnt[$3]++;
+			close(cmd);
+			FS=" ";
+			
+			# If in multi lines modes, get all processes in one cmd
+			if (!mmax) {
+				cmd="'"$BIN_PS"' -ed -o pid= -o args="
+				while(cmd|getline >0) {
+					pid=$1;
+					gsub(/^ *[0-9]+/,"");
+					targs[pid]=$0
+				}
+			}
+			
+			# Under SunOS, the plimit block will go here
+			'"$BLKAWK_LIM_SUNOS"'
+			# End SunOS plimit block
+
+			# Quiet mode
+			if (!quiet) {
+				print "  PID   USED   SOFT   HARD  PCTUSED  PROCESS"
+			}
+
+			maxpct=0;
+			maxcnt=0;
+			maxpid=1;
+			maxlims=0;
+			maxlimh=0;
+			pcnt=0;
+			for(pid in tfdcnt){
+
+				# Under Linux, the ulimit block will go here
+				'"$BLKAWK_LIM_LINUX"'
+				# End Linux ulimit block
+				
+				cnt=tfdcnt[pid];
+				lims=tlims[pid];
+				limh=tlimh[pid];
+				# Rewrite for unlimited values
+				if(lims+0==0) lims=2147483647;
+				if(limh+0==0) limh=2147483647;
+				
+				pct=int(cnt/lims*100);
+				
+				
+				# Max mode, bufferize
+				if (mmax) {
+					if(pct>=maxpct && cnt>maxcnt) {
+						maxpct=pct;
+						maxcnt=cnt;
+						maxpid=pid;
+						maxlims=lims;
+						maxlimh=limh;
+					}
+				}
+				
+				# Display all (detailed) or threshold reached
+				else if (mdet || pct >= thres) {
+					printf "%5d %6d %6d %6d %3d%% %s\n", pid,cnt,lims,limh,pct"%",targs[pid];
+				
+					# Increment the ps counter
+					pcnt++;
+				}
+
+			}
+			
+			# Max mode, display only the biggest process
+			if (mmax) {
+				cmd="'"$BLKAWK_BIN_PS"' "maxpid;
+				cmd|getline;
+				close(cmd);
+				args=$0;
+				printf "%5d %6d %6d %6d %3d%% %s\n", maxpid,maxcnt,maxlims,maxlimh,maxpct"%",args;
+			}
+			if (!pcnt && !quiet) {
+				print "No process has a FD usage higher than "thres;
+			}
+			
+			# Return mode, return the number of lines
+			if (mret) {
+				exit(pcnt);
+			}
+
+		}';
+	
+	exit $?
+
+}
+
+@

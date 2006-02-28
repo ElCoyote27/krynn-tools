@@ -1,0 +1,36 @@
+#!/bin/bash
+# $Id: lsthp,v 1.2 2015/01/27 22:40:33 root Exp $
+#
+PRINT_PATTERN="%-24s : %s %s\n"
+typeset -i index=0
+
+if [ $UID -ne 0 ]; then
+	echo "Run $0 as root!" ; exit 127
+fi
+
+# Loop
+
+nrindex=$(/bin/grep -s AnonHugePages /proc/*/smaps|grep -v '0 kB$'|wc -l)
+/bin/grep -s AnonHugePages /proc/*/smaps| \
+	grep -v '0 kB$'| \
+	sed -e 's@/proc/@@' -e 's@/smaps:AnonHugePages:@@' | \
+	awk '{ print $2,$3,$1}'| \
+	sort -n | \
+	while read size unit pid
+do
+	if [ $index -eq 0 ]; then
+		# Header
+		printf "${PRINT_PATTERN}" "procname (PID)" "Size" "unit"
+	fi
+
+	if [ -f /proc/${pid}/status ]; then
+		pidname=$(grep -s 'Name:' /proc/${pid}/status|awk '{ print $2}')
+		printf "${PRINT_PATTERN}" "${pidname} (${pid})" "${size}" "${unit}"
+	fi
+	index=1
+done
+
+if [ ${nrindex} -eq 0 ]; then
+	printf "No Transparent HugePages found!\n"
+fi
+
