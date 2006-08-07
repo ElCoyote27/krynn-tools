@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# Version: $Id: FixNames.pl,v 1.3 2006/03/25 14:04:36 root Exp $
+# Version: $Id: FixNames.pl,v 1.4 2006/08/07 12:42:13 root Exp $
 #
 # rename script examples from lwall:
 #       rename 's/\.orig$//' *.orig
@@ -12,6 +12,7 @@ use File::Find;
 sub new_name {
 	$transform_op =
 		's/ /_/g;
+		s/\376//g;
 		s/&/_/g;
 		s/\\\/_/g;
 		s/!/_/g;
