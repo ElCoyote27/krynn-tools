@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $id$
+# $Id: GoUpper.sh,v 1.2 2008/02/17 19:51:25 root Exp $
 #
 
 awk '# caps - capitalize 1st letter of 1st word
