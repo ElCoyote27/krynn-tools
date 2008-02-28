@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# Version: $Id: FixNames.pl,v 1.10 2008/01/11 13:57:09 root Exp $
+# Version: $Id: FixNames.pl,v 1.11 2008/02/28 15:58:52 root Exp $
 #
 # rename script examples from lwall:
 #       rename 's/\.orig$//' *.orig
@@ -13,10 +13,28 @@ sub new_name {
 	$transform_op =
 		's/ /_/g;
 		s/é/e/g;
+		s/\302\257/o/g;
+		s/\303\207/e/g;
 		s/\303\253/e/g;
 		s/\303\251/e/g;
 		s/\303\250/e/g;
-		s/\303\240/a/g;
+		s/\303\240/e/g;
+		s/\200/e/g;
+		s/\201/e/g;
+		s/\202/e/g;
+		s/\203/e/g;
+		s/\204/i/g;
+		s/\205/i/g;
+		s/\206/i/g;
+		s/\207/i/g;
+		s/\210/o/g;
+		s/\211/o/g;
+		s/\212/o/g;
+		s/\213/o/g;
+		s/\214/o/g;
+		s/\216/o/g;
+		s/\217/u/g;
+		s/\370/o/g;
 		s/è/e/g;
 		s/à/a/g;
 		s/á/a/g;
