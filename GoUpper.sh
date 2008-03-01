@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: GoUpper.sh,v 1.3 2008/03/01 14:02:57 root Exp $
+# $Id: GoUpper.sh,v 1.4 2008/03/01 14:09:12 root Exp $
 #
 
 awk '# caps - capitalize 1st letter of 1st word
@@ -27,4 +27,6 @@ for ( i = 1 ; i <= NF; i++)
 }
 # print record
 	print $0
+# print record with original
+	# print ORIG " " $0
 }'
