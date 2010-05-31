@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 #
-# $Id: ShFmt.pl,v 1.2 2010/05/31 13:02:55 root Exp $
+# $Id: ShFmt.pl,v 1.1 2010/05/31 13:01:35 root Exp $
 #
 # fmt.script - format scripts in awk, csh, ksh, perl, sh
 #
@@ -9,7 +9,7 @@
 # strip trailing whitespace
 # change ${var} to $var where possible
 # change ">x" to "> x" for shell scripts
-# change "[ ... ]" to "test ..." for Bourne shell scripts
+# don't change "[ ... ]" to "test ..." for Bourne shell scripts
 #
 # we may do someday, but these are harder:
 # convert $VAR to $var unless a setenv or default environment variable
@@ -21,7 +21,7 @@
 #	fmt.script -s4 fmt.script fmt.script.new	# indent is fou
 
 # variable initialization
-$RCSversion = q$Revision: 1.2 $;
+$RCSversion = q$Revision: 1.1 $;
 ($version) = ($RCSversion =~ /Revision:\s+([\d]+\.[\d]+)/);
 $pr		= $0;		# name of this program
 $pr		=~ s|.*\/||;	# basename of this program
@@ -159,13 +159,8 @@ while ($line = <INPUT>) {
     if ($line =~ s/(\s+#[^'"`]+$)//) {
 	$comment = $1;
     }
-    # ElCoyote: the other way around... (and skip awk stuff)
     # inline substitutions			# discouraged	preferred
-    if ($line =~ /awk/) {
-        # $line =~ s/\$\{(\w+)\}(\W|$)/\$$1$2/g;      # ${var}        $var
-    } else {
-        $line =~ s/\$(\w+)(\W|$)/\$\{$1\}$2/g;      # $var        ${var}
-    }
+    $line =~ s/\$\{(\w+)\}(\W|$)/\$$1$2/g;      # ${var}        $var
     if ($type =~ /^k?sh$/) {
 	$line =~ s,>([^\s\&>]),> $1,;		# x>file	x> file
 	$line =~ s,([^\s\d>])>,$1 >,;		# x> file	x > file
