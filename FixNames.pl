@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# Version: $Id: FixNames.pl,v 1.14 2010/07/13 08:33:45 root Exp $
+# Version: $Id: FixNames.pl,v 1.15 2010/07/13 15:43:59 root Exp $
 #
 # WARNING: Edit with 'vi', not 'pico'!!
 #
@@ -88,6 +88,11 @@ sub new_name {
 		s/\'/_/g';
 
 	$old_file_name = $_;
+	eval $transform_op; # Do it several times, just to make really sure...
+	eval $transform_op;
+	eval $transform_op;
+	eval $transform_op;
+	eval $transform_op;
 	eval $transform_op;
 	$new_file_name = $_;
 	die $@ if $@;
