@@ -1,5 +1,5 @@
 #!/bin/bash
-# $Id: Find_Deleted_Inodes.sh,v 1.2 2012/01/04 18:12:45 root Exp $
+# $Id: Find_Deleted_Inodes.sh,v 1.1 2011/06/10 10:24:12 root Exp $
 #
 # Find process that have deleted inodes still open 
 # Author : Franck JOUVANCEAU
@@ -44,4 +44,4 @@ find /proc/*/fd $OPT -name "[0-9]*" -links 0 -type f -ls 2>/dev/null |$AWK '
 	'
 }
 
-finddeleted "$@"
+finddeleted $*
