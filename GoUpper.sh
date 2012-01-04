@@ -1,8 +1,10 @@
 #!/bin/bash
 #
-# $Id: GoUpper.sh,v 1.4 2008/03/01 14:09:12 root Exp $
+# $Id: GoUpper.sh,v 1.5 2012/01/04 11:26:35 root Exp $
 #
+TR_CMD=/usr/bin/tr
 
+${TR_CMD} '[:upper:]' '[:lower:]' | \
 awk '# caps - capitalize 1st letter of 1st word
 
 # initialize strings
