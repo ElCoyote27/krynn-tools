@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: GoUpper.sh,v 1.6 2012/01/04 14:44:59 root Exp $
+# $Id: GoUpper.sh,v 1.7 2012/01/30 15:47:39 root Exp $
 #
 TR_CMD=/usr/bin/tr
 
@@ -11,7 +11,8 @@ awk '# caps - capitalize 1st letter of 1st word
 BEGIN {
 	upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         lower = "abcdefghijklmnopqrstuvwxyz" 
-	FS = "_|-| " ; OFS = "_"
+#	FS = "_|-| " ; OFS = "_"
+	FS = "_| " ; OFS = "_"
 }
 
 # for each input line
