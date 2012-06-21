@@ -1,23 +1,46 @@
 #!/bin/bash
-# $Id: ptree,v 1.2 2012/06/21 08:01:05 root Exp $
+# $Id: ptree,v 1.3 2012/06/21 10:02:20 root Exp $
 
 # ptree only supports one and exactly one PID so forget other args..
-myPID=$1
-myPPID=1
-myTOP=0
 
-# Verify PID's presence
-ps -o pid ${myPID} > /dev/null && {
-		myPPID=${myPID}
-	} || {
+# Initialization
+myPID=$1
+myPPID=${myPID}
+myTOP=${myPID}
+
+#Sub-routines
+CheckPID() {
+	# ptree only supports one and exactly one PID so forget other args..
+	if [ "x$1" = "x" ]; then
+		echo "no PID specified!"
+		return 0
+	fi
+
+	# Verify PID's presence
+	ps --no-heading -o pid ${myPID} > /dev/null 2>&1 || {
 		echo "PID $myPID does not exist!"
-		exit 127
+		return 1
+	}
+	return 0
 }
 
+GetPPID() {
+	CheckPID $1 || exit 127
+	localPPID=`ps --no-heading -o ppid ${myPPID} 2> /dev/null|xargs`
+	[ "x${localPPID}" != "x" ] && {
+		return 0
+	} || {
+		return ${localPPID}
+	}		
+}
+#
+
+CheckPID ${myPID} || exit 127
+
 # Walk up to Find Parent until myPPID=1
-while [ "x${myTOP}" != "x1" ]; do
+while [ ${myTOP} -gt 1 ]; do
 	myTOP=`ps --no-heading -o ppid ${myPPID}|xargs`
-	if [ "x${myTOP}" != "x1" ]; then
+	if [ ${myTOP} -gt 1 ]; then
 		myPPID=${myTOP}
 	fi
 	# echo "Found PPID: ${myPPID}"
