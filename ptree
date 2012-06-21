@@ -1,4 +1,25 @@
 #!/bin/bash
-# $Id: ptree,v 1.1 2009/11/27 11:59:31 root Exp $
+# $Id: ptree,v 1.2 2012/06/21 08:01:05 root Exp $
 
-exec /usr/bin/pstree -plaG $*
+# ptree only supports one and exactly one PID so forget other args..
+myPID=$1
+myPPID=1
+myTOP=0
+
+# Verify PID's presence
+ps -o pid ${myPID} > /dev/null && {
+		myPPID=${myPID}
+	} || {
+		echo "PID $myPID does not exist!"
+		exit 127
+}
+
+# Walk up to Find Parent until myPPID=1
+while [ "x${myTOP}" != "x1" ]; do
+	myTOP=`ps --no-heading -o ppid ${myPPID}|xargs`
+	if [ "x${myTOP}" != "x1" ]; then
+		myPPID=${myTOP}
+	fi
+	# echo "Found PPID: ${myPPID}"
+done
+exec /usr/bin/pstree -plaG ${myPPID}
