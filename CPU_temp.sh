@@ -1,7 +1,7 @@
 #!/bin/bash
-# $Id: CPU_temp.sh,v 1.1 2012/09/12 14:55:11 root Exp $
+# $Id: CPU_temp.sh,v 1.2 2012/11/28 17:38:58 root Exp $
 if [ -x /usr/bin/sensors ]; then
-	TEMPS=`/usr/bin/sensors|grep Core|(while read a core temp scale max; do echo $temp; done)|sort -u`
+	TEMPS=`/usr/bin/sensors|grep Core|(while read a core temp scale max; do echo $temp; done)|sort -ur`
 else
 	echo "/usr/bin/sensors not found!"
 fi
