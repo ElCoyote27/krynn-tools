@@ -1,5 +1,5 @@
 #!/bin/bash
-# $Id: ptree,v 1.3 2012/06/21 10:02:20 root Exp $
+# $Id: ptree,v 1.4 2013/03/29 08:47:46 root Exp $
 
 # ptree only supports one and exactly one PID so forget other args..
 
@@ -45,4 +45,4 @@ while [ ${myTOP} -gt 1 ]; do
 	fi
 	# echo "Found PPID: ${myPPID}"
 done
-exec /usr/bin/pstree -plaG ${myPPID}
+exec /usr/bin/pstree -plaA ${myPPID}
