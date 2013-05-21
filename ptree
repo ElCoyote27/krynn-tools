@@ -1,5 +1,5 @@
 #!/bin/bash
-# $Id: ptree,v 1.4 2013/03/29 08:47:46 root Exp $
+# $Id: ptree,v 1.5 2013/05/21 15:54:06 root Exp $
 
 # ptree only supports one and exactly one PID so forget other args..
 
@@ -10,7 +10,7 @@ myTOP=${myPID}
 
 #Sub-routines
 CheckPID() {
-	# ptree only supports one and exactly one PID so forget other args..
+	# ptree only supports one and exactly one PID so forget about other args..
 	if [ "x$1" = "x" ]; then
 		echo "no PID specified!"
 		return 0
@@ -37,12 +37,16 @@ GetPPID() {
 
 CheckPID ${myPID} || exit 127
 
-# Walk up to Find Parent until myPPID=1
-while [ ${myTOP} -gt 1 ]; do
-	myTOP=`ps --no-heading -o ppid ${myPPID}|xargs`
-	if [ ${myTOP} -gt 1 ]; then
-		myPPID=${myTOP}
-	fi
-	# echo "Found PPID: ${myPPID}"
-done
-exec /usr/bin/pstree -plaA ${myPPID}
+if [ "x${myTOP}" != "x" ]; then
+	# Walk up to Find Parent until myPPID=1
+	while [ ${myTOP} -gt 1 ]; do
+		myTOP=`ps --no-heading -o ppid ${myPPID}|xargs`
+		if [ ${myTOP} -gt 1 ]; then
+			myPPID=${myTOP}
+		fi
+		# echo "Found PPID: ${myPPID}"
+	done
+	exec /usr/bin/pstree -plaA ${myPPID}
+else
+	exec /usr/bin/pstree -plaA
+fi
