@@ -1,13 +1,21 @@
 #!/bin/bash
-# $Id: CPU_temp.sh,v 1.3 2013/02/05 11:58:46 root Exp $
+# $Id: CPU_temp.sh,v 1.4 2013/08/03 13:42:41 root Exp $
+CPUTMP_FILE=`/bin/mktemp -p /tmp --suffix=CPU_temp`
+
+if [ ! -f ${CPUTMP_FILE} ]; then
+	echo "Ooops!"; exit 127
+fi
+
 if [ -x /usr/bin/sensors ]; then
-	TEMPS=`/usr/bin/sensors|grep Core|(while read a core temp scale max; do echo $temp; done)|sort -ur`
+	/usr/bin/sensors > ${CPUTMP_FILE}
+	TEMPS=`grep Core ${CPUTMP_FILE}|(while read a core temp scale max; do echo $temp; done)|sort -ur`
 else
 	echo "/usr/bin/sensors not found!"
 fi
 for mytemp in $TEMPS
 do
-	CPU_CORES=`/usr/bin/sensors|grep "Core.*${mytemp} C"|awk '{ print $2}'|sed -e 's/://'|xargs|sed -e 's/ /,/g'`
-	MAX_TEMP=`/usr/bin/sensors|grep "Core.*${mytemp} C"|awk '{ print $5,$6,$7,$8,$9,$10,$11,$12}'|sort -u`
+	CPU_CORES=`grep "Core.*${mytemp} C" ${CPUTMP_FILE}|awk '{ print $2}'|sed -e 's/://'|xargs|sed -e 's/ /,/g'`
+	MAX_TEMP=`grep "Core.*${mytemp} C" ${CPUTMP_FILE}|awk '{ print $5,$6,$7,$8,$9,$10,$11,$12}'|sort -u`
 	echo "Temp: $mytemp C $MAX_TEMP, CPU Cores: ${CPU_CORES}"
 done
+rm -f ${CPUTMP_FILE}
