@@ -1,5 +1,5 @@
 #!/bin/bash
-# $Id: CPU_temp.sh,v 1.4 2013/08/03 13:42:41 root Exp $
+# $Id: CPU_temp.sh,v 1.5 2014/01/07 23:07:56 root Exp $
 CPUTMP_FILE=`/bin/mktemp -p /tmp --suffix=CPU_temp`
 
 if [ ! -f ${CPUTMP_FILE} ]; then
@@ -12,6 +12,16 @@ if [ -x /usr/bin/sensors ]; then
 else
 	echo "/usr/bin/sensors not found!"
 fi
+
+# IPMITOOL
+if [ -x /usr/bin/ipmitool ] ; then
+	AMB_TEMP=`/usr/bin/ipmitool sdr list|awk -F '|' '{ if (( $1 ~ /Ambient/ ) && ( $3 ~ /ok/ )) print $2}'`
+	if [ "x${AMB_TEMP}" != "x" ]; then
+		echo "Ambient Temp: ${AMB_TEMP}"
+	fi
+fi
+
+# Iterate
 for mytemp in $TEMPS
 do
 	CPU_CORES=`grep "Core.*${mytemp} C" ${CPUTMP_FILE}|awk '{ print $2}'|sed -e 's/://'|xargs|sed -e 's/ /,/g'`
