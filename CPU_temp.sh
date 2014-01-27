@@ -1,5 +1,5 @@
 #!/bin/bash
-# $Id: CPU_temp.sh,v 1.6 2014/01/07 23:08:35 root Exp $
+# $Id: CPU_temp.sh,v 1.7 2014/01/27 20:14:49 root Exp $
 CPUTMP_FILE=`/bin/mktemp -p /tmp --suffix=CPU_temp`
 
 if [ ! -f ${CPUTMP_FILE} ]; then
@@ -15,9 +15,10 @@ fi
 
 # IPMITOOL
 if [ -x /usr/bin/ipmitool ] ; then
-	AMB_TEMP=`/usr/bin/ipmitool sdr list|awk -F '|' '{ if (( $1 ~ /Ambient/ ) && ( $3 ~ /ok/ )) print $2}'`
+#	AMB_TEMP=`/usr/bin/ipmitool sdr list|awk -F '|' '{ if (( $1 ~ /Ambient/ ) && ( $3 ~ /ok/ )) print $2}'`
+	AMB_TEMP=`/usr/sbin/ipmi-sensors -t Temperature --ignore-not-available-sensors|awk -F '|' '{ if ( $2 ~ /Ambient/ ) print $4,$5}'|xargs`
 	if [ "x${AMB_TEMP}" != "x" ]; then
-		echo "Ambient Temp:${AMB_TEMP}"
+		echo "Ambient Temp: ${AMB_TEMP}"
 	fi
 fi
 
