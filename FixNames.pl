@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# Version: $Id: FixNames.pl,v 1.19 2014/04/08 22:35:07 root Exp $
+# Version: $Id: FixNames.pl,v 1.20 2014/04/09 16:52:29 root Exp $
 #
 # WARNING: Edit with 'vi', not 'pico'!!
 #
@@ -77,6 +77,7 @@ sub new_name {
 		s/\216/o/g;
 		s/\217/u/g;
 		s/\304\207/c/g;
+		s/\304i/c/g;
 		s/u\314/u/g;
 		s/\340/a/g;
 		s/\341/a/g;
