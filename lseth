@@ -1,4 +1,7 @@
 #!/bin/bash
+#
+# $Id: lseth,v 1.2 2014/12/10 21:05:10 root Exp $
+#
 
 for mydev in $(ls -d /sys/class/net/eth* 2> /dev/null|xargs -n1|sort -V)
 do
@@ -6,14 +9,16 @@ do
 		HWPATH="${mydev}/device"
 		DEVI=$(basename ${mydev})
 		if [ -d ${HWPATH} ]; then
-			SWDRIVER=$(readlink ${HWPATH}/driver/|sed -e 's@/sys.*drivers/@@' )
-			HWPATH=$(readlink ${HWPATH}/ |sed -e 's@/sys.*/@@' )
+			# SWDRIVER=$(ls -ld ${HWPATH}/driver|sed -e 's@^.*/@@' )
+			# HWPATH=$(ls -ld ${HWPATH} |sed -e 's@^.*/@@' )
+			SWDRIVER=$(/sbin/ethtool -i ${DEVI}|awk '{ if ( $1 == "driver:" ) { print $2}}' )
+			HWPATH=$(/sbin/ethtool -i ${DEVI}|awk '{ if ( $1 == "bus-info:" ) { print $2}}' )
 		fi
 		MCADDR=$(/sbin/ip a l ${DEVI}|awk '{ if ( $1 ~ /link.ether/ ) print $2 }')
 
 		case ${SWDRIVER} in
 			# For these drivers, there is much info in the Subsystem field..
-			ixgbe|sfc)
+			ixgbe|sfc|e1000e)
 				DESC=$(/sbin/lspci -mm -s ${HWPATH}|xargs -n1|tail -1 )
 				;;
 			*)
