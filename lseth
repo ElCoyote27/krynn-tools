@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.2 2014/12/10 21:05:10 root Exp $
+# $Id: lseth,v 1.3 2014/12/10 21:06:51 root Exp $
 #
 
 for mydev in $(ls -d /sys/class/net/eth* 2> /dev/null|xargs -n1|sort -V)
@@ -9,8 +9,6 @@ do
 		HWPATH="${mydev}/device"
 		DEVI=$(basename ${mydev})
 		if [ -d ${HWPATH} ]; then
-			# SWDRIVER=$(ls -ld ${HWPATH}/driver|sed -e 's@^.*/@@' )
-			# HWPATH=$(ls -ld ${HWPATH} |sed -e 's@^.*/@@' )
 			SWDRIVER=$(/sbin/ethtool -i ${DEVI}|awk '{ if ( $1 == "driver:" ) { print $2}}' )
 			HWPATH=$(/sbin/ethtool -i ${DEVI}|awk '{ if ( $1 == "bus-info:" ) { print $2}}' )
 		fi
