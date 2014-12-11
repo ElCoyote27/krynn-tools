@@ -1,41 +1,75 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.3 2014/12/10 21:06:51 root Exp $
+# $Id: lseth,v 1.4 2014/12/11 19:00:11 root Exp $
 #
+PRINT_PATTERN="%-8s%-8s%-10s%-14s%-19s%-20s%s\n"
+
+# Header
+printf "\n${PRINT_PATTERN}" "#PHYS" "STATE" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description#"
 
 for mydev in $(ls -d /sys/class/net/eth* 2> /dev/null|xargs -n1|sort -V)
 do
 	if [ "x${mydev}" != "x" ]; then
 		HWPATH="${mydev}/device"
-		DEVI=$(basename ${mydev})
 		if [ -d ${HWPATH} ]; then
-			SWDRIVER=$(/sbin/ethtool -i ${DEVI}|awk '{ if ( $1 == "driver:" ) { print $2}}' )
-			HWPATH=$(/sbin/ethtool -i ${DEVI}|awk '{ if ( $1 == "bus-info:" ) { print $2}}' )
-		fi
-		MCADDR=$(/sbin/ip a l ${DEVI}|awk '{ if ( $1 ~ /link.ether/ ) print $2 }')
+			DEVI=$(basename ${mydev})
+			STATE=$(/sbin/ip -o a l ${DEVI}|awk ' { if ($4 == "mtu") { if ($3 ~ /,UP,/ ) print "up"; else print "(down)" }}')
+			if [ -d ${HWPATH} ]; then
+				SWDRIVER=$(/sbin/ethtool -i ${DEVI}|awk '{ if ( $1 == "driver:" ) { print $2}}' )
+				HWPATH=$(/sbin/ethtool -i ${DEVI}|awk '{ if ( $1 == "bus-info:" ) { print $2}}' )
+				MCADDR=$(/sbin/ip a l ${DEVI}|awk '{ if ( $1 ~ /link.ether/ ) print $2 }')
+			fi
 
-		case ${SWDRIVER} in
-			# For these drivers, there is much info in the Subsystem field..
-			ixgbe|sfc|e1000e)
-				DESC=$(/sbin/lspci -mm -s ${HWPATH}|xargs -n1|tail -1 )
-				;;
-			*)
-				DESC=$(/sbin/lspci -D -s ${HWPATH}|sed -e 's@.* controller: @@' )
-				;;
-		esac
-		echo -e "${DEVI} ${SWDRIVER}\t${HWPATH}\t${MCADDR}\t${DESC}"
+			case ${SWDRIVER} in
+				# For these drivers, there is much info in the Subsystem field..
+				ixgbe|sfc|e1000e)
+					DESC=$(/sbin/lspci -mm -s ${HWPATH} 2> /dev/null|xargs -n1|tail -1 )
+					;;
+				*)
+					DESC=$(/sbin/lspci -D -s ${HWPATH} 2> /dev/null|sed -e 's@.* controller: @@' )
+					;;
+			esac
+
+			IPADDR=$(/sbin/ip -4 a s ${DEVI}|awk '{ if (( $1 == "inet" ) && ( $6 == "global" ) && ( $7 != "secondary")) print $2}')
+			if [ "x${IPADDR}" = "x" ]; then
+				IPADDR="N/A"
+			fi
+
+			# Printout
+			printf "${PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SWDRIVER}" "${HWPATH}" "${MCADDR}" "${IPADDR}" "${DESC}"
+		fi
 	fi
 done
 
-for mydev in $(ls -d /sys/class/net/bond* 2> /dev/null |xargs -n1|sort -V)
+# Header
+printf "\n${PRINT_PATTERN}" "#VIRT" "STATE" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description#"
+
+for mydev in $(ls -d /sys/devices/virtual/net/* 2> /dev/null |xargs -n1|sort -V)
 do
 	if [ "x${mydev}" != "x" ]; then
-		HWPATH="${mydev}/bonding"
+		HWTYPE="${mydev}/type"
 		DEVI=$(basename ${mydev})
-		if [ -d ${HWPATH} ]; then
-			STATE=$(cat ${mydev}/operstate)
-			SLAVES=$(cat ${mydev}/bonding/slaves)
-			echo -e "${DEVI}\t\t[ ${SLAVES} ]"
+		if [ -f ${HWTYPE} ]; then
+			if [ "x$(cat ${HWTYPE})" = "x1" ]; then
+				STATE=$(cat ${mydev}/operstate)
+				STATE=$(/sbin/ip -o a l ${DEVI}|awk ' { if ($4 == "mtu") { if ($3 ~ /,UP,/ ) print "up"; else print "(down)" }}')
+				if [ -f ${mydev}/bonding/slaves ]; then
+					SLAVES=$(cat ${mydev}/bonding/slaves)
+					DESC="[ ${SLAVES} ]"
+				else
+					DESC="N/A"
+				fi
+				IPADDR=$(/sbin/ip -4 a s ${DEVI}|awk '{ if (( $1 == "inet" ) && ( $6 == "global" ) && ( $7 != "secondary")) print $2}')
+				if [ "x${IPADDR}" = "x" ]; then
+					IPADDR="N/A"
+				fi
+				MCADDR=$(/sbin/ip a l ${DEVI}|awk '{ if ( $1 ~ /link.ether/ ) print $2 }')
+				HWPATH="N/A"
+				SWDRIVER="N/A"
+
+				# Printout
+				printf "${PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SWDRIVER}" "${HWPATH}" "${MCADDR}" "${IPADDR}" "${DESC}"
+			fi
 		fi
 	fi
 done
