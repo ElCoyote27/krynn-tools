@@ -1,17 +1,21 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.4 2014/12/11 19:00:11 root Exp $
+# $Id: lseth,v 1.5 2014/12/11 19:10:18 root Exp $
 #
 PRINT_PATTERN="%-8s%-8s%-10s%-14s%-19s%-20s%s\n"
 
-# Header
-printf "\n${PRINT_PATTERN}" "#PHYS" "STATE" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description#"
+# Header state
+hstate=0
 
 for mydev in $(ls -d /sys/class/net/eth* 2> /dev/null|xargs -n1|sort -V)
 do
 	if [ "x${mydev}" != "x" ]; then
 		HWPATH="${mydev}/device"
 		if [ -d ${HWPATH} ]; then
+			if [ $hstate -eq 0 ]; then
+				printf "\n${PRINT_PATTERN}" "#PHYS" "STATE" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description#"
+				hstate+=1
+			fi
 			DEVI=$(basename ${mydev})
 			STATE=$(/sbin/ip -o a l ${DEVI}|awk ' { if ($4 == "mtu") { if ($3 ~ /,UP,/ ) print "up"; else print "(down)" }}')
 			if [ -d ${HWPATH} ]; then
@@ -41,8 +45,8 @@ do
 	fi
 done
 
-# Header
-printf "\n${PRINT_PATTERN}" "#VIRT" "STATE" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description#"
+# Header state
+hstate=0
 
 for mydev in $(ls -d /sys/devices/virtual/net/* 2> /dev/null |xargs -n1|sort -V)
 do
@@ -50,6 +54,10 @@ do
 		HWTYPE="${mydev}/type"
 		DEVI=$(basename ${mydev})
 		if [ -f ${HWTYPE} ]; then
+			if [ $hstate -eq 0 ]; then
+				printf "\n${PRINT_PATTERN}" "#VIRT" "STATE" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description#"
+				hstate+=1
+			fi
 			if [ "x$(cat ${HWTYPE})" = "x1" ]; then
 				STATE=$(cat ${mydev}/operstate)
 				STATE=$(/sbin/ip -o a l ${DEVI}|awk ' { if ($4 == "mtu") { if ($3 ~ /,UP,/ ) print "up"; else print "(down)" }}')
