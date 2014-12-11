@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.5 2014/12/11 19:10:18 root Exp $
+# $Id: lseth,v 1.6 2014/12/11 19:12:37 root Exp $
 #
 PRINT_PATTERN="%-8s%-8s%-10s%-14s%-19s%-20s%s\n"
 
@@ -54,11 +54,11 @@ do
 		HWTYPE="${mydev}/type"
 		DEVI=$(basename ${mydev})
 		if [ -f ${HWTYPE} ]; then
-			if [ $hstate -eq 0 ]; then
-				printf "\n${PRINT_PATTERN}" "#VIRT" "STATE" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description#"
-				hstate+=1
-			fi
 			if [ "x$(cat ${HWTYPE})" = "x1" ]; then
+				if [ $hstate -eq 0 ]; then
+					printf "\n${PRINT_PATTERN}" "#VIRT" "STATE" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description#"
+					hstate+=1
+				fi
 				STATE=$(cat ${mydev}/operstate)
 				STATE=$(/sbin/ip -o a l ${DEVI}|awk ' { if ($4 == "mtu") { if ($3 ~ /,UP,/ ) print "up"; else print "(down)" }}')
 				if [ -f ${mydev}/bonding/slaves ]; then
