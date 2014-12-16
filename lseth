@@ -1,13 +1,28 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.6 2014/12/11 19:12:37 root Exp $
+# $Id: lseth,v 1.7 2014/12/16 23:36:03 root Exp $
 #
 PRINT_PATTERN="%-8s%-8s%-10s%-14s%-19s%-20s%s\n"
+
+# Sanity Check
+if [ "x$(uname -s)" != "xLinux" ]; then
+	echo "Not supported on $(uname -s)! Exit!"
+	exit 127
+fi
+
+# Check for sort version
+SORT_VER=$(sort --version|awk '{ if (($1 == "sort" ) && ($2 ~ /GNU/)) { ver=$4 } } END { if (ver != "") print ver ; else print 0 } '|cut -d. -f1)
+
+if [ $SORT_VER -ge 8 ]; then
+	SORT_CMD="sort -V"
+else
+	SORT_CMD="sort"
+fi
 
 # Header state
 hstate=0
 
-for mydev in $(ls -d /sys/class/net/eth* 2> /dev/null|xargs -n1|sort -V)
+for mydev in $(ls -d /sys/class/net/eth* 2> /dev/null|xargs -n1|${SORT_CMD})
 do
 	if [ "x${mydev}" != "x" ]; then
 		HWPATH="${mydev}/device"
@@ -48,7 +63,7 @@ done
 # Header state
 hstate=0
 
-for mydev in $(ls -d /sys/devices/virtual/net/* 2> /dev/null |xargs -n1|sort -V)
+for mydev in $(ls -d /sys/devices/virtual/net/* 2> /dev/null |xargs -n1|${SORT_CMD})
 do
 	if [ "x${mydev}" != "x" ]; then
 		HWTYPE="${mydev}/type"
