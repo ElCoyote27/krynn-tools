@@ -1,8 +1,9 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.7 2014/12/16 23:36:03 root Exp $
+# $Id: lseth,v 1.8 2014/12/22 21:49:19 root Exp $
 #
-PRINT_PATTERN="%-8s%-8s%-10s%-14s%-19s%-20s%s\n"
+PHYS_PRINT_PATTERN="%-6s%8s%8s %-10s%-14s%-19s%-20s%s\n"
+VIRT_PRINT_PATTERN="%-6s%8s %-14s%-19s%-20s%s\n"
 
 # Sanity Check
 if [ "x$(uname -s)" != "xLinux" ]; then
@@ -26,13 +27,17 @@ for mydev in $(ls -d /sys/class/net/eth* 2> /dev/null|xargs -n1|${SORT_CMD})
 do
 	if [ "x${mydev}" != "x" ]; then
 		HWPATH="${mydev}/device"
+		SPEED="N/A"
 		if [ -d ${HWPATH} ]; then
 			if [ $hstate -eq 0 ]; then
-				printf "\n${PRINT_PATTERN}" "#PHYS" "STATE" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description#"
+				printf "\n${PHYS_PRINT_PATTERN}" "#PHYS" "STATE" "SPEED" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description#"
 				hstate+=1
 			fi
 			DEVI=$(basename ${mydev})
 			STATE=$(/sbin/ip -o a l ${DEVI}|awk ' { if ($4 == "mtu") { if ($3 ~ /,UP,/ ) print "up"; else print "(down)" }}')
+			if [ -f ${mydev}/speed -a "x${STATE}" = "xup" ]; then
+				SPEED=$(cat ${mydev}/speed)
+			fi
 			if [ -d ${HWPATH} ]; then
 				SWDRIVER=$(/sbin/ethtool -i ${DEVI}|awk '{ if ( $1 == "driver:" ) { print $2}}' )
 				HWPATH=$(/sbin/ethtool -i ${DEVI}|awk '{ if ( $1 == "bus-info:" ) { print $2}}' )
@@ -55,7 +60,7 @@ do
 			fi
 
 			# Printout
-			printf "${PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SWDRIVER}" "${HWPATH}" "${MCADDR}" "${IPADDR}" "${DESC}"
+			printf "${PHYS_PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SPEED}" "${SWDRIVER}" "${HWPATH}" "${MCADDR}" "${IPADDR}" "${DESC}"
 		fi
 	fi
 done
@@ -71,7 +76,7 @@ do
 		if [ -f ${HWTYPE} ]; then
 			if [ "x$(cat ${HWTYPE})" = "x1" ]; then
 				if [ $hstate -eq 0 ]; then
-					printf "\n${PRINT_PATTERN}" "#VIRT" "STATE" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description#"
+					printf "\n${VIRT_PRINT_PATTERN}" "#VIRT" "STATE" "DRIVER" "MAC_Addr" "IP_Addr" "Description#"
 					hstate+=1
 				fi
 				STATE=$(cat ${mydev}/operstate)
@@ -87,11 +92,10 @@ do
 					IPADDR="N/A"
 				fi
 				MCADDR=$(/sbin/ip a l ${DEVI}|awk '{ if ( $1 ~ /link.ether/ ) print $2 }')
-				HWPATH="N/A"
 				SWDRIVER="N/A"
 
 				# Printout
-				printf "${PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SWDRIVER}" "${HWPATH}" "${MCADDR}" "${IPADDR}" "${DESC}"
+				printf "${VIRT_PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SWDRIVER}" "${MCADDR}" "${IPADDR}" "${DESC}"
 			fi
 		fi
 	fi
