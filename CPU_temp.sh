@@ -1,5 +1,9 @@
 #!/bin/bash
-# $Id: CPU_temp.sh,v 1.9 2014/02/24 22:36:45 root Exp $
+# $Id: CPU_temp.sh,v 1.10 2014/12/24 07:42:43 root Exp $
+#
+export LC_ALL=C
+
+#
 CPUTMP_FILE=`/bin/mktemp -p /tmp --suffix=CPU_temp`
 
 if [ ! -f ${CPUTMP_FILE} ]; then
