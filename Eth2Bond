@@ -1,5 +1,5 @@
 #!/bin/bash
-# $Id: Eth2Bond,v 1.2 2015/01/07 18:56:45 root Exp $
+# $Id: Eth2Bond,v 1.3 2015/01/07 18:59:10 root Exp $
 # This tool will convert ethX interfaces to bondX interfaces.
 SYSCFG_DIR=/etc/sysconfig/network-scripts
 TMPCFG_DIR=/var/tmp/eth2bond
@@ -22,7 +22,7 @@ do
 	/bin/cp -pf ${myeth} ${SAV_DIR}/ifcfg-eth${i}.orig
 
 	/bin/echo "(II) Building ${TGT_ETH} from ${myeth}..."
-	/bin/egrep "^#" > ${TGT_ETH}
+	/bin/egrep '^#' ${myeth} > ${TGT_ETH}
 	/bin/echo -e "DEVICE=eth${i}\nSLAVE=yes\nMASTER=bond${i}\nTYPE=Ethernet\nNM_CONTROLLED=no\nBOOTPROTO=none" >> ${TGT_ETH}
 	/bin/egrep "^(ONBOOT|HWADDR|ETHTOOL_OPTS|USERCTL)" ${myeth} >> ${TGT_ETH}
 
