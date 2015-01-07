@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.8 2014/12/22 21:49:19 root Exp $
+# $Id: lseth,v 1.9 2015/01/07 21:45:56 root Exp $
 #
 PHYS_PRINT_PATTERN="%-6s%8s%8s %-10s%-14s%-19s%-20s%s\n"
 VIRT_PRINT_PATTERN="%-6s%8s %-14s%-19s%-20s%s\n"
@@ -67,8 +67,18 @@ done
 
 # Header state
 hstate=0
+KREV=$(uname -r|cut -d- -f1)
+case $KREV in
+	2.6.18)
+		VGLOB=/sys/class/net/bond
+		;;
+	2.6.32)
+		VGLOB=/sys/devices/virtual/net/
+		;;
 
-for mydev in $(ls -d /sys/devices/virtual/net/* 2> /dev/null |xargs -n1|${SORT_CMD})
+esac
+
+for mydev in $(ls -d ${VGLOB}* 2> /dev/null |xargs -n1|${SORT_CMD})
 do
 	if [ "x${mydev}" != "x" ]; then
 		HWTYPE="${mydev}/type"
