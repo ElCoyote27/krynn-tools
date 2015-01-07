@@ -1,9 +1,10 @@
 #!/bin/bash
-# $Id: Eth2Bond,v 1.1 2015/01/07 16:28:45 root Exp $
+# $Id: Eth2Bond,v 1.2 2015/01/07 18:56:45 root Exp $
 # This tool will convert ethX interfaces to bondX interfaces.
 SYSCFG_DIR=/etc/sysconfig/network-scripts
 TMPCFG_DIR=/var/tmp/eth2bond
-DEF_BONDING_OPTS="'resend_igmp=2 mode=active-backup miimon=100'"
+#DEF_BONDING_OPTS="resend_igmp=2 mode=active-backup miimon=100"
+DEF_BONDING_OPTS="mode=active-backup miimon=200"
 
 [ -d ${TMPCFG_DIR} ] || mkdir -pv ${TMPCFG_DIR}
 
@@ -13,17 +14,28 @@ do
 	i="$(basename ${myeth}|sed -e 's/ifcfg.eth//')"
 	TGT_ETH="${TMPCFG_DIR}/ifcfg-eth${i}"
 	TGT_BOND="${TMPCFG_DIR}/ifcfg-bond${i}"
-	/bin/echo "(II) Saved copy of ${myeth} to ${TGT_ETH}.orig"
-	/bin/cp -pf ${myeth} ${TGT_ETH}.orig
+
+	SAV_DIR="${TMPCFG_DIR}/eth${i}"
+	[ -d ${SAV_DIR} ] || mkdir -pv ${SAV_DIR}
+
+	/bin/echo "(II) Saved copy of ${myeth} to ${TGT_ETH}_orig"
+	/bin/cp -pf ${myeth} ${SAV_DIR}/ifcfg-eth${i}.orig
 
 	/bin/echo "(II) Building ${TGT_ETH} from ${myeth}..."
-	/bin/echo -e "DEVICE=eth${i}\nSLAVE=yes\nMASTER=bond${i}\nTYPE=Ethernet\nNM_CONTROLLED='no'\nBOOTPROTO=static" > ${TGT_ETH}
-	/bin/egrep "^(ONBOOT|HWADDR|ETHTOOL_OPTS)" ${myeth} >> ${TGT_ETH}
+	/bin/egrep "^#" > ${TGT_ETH}
+	/bin/echo -e "DEVICE=eth${i}\nSLAVE=yes\nMASTER=bond${i}\nTYPE=Ethernet\nNM_CONTROLLED=no\nBOOTPROTO=none" >> ${TGT_ETH}
+	/bin/egrep "^(ONBOOT|HWADDR|ETHTOOL_OPTS|USERCTL)" ${myeth} >> ${TGT_ETH}
 
 	/bin/echo "(II) Building ${TGT_BOND} from ${myeth}..."
-	/bin/echo -e "DEVICE=bond${i}\nTYPE=Bond\nNM_CONTROLLED='no'\nBOOTPROTO=static" > ${TGT_BOND}
-	/bin/egrep "^(ONBOOT|IPADDR|NETMASK|GATEWAY|BROADCAST)" ${myeth} >> ${TGT_BOND}
-	/bin/echo "BONDING_OPTS=${DEF_BONDING_OPTS}" >> ${TGT_BOND}
-	/bin/echo ""
+	/bin/echo -e "DEVICE=bond${i}\nTYPE=Bond\nNM_CONTROLLED=no\nBOOTPROTO=static" > ${TGT_BOND}
+	/bin/egrep "^(ONBOOT|IPADDR|NETMASK|NETWORK|GATEWAY|BROADCAST|DNS|PREFIX|DEFROUTE|IPV[46]|DOMAIN|USERCTL|PEERDNS)" ${myeth} >> ${TGT_BOND}
+	/bin/echo "BONDING_OPTS=\"${DEF_BONDING_OPTS}\"" >> ${TGT_BOND}
+
+	/bin/cat ${TGT_ETH} ${TGT_BOND}|sort -u > ${SAV_DIR}/ifcfg-eth${i}.v1
+	/bin/cat ${myeth} |sort -u > ${SAV_DIR}/ifcfg-eth${i}.v2
+	/usr/bin/diff ${SAV_DIR}/ifcfg-eth${i}.v1 ${SAV_DIR}/ifcfg-eth${i}.v2 > ${SAV_DIR}/ifcfg-eth${i}.diff
+	/bin/cat ${SAV_DIR}/ifcfg-eth${i}.diff
+
+	/bin/echo "(II) now run: /bin/mv -fv ${TMPCFG_DIR}/ifcfg* ${SYSCFG_DIR}"
 done
 
