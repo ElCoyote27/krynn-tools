@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.9 2015/01/07 21:45:56 root Exp $
+# $Id: lseth,v 1.10 2015/01/08 19:27:15 root Exp $
 #
 PHYS_PRINT_PATTERN="%-6s%8s%8s %-10s%-14s%-19s%-20s%s\n"
 VIRT_PRINT_PATTERN="%-6s%8s %-14s%-19s%-20s%s\n"
@@ -75,7 +75,9 @@ case $KREV in
 	2.6.32)
 		VGLOB=/sys/devices/virtual/net/
 		;;
-
+	*)
+		VGLOB=/sys/devices/virtual/net/
+		;;
 esac
 
 for mydev in $(ls -d ${VGLOB}* 2> /dev/null |xargs -n1|${SORT_CMD})
