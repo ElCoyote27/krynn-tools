@@ -1,5 +1,5 @@
 #!/bin/bash
-# $Id: ptree,v 1.7 2015/01/09 17:38:53 root Exp $
+# $Id: ptree,v 1.8 2015/01/09 21:20:50 root Exp $
 
 # ptree only supports one and exactly one PID so forget other args..
 MPSARGS="-planA"
@@ -53,8 +53,16 @@ GetPPID() {
 }
 #
 
+# Sanity Check
+if [ "x$(uname -s)" != "xLinux" ]; then
+	echo "Not supported on $(uname -s)! Exit!"
+	exit 127
+fi
+
+# Sanity Check (2)
 CheckPID ${myPID} || exit 127
 
+# Main routine
 if [ "x${myTOP}" != "x" ]; then
 	# Walk up to Find Parent until myPPID=1
 	while [ ${myTOP} -gt 0 ]; do
