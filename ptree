@@ -1,5 +1,5 @@
 #!/bin/bash
-# $Id: ptree,v 1.6 2015/01/09 17:35:54 root Exp $
+# $Id: ptree,v 1.7 2015/01/09 17:38:53 root Exp $
 
 # ptree only supports one and exactly one PID so forget other args..
 MPSARGS="-planA"
@@ -18,13 +18,13 @@ errecho() {
 CheckPID() {
 	# ptree only supports one and exactly one PID so forget about other args..
 	if [ "x$1" = "x" ]; then
-		echo "no PID specified!"
+		errecho "no PID specified!"
 		return 0
 	fi
 
 	# Verify PID's presence
 	ps --no-heading -o pid ${myPID} > /dev/null 2>&1 || {
-		echo "PID $myPID does not exist!"
+		errecho "PID $myPID does not exist!"
 		return 1
 	}
 	return 0
@@ -33,23 +33,22 @@ CheckPID() {
 GetPPID() {
 	CheckPID $1 || exit 127
 	localPPID=$(awk '{ if ( $1 ~ "PPid:" ) print $2 }' /proc/$1/status)
-	if [ -f /proc/${localPPID}/status ]; then
+	[ -f /proc/${localPPID}/status ] && {
 		localPName=$(awk '{ if ( $1 ~ "Name:" ) print $2 }' /proc/${localPPID}/status)
 		# localPPID=`ps --no-heading -o ppid ${myPPID} 2> /dev/null|xargs`
 		[ "x${localPPID}" != "x" ] && {
 			[ "x${localPName}" != "x" -a "x${localPName}" != "xinit" -a "x${localPName}" != "xscreen" ] && {
-				echo ${localPPID}
+				echo ${localPPID}; return 0
 			} || {
-				errecho "Discarded PPID: ${localPPID}"
-				echo 0
+				# errecho "Discarded PPID: ${localPPID}"
+				echo 0 ; return 1
 			}
 		} || {
-			echo 0
+			echo 0 ; return 1
 		}
-		else
-			echo 0
-			return 1
-		fi
+	} || {
+		echo 0 ; return 1
+	}
 	return 0
 }
 #
