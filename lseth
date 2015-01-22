@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.10 2015/01/08 19:27:15 root Exp $
+# $Id: lseth,v 1.11 2015/01/22 16:04:34 root Exp $
 #
 PHYS_PRINT_PATTERN="%-6s%8s%8s %-10s%-14s%-19s%-20s%s\n"
 VIRT_PRINT_PATTERN="%-6s%8s %-14s%-19s%-20s%s\n"
@@ -45,12 +45,17 @@ do
 			fi
 
 			case ${SWDRIVER} in
-				# For these drivers, there is much info in the Subsystem field..
-				ixgbe|sfc|e1000e)
-					DESC=$(/sbin/lspci -mm -s ${HWPATH} 2> /dev/null|xargs -n1|tail -1 )
+				# For these drivers, there is often much info in the Subsystem field..
+				ixgbe|sfc|e1000e|igb)
+					MIN_DESCLEN=16
+					DESC=$(/sbin/lspci -vmm -s ${HWPATH} 2> /dev/null|grep '^SDevice'|cut -d: -f2|xargs)
+					if [ $(echo ${DESC}|wc -c) -lt ${MIN_DESCLEN} ]; then
+						# Desc is too short, fall back
+						DESC=$(/sbin/lspci -D -s ${HWPATH} 2> /dev/null|sed -e 's@.*: @@' )
+					fi
 					;;
 				*)
-					DESC=$(/sbin/lspci -D -s ${HWPATH} 2> /dev/null|sed -e 's@.* controller: @@' )
+					DESC=$(/sbin/lspci -D -s ${HWPATH} 2> /dev/null|sed -e 's@.*: @@' )
 					;;
 			esac
 
