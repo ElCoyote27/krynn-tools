@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.12 2015/01/22 16:08:10 root Exp $
+# $Id: lseth,v 1.13 2015/01/22 16:22:32 root Exp $
 #
 PHYS_PRINT_PATTERN="%-6s%8s%8s %-10s%-14s%-19s%-20s%s\n"
 VIRT_PRINT_PATTERN="%-6s%8s %-14s%-19s%-20s%s\n"
@@ -48,8 +48,11 @@ do
 				# For some drivers, there is often much info in the Subsystem field..
 				ixgbe|sfc|e1000e|igb)
 					MIN_DESCLEN=16
-					DESC=$(/sbin/lspci -vmm -s ${HWPATH} 2> /dev/null|grep '^SDevice'|cut -d: -f2|xargs)
-					if [ $(echo ${DESC}|wc -c) -lt ${MIN_DESCLEN} ]; then
+					DEV_VEND=$(/sbin/lspci -vmm -s ${HWPATH} 2> /dev/null|grep '^SVendor'|cut -d: -f2|xargs)
+					DEV_DESC=$(/sbin/lspci -vmm -s ${HWPATH} 2> /dev/null|grep '^SDevice'|cut -d: -f2|xargs)
+					if [ $(echo ${DEV_DESC}|wc -c) -ge ${MIN_DESCLEN} ]; then
+						DESC="${DEV_VEND} ${DEV_DESC}"
+					else
 						# Desc is too short, fall back
 						DESC=$(/sbin/lspci -D -s ${HWPATH} 2> /dev/null|sed -e 's@.*: @@' )
 					fi
