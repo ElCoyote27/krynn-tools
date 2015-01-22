@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.11 2015/01/22 16:04:34 root Exp $
+# $Id: lseth,v 1.12 2015/01/22 16:08:10 root Exp $
 #
 PHYS_PRINT_PATTERN="%-6s%8s%8s %-10s%-14s%-19s%-20s%s\n"
 VIRT_PRINT_PATTERN="%-6s%8s %-14s%-19s%-20s%s\n"
@@ -30,7 +30,7 @@ do
 		SPEED="N/A"
 		if [ -d ${HWPATH} ]; then
 			if [ $hstate -eq 0 ]; then
-				printf "\n${PHYS_PRINT_PATTERN}" "#PHYS" "STATE" "SPEED" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description#"
+				printf "\n${PHYS_PRINT_PATTERN}" "#PHYS" "STATE" "SPEED" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description"
 				hstate+=1
 			fi
 			DEVI=$(basename ${mydev})
@@ -45,7 +45,7 @@ do
 			fi
 
 			case ${SWDRIVER} in
-				# For these drivers, there is often much info in the Subsystem field..
+				# For some drivers, there is often much info in the Subsystem field..
 				ixgbe|sfc|e1000e|igb)
 					MIN_DESCLEN=16
 					DESC=$(/sbin/lspci -vmm -s ${HWPATH} 2> /dev/null|grep '^SDevice'|cut -d: -f2|xargs)
@@ -93,7 +93,7 @@ do
 		if [ -f ${HWTYPE} ]; then
 			if [ "x$(cat ${HWTYPE})" = "x1" ]; then
 				if [ $hstate -eq 0 ]; then
-					printf "\n${VIRT_PRINT_PATTERN}" "#VIRT" "STATE" "DRIVER" "MAC_Addr" "IP_Addr" "Description#"
+					printf "\n${VIRT_PRINT_PATTERN}" "#VIRT" "STATE" "DRIVER" "MAC_Addr" "IP_Addr" "Description"
 					hstate+=1
 				fi
 				STATE=$(cat ${mydev}/operstate)
