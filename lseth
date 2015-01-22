@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.13 2015/01/22 16:22:32 root Exp $
+# $Id: lseth,v 1.14 2015/01/22 16:23:20 root Exp $
 #
 PHYS_PRINT_PATTERN="%-6s%8s%8s %-10s%-14s%-19s%-20s%s\n"
 VIRT_PRINT_PATTERN="%-6s%8s %-14s%-19s%-20s%s\n"
@@ -51,6 +51,7 @@ do
 					DEV_VEND=$(/sbin/lspci -vmm -s ${HWPATH} 2> /dev/null|grep '^SVendor'|cut -d: -f2|xargs)
 					DEV_DESC=$(/sbin/lspci -vmm -s ${HWPATH} 2> /dev/null|grep '^SDevice'|cut -d: -f2|xargs)
 					if [ $(echo ${DEV_DESC}|wc -c) -ge ${MIN_DESCLEN} ]; then
+						# Desc is long enough, let's try it
 						DESC="${DEV_VEND} ${DEV_DESC}"
 					else
 						# Desc is too short, fall back
