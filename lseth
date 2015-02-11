@@ -1,9 +1,9 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.14 2015/01/22 16:23:20 root Exp $
+# $Id: lseth,v 1.15 2015/02/11 22:18:23 root Exp $
 #
-PHYS_PRINT_PATTERN="%-6s%8s%8s %-10s%-14s%-19s%-20s%s\n"
-VIRT_PRINT_PATTERN="%-6s%8s %-14s%-19s%-20s%s\n"
+PHYS_PRINT_PATTERN="%-6s%8s%8s %-10s%-14s%-21s%-20s%s\n"
+VIRT_PRINT_PATTERN="%-6s%16s %-24s%-19s%-20s%s\n"
 
 # Sanity Check
 if [ "x$(uname -s)" != "xLinux" ]; then
@@ -23,7 +23,7 @@ fi
 # Header state
 hstate=0
 
-for mydev in $(ls -d /sys/class/net/eth* 2> /dev/null|xargs -n1|${SORT_CMD})
+for mydev in $(ls -d /sys/class/net/eth* /sys/class/net/ib* 2> /dev/null|xargs -n1|${SORT_CMD})
 do
 	if [ "x${mydev}" != "x" ]; then
 		HWPATH="${mydev}/device"
@@ -37,29 +37,55 @@ do
 			STATE=$(/sbin/ip -o a l ${DEVI}|awk ' { if ($4 == "mtu") { if ($3 ~ /,UP,/ ) print "up"; else print "(down)" }}')
 			if [ -f ${mydev}/speed -a "x${STATE}" = "xup" ]; then
 				SPEED=$(cat ${mydev}/speed)
+			else
+				tmp=$(/sbin/ethtool ${DEVI} 2>/dev/null|awk '{ if (( $1 == "Speed:" ) && ( $2 ~ /Mb.s/ )) { print $2}}' |sed -e 's@Mb.s@@' )
+				if [ "x${tmp}" != "x" ]; then
+					SPEED=${tmp}
+				fi
 			fi
-			if [ -d ${HWPATH} ]; then
-				SWDRIVER=$(/sbin/ethtool -i ${DEVI}|awk '{ if ( $1 == "driver:" ) { print $2}}' )
-				HWPATH=$(/sbin/ethtool -i ${DEVI}|awk '{ if ( $1 == "bus-info:" ) { print $2}}' )
-				MCADDR=$(/sbin/ip a l ${DEVI}|awk '{ if ( $1 ~ /link.ether/ ) print $2 }')
-			fi
+			case ${DEVI} in
+				eth*)
+					SWDRIVER=$(/sbin/ethtool -i ${DEVI} 2>/dev/null|awk '{ if ( $1 == "driver:" ) { print $2}}' )
+					PCIPATH=$(/sbin/ethtool -i ${DEVI} 2>/dev/null|awk '{ if ( $1 == "bus-info:" ) { print $2}}' )
+					if [ "x${PCIPATH}" = "x" ]; then
+						# This most likely means we're not root
+						PCIPATH=$(ls -l ${HWPATH}|sed -e 's@.*/@@')
+					fi
+					if [ -f ${mydev}/address ]; then
+						MCADDR=$(cat ${mydev}/address)
+					else
+						MCADDR=$(/sbin/ip a l ${DEVI}|awk '{ if ( $1 ~ /link.ether/ ) print $2 }')
+					fi
+					;;
+				ib*)
+					SWDRIVER=$(/sbin/ethtool -i ${DEVI} 2>/dev/null|awk '{ if ( $1 == "driver:" ) { print $2}}' )
+					PCIPATH=$(ls -l ${HWPATH}|sed -e 's@.*/@@')
+					if [ -f ${mydev}/address ]; then
+						MCADDR=$(cat ${mydev}/address |sed -e 's/\(.*00:00:00:00:\)\(.*$\)/\2/')
+					else
+						MCADDR="N/A"
+					fi
+					;;
+				*)
+					;;
+			esac
 
 			case ${SWDRIVER} in
 				# For some drivers, there is often much info in the Subsystem field..
 				ixgbe|sfc|e1000e|igb)
 					MIN_DESCLEN=16
-					DEV_VEND=$(/sbin/lspci -vmm -s ${HWPATH} 2> /dev/null|grep '^SVendor'|cut -d: -f2|xargs)
-					DEV_DESC=$(/sbin/lspci -vmm -s ${HWPATH} 2> /dev/null|grep '^SDevice'|cut -d: -f2|xargs)
+					DEV_VEND=$(/sbin/lspci -vmm -s ${PCIPATH} 2> /dev/null|grep '^SVendor'|cut -d: -f2|xargs)
+					DEV_DESC=$(/sbin/lspci -vmm -s ${PCIPATH} 2> /dev/null|grep '^SDevice'|cut -d: -f2|xargs)
 					if [ $(echo ${DEV_DESC}|wc -c) -ge ${MIN_DESCLEN} ]; then
 						# Desc is long enough, let's try it
 						DESC="${DEV_VEND} ${DEV_DESC}"
 					else
 						# Desc is too short, fall back
-						DESC=$(/sbin/lspci -D -s ${HWPATH} 2> /dev/null|sed -e 's@.*: @@' )
+						DESC=$(/sbin/lspci -D -s ${PCIPATH} 2> /dev/null|sed -e 's@.*: @@' )
 					fi
 					;;
 				*)
-					DESC=$(/sbin/lspci -D -s ${HWPATH} 2> /dev/null|sed -e 's@.*: @@' )
+					DESC=$(/sbin/lspci -D -s ${PCIPATH} 2> /dev/null|sed -e 's@.*: @@' )
 					;;
 			esac
 
@@ -69,7 +95,7 @@ do
 			fi
 
 			# Printout
-			printf "${PHYS_PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SPEED}" "${SWDRIVER}" "${HWPATH}" "${MCADDR}" "${IPADDR}" "${DESC}"
+			printf "${PHYS_PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SPEED}" "${SWDRIVER}" "${PCIPATH}" "${MCADDR}" "${IPADDR}" "${DESC}"
 		fi
 	fi
 done
