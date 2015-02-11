@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.15 2015/02/11 22:18:23 root Exp $
+# $Id: lseth,v 1.16 2015/02/11 23:12:24 root Exp $
 #
 PHYS_PRINT_PATTERN="%-6s%8s%8s %-10s%-14s%-21s%-20s%s\n"
 VIRT_PRINT_PATTERN="%-6s%16s %-24s%-19s%-20s%s\n"
@@ -47,10 +47,6 @@ do
 				eth*)
 					SWDRIVER=$(/sbin/ethtool -i ${DEVI} 2>/dev/null|awk '{ if ( $1 == "driver:" ) { print $2}}' )
 					PCIPATH=$(/sbin/ethtool -i ${DEVI} 2>/dev/null|awk '{ if ( $1 == "bus-info:" ) { print $2}}' )
-					if [ "x${PCIPATH}" = "x" ]; then
-						# This most likely means we're not root
-						PCIPATH=$(ls -l ${HWPATH}|sed -e 's@.*/@@')
-					fi
 					if [ -f ${mydev}/address ]; then
 						MCADDR=$(cat ${mydev}/address)
 					else
@@ -59,7 +55,7 @@ do
 					;;
 				ib*)
 					SWDRIVER=$(/sbin/ethtool -i ${DEVI} 2>/dev/null|awk '{ if ( $1 == "driver:" ) { print $2}}' )
-					PCIPATH=$(ls -l ${HWPATH}|sed -e 's@.*/@@')
+					PCIPATH=$(/bin/ls -l ${HWPATH}|sed -e 's@.*/@@')
 					if [ -f ${mydev}/address ]; then
 						MCADDR=$(cat ${mydev}/address |sed -e 's/\(.*00:00:00:00:\)\(.*$\)/\2/')
 					else
@@ -69,6 +65,15 @@ do
 				*)
 					;;
 			esac
+			# Catchall Software fallbacks
+			if [ "x${SWDRIVER}" = "x" ]; then
+				# This most likely means we're not root
+				SWDRIVER=$(/bin/ls -l ${mydev}/device/driver/module 2>/dev/null|sed -e 's@.*/@@')
+			fi
+			if [ "x${PCIPATH}" = "x" ]; then
+				# This most likely means we're not root
+				PCIPATH=$(/bin/ls -l ${HWPATH}|sed -e 's@.*/@@')
+			fi
 
 			case ${SWDRIVER} in
 				# For some drivers, there is often much info in the Subsystem field..
@@ -139,7 +144,17 @@ do
 					IPADDR="N/A"
 				fi
 				MCADDR=$(/sbin/ip a l ${DEVI}|awk '{ if ( $1 ~ /link.ether/ ) print $2 }')
-				SWDRIVER="N/A"
+				tmpdrv=$(echo ${DEVI}|sed -e 's@[0-9]\{1,\}@@')
+				case ${tmpdrv} in
+					bond)
+						tmpdrv=bonding
+						;;
+				esac
+				drvver=$(/sbin/modinfo -F version ${tmpdrv} 2> /dev/null)
+				if [ "x${drvver}" = "x" ]; then
+					drvver=$(uname -r|sed -e 's@\.el.*@@')
+				fi
+				SWDRIVER="${tmpdrv} (${drvver})"
 
 				# Printout
 				printf "${VIRT_PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SWDRIVER}" "${MCADDR}" "${IPADDR}" "${DESC}"
