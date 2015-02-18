@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.16 2015/02/11 23:12:24 root Exp $
+# $Id: lseth,v 1.17 2015/02/18 03:44:22 root Exp $
 #
-PHYS_PRINT_PATTERN="%-6s%8s%8s %-10s%-14s%-21s%-20s%s\n"
+PHYS_PRINT_PATTERN="%-6s%8s%8s %-11s%-14s%-21s%-20s%s\n"
 VIRT_PRINT_PATTERN="%-6s%16s %-24s%-19s%-20s%s\n"
 
 # Sanity Check
@@ -11,14 +11,39 @@ if [ "x$(uname -s)" != "xLinux" ]; then
 	exit 127
 fi
 
+# Defines
+AWK_CMD=/usr/bin/awk
+SED_CMD=/bin/sed
+GREP_CMD=/bin/grep
+CUT_CMD=/bin/cut
+IP_CMD=/sbin/ip
+ETHTOOL_CMD=/sbin/ethtool
+
 # Check for sort version
-SORT_VER=$(sort --version|awk '{ if (($1 == "sort" ) && ($2 ~ /GNU/)) { ver=$4 } } END { if (ver != "") print ver ; else print 0 } '|cut -d. -f1)
+SORT_VER=$(sort --version|${AWK_CMD} '{ if (($1 == "sort" ) && ($2 ~ /GNU/)) { ver=$4 } } END { if (ver != "") print ver ; else print 0 } '|${CUT_CMD} -d. -f1)
 
 if [ $SORT_VER -ge 8 ]; then
-	SORT_CMD="sort -V"
+	SORT_CMD="/bin/sort -V"
 else
-	SORT_CMD="sort"
+	SORT_CMD="/bin/sort"
 fi
+
+# Check for binaries
+for myexec in "${AWK_CMD}" "${CUT_CMD}" "${SED_CMD}" "${GREP_CMD}" "${SORT_CMD}"
+do
+	case ${myexec} in
+		${AWK_CMD})
+			mybinexec="${myexec}"
+			;;
+		*)
+			mybinexec=$(echo "${myexec}"|${AWK_CMD} '{ print $1}')
+			;;
+	esac
+	if [ ! -x ${mybinexec} ]; then
+		echo "WARNING: ${myexec} missing!"
+		exit 127
+	fi
+done
 
 # Header state
 hstate=0
@@ -34,30 +59,38 @@ do
 				hstate+=1
 			fi
 			DEVI=$(basename ${mydev})
-			STATE=$(/sbin/ip -o a l ${DEVI}|awk ' { if ($4 == "mtu") { if ($3 ~ /,UP,/ ) print "up"; else print "(down)" }}')
+			STATE=$(${IP_CMD} -o a l ${DEVI}|${AWK_CMD} ' { if ($4 == "mtu") { if ($3 ~ /,UP,/ ) print "up"; else print "(down)" }}')
 			if [ -f ${mydev}/speed -a "x${STATE}" = "xup" ]; then
 				SPEED=$(cat ${mydev}/speed)
 			else
-				tmp=$(/sbin/ethtool ${DEVI} 2>/dev/null|awk '{ if (( $1 == "Speed:" ) && ( $2 ~ /Mb.s/ )) { print $2}}' |sed -e 's@Mb.s@@' )
+				tmp=$(${ETHTOOL_CMD} ${DEVI} 2>/dev/null|${AWK_CMD} '{ if (( $1 == "Speed:" ) && ( $2 ~ /Mb.s/ )) { print $2}}' |${SED_CMD} -e 's@Mb.s@@' )
 				if [ "x${tmp}" != "x" ]; then
 					SPEED=${tmp}
 				fi
 			fi
 			case ${DEVI} in
 				eth*)
-					SWDRIVER=$(/sbin/ethtool -i ${DEVI} 2>/dev/null|awk '{ if ( $1 == "driver:" ) { print $2}}' )
-					PCIPATH=$(/sbin/ethtool -i ${DEVI} 2>/dev/null|awk '{ if ( $1 == "bus-info:" ) { print $2}}' )
+					SWDRIVER=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "driver:" ) { print $2}}' )
+					PCIPATH=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "bus-info:" ) { print $2}}' )
 					if [ -f ${mydev}/address ]; then
 						MCADDR=$(cat ${mydev}/address)
 					else
-						MCADDR=$(/sbin/ip a l ${DEVI}|awk '{ if ( $1 ~ /link.ether/ ) print $2 }')
+						MCADDR=$(${IP_CMD} a l ${DEVI}|${AWK_CMD} '{ if ( $1 ~ /link.ether/ ) print $2 }')
+					fi
+					# Now look for the real MAC if that devi is enslaved and inactive..
+					enslvd=$(${GREP_CMD} -H "Slave Interface: ${DEVI}" /proc/net/bonding/bond* 2> /dev/null)
+					if [ $? -eq 0 ]; then
+						BMCADDR=$(${GREP_CMD} -A5 "Slave Interface: ${DEVI}" /proc/net/bonding/bond*|${AWK_CMD} '{ if ( $2 ~ /HW/ ) print $4 }')
+						if [ "x${BMCADDR}" != "x${MCADDR}" -a "x${BMCADDR}" != "x" ]; then
+							MCADDR="(${BMCADDR})"
+						fi
 					fi
 					;;
 				ib*)
-					SWDRIVER=$(/sbin/ethtool -i ${DEVI} 2>/dev/null|awk '{ if ( $1 == "driver:" ) { print $2}}' )
-					PCIPATH=$(/bin/ls -l ${HWPATH}|sed -e 's@.*/@@')
+					SWDRIVER=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "driver:" ) { print $2}}' )
+					PCIPATH=$(/bin/ls -l ${HWPATH}|${SED_CMD} -e 's@.*/@@')
 					if [ -f ${mydev}/address ]; then
-						MCADDR=$(cat ${mydev}/address |sed -e 's/\(.*00:00:00:00:\)\(.*$\)/\2/')
+						MCADDR=$(cat ${mydev}/address |${SED_CMD} -e 's/\(.*00:00:00:00:\)\(.*$\)/\2/')
 					else
 						MCADDR="N/A"
 					fi
@@ -68,33 +101,33 @@ do
 			# Catchall Software fallbacks
 			if [ "x${SWDRIVER}" = "x" ]; then
 				# This most likely means we're not root
-				SWDRIVER=$(/bin/ls -l ${mydev}/device/driver/module 2>/dev/null|sed -e 's@.*/@@')
+				SWDRIVER=$(/bin/ls -l ${mydev}/device/driver/module 2>/dev/null|${SED_CMD} -e 's@.*/@@')
 			fi
 			if [ "x${PCIPATH}" = "x" ]; then
 				# This most likely means we're not root
-				PCIPATH=$(/bin/ls -l ${HWPATH}|sed -e 's@.*/@@')
+				PCIPATH=$(/bin/ls -l ${HWPATH}|${SED_CMD} -e 's@.*/@@')
 			fi
 
 			case ${SWDRIVER} in
 				# For some drivers, there is often much info in the Subsystem field..
 				ixgbe|sfc|e1000e|igb)
 					MIN_DESCLEN=16
-					DEV_VEND=$(/sbin/lspci -vmm -s ${PCIPATH} 2> /dev/null|grep '^SVendor'|cut -d: -f2|xargs)
-					DEV_DESC=$(/sbin/lspci -vmm -s ${PCIPATH} 2> /dev/null|grep '^SDevice'|cut -d: -f2|xargs)
+					DEV_VEND=$(/sbin/lspci -vmm -s ${PCIPATH} 2> /dev/null|${GREP_CMD} '^SVendor'|${CUT_CMD} -d: -f2|xargs)
+					DEV_DESC=$(/sbin/lspci -vmm -s ${PCIPATH} 2> /dev/null|${GREP_CMD} '^SDevice'|${CUT_CMD} -d: -f2|xargs)
 					if [ $(echo ${DEV_DESC}|wc -c) -ge ${MIN_DESCLEN} ]; then
 						# Desc is long enough, let's try it
 						DESC="${DEV_VEND} ${DEV_DESC}"
 					else
 						# Desc is too short, fall back
-						DESC=$(/sbin/lspci -D -s ${PCIPATH} 2> /dev/null|sed -e 's@.*: @@' )
+						DESC=$(/sbin/lspci -D -s ${PCIPATH} 2> /dev/null|${SED_CMD} -e 's@.*: @@' )
 					fi
 					;;
 				*)
-					DESC=$(/sbin/lspci -D -s ${PCIPATH} 2> /dev/null|sed -e 's@.*: @@' )
+					DESC=$(/sbin/lspci -D -s ${PCIPATH} 2> /dev/null|${SED_CMD} -e 's@.*: @@' )
 					;;
 			esac
 
-			IPADDR=$(/sbin/ip -4 a s ${DEVI}|awk '{ if (( $1 == "inet" ) && ( $6 == "global" ) && ( $7 != "secondary")) print $2}')
+			IPADDR=$(${IP_CMD} -4 a s ${DEVI}|${AWK_CMD} '{ if (( $1 == "inet" ) && ( $6 == "global" ) && ( $7 != "secondary")) print $2}')
 			if [ "x${IPADDR}" = "x" ]; then
 				IPADDR="N/A"
 			fi
@@ -107,7 +140,7 @@ done
 
 # Header state
 hstate=0
-KREV=$(uname -r|cut -d- -f1)
+KREV=$(uname -r|${CUT_CMD} -d- -f1)
 case $KREV in
 	2.6.18)
 		VGLOB=/sys/class/net/bond
@@ -128,23 +161,33 @@ do
 		if [ -f ${HWTYPE} ]; then
 			if [ "x$(cat ${HWTYPE})" = "x1" ]; then
 				if [ $hstate -eq 0 ]; then
-					printf "\n${VIRT_PRINT_PATTERN}" "#VIRT" "STATE" "DRIVER" "MAC_Addr" "IP_Addr" "Description"
+					printf "\n${VIRT_PRINT_PATTERN}" "#VIRT" "STATE" "DRIVER" "Active MAC" "IP_Addr" "Description"
 					hstate+=1
 				fi
 				STATE=$(cat ${mydev}/operstate)
-				STATE=$(/sbin/ip -o a l ${DEVI}|awk ' { if ($4 == "mtu") { if ($3 ~ /,UP,/ ) print "up"; else print "(down)" }}')
+				STATE=$(${IP_CMD} -o a l ${DEVI}|${AWK_CMD} ' { if ($4 == "mtu") { if ($3 ~ /,UP,/ ) print "up"; else print "(down)" }}')
 				if [ -f ${mydev}/bonding/slaves ]; then
 					SLAVES=$(cat ${mydev}/bonding/slaves)
-					DESC="[ ${SLAVES} ]"
+					actv=$(${GREP_CMD} "Currently Active Slave:" /proc/net/bonding/${DEVI}|${CUT_CMD} -f2 -d:|xargs)
+					ESLAVES=""
+					for ifs in ${SLAVES}
+					do
+						if [ "x${ifs}" = "x${actv}" ]; then
+							ESLAVES=$(echo "${ESLAVES} ${ifs}"|xargs)
+						else
+							ESLAVES=$(echo "${ESLAVES} (${ifs})"|xargs)
+						fi
+					done
+					DESC="[ ${ESLAVES} ]"
 				else
 					DESC="N/A"
 				fi
-				IPADDR=$(/sbin/ip -4 a s ${DEVI}|awk '{ if (( $1 == "inet" ) && ( $6 == "global" ) && ( $7 != "secondary")) print $2}')
+				IPADDR=$(${IP_CMD} -4 a s ${DEVI}|${AWK_CMD} '{ if (( $1 == "inet" ) && ( $6 == "global" ) && ( $7 != "secondary")) print $2}')
 				if [ "x${IPADDR}" = "x" ]; then
 					IPADDR="N/A"
 				fi
-				MCADDR=$(/sbin/ip a l ${DEVI}|awk '{ if ( $1 ~ /link.ether/ ) print $2 }')
-				tmpdrv=$(echo ${DEVI}|sed -e 's@[0-9]\{1,\}@@')
+				MCADDR=$(${IP_CMD} a l ${DEVI}|${AWK_CMD} '{ if ( $1 ~ /link.ether/ ) print $2 }')
+				tmpdrv=$(echo ${DEVI}|${SED_CMD} -e 's@[0-9]\{1,\}@@')
 				case ${tmpdrv} in
 					bond)
 						tmpdrv=bonding
@@ -152,7 +195,7 @@ do
 				esac
 				drvver=$(/sbin/modinfo -F version ${tmpdrv} 2> /dev/null)
 				if [ "x${drvver}" = "x" ]; then
-					drvver=$(uname -r|sed -e 's@\.el.*@@')
+					drvver=$(uname -r|${SED_CMD} -e 's@\.el.*@@')
 				fi
 				SWDRIVER="${tmpdrv} (${drvver})"
 
