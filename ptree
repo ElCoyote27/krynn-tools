@@ -1,5 +1,5 @@
 #!/bin/bash
-# $Id: ptree,v 1.8 2015/01/09 21:20:50 root Exp $
+# $Id: ptree,v 1.9 2015/07/04 03:05:58 root Exp $
 
 # ptree only supports one and exactly one PID so forget other args..
 MPSARGS="-planA"
@@ -37,7 +37,7 @@ GetPPID() {
 		localPName=$(awk '{ if ( $1 ~ "Name:" ) print $2 }' /proc/${localPPID}/status)
 		# localPPID=`ps --no-heading -o ppid ${myPPID} 2> /dev/null|xargs`
 		[ "x${localPPID}" != "x" ] && {
-			[ "x${localPName}" != "x" -a "x${localPName}" != "xinit" -a "x${localPName}" != "xscreen" ] && {
+			[ "x${localPName}" != "x" -a "x${localPName}" != "xinit" -a "x${localPName}" != "xsystemd" -a -a "x${localPName}" != "xscreen" ] && {
 				echo ${localPPID}; return 0
 			} || {
 				# errecho "Discarded PPID: ${localPPID}"
