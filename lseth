@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.20 2015/04/17 14:29:45 root Exp $
+# $Id: lseth,v 1.21 2015/08/11 12:44:23 root Exp $
 #
 PHYS_PRINT_PATTERN="%-6s%8s%8s %-12s%-14s%-24s%-21s%s\n"
 VIRT_PRINT_PATTERN="%-6s%14s %-28s%-24s%-21s%s\n"
@@ -20,6 +20,7 @@ IP_CMD=/sbin/ip
 ETHTOOL_CMD=/sbin/ethtool
 STTY_CMD=/bin/stty
 CAT_CMD=/bin/cat
+HEAD_CMD=/usr/bin/head
 
 # Check for sort version
 SORT_VER=$(sort --version|${AWK_CMD} '{ if (($1 == "sort" ) && ($2 ~ /GNU/)) { ver=$4 } } END { if (ver != "") print ver ; else print 0 } '|${CUT_CMD} -d. -f1)
@@ -136,7 +137,7 @@ do
 					;;
 			esac
 
-			IPADDR=$(${IP_CMD} -4 a s ${DEVI}|${AWK_CMD} '{ if (( $1 == "inet" ) && ( $6 == "global" ) && ( $7 != "secondary")) print $2}')
+			IPADDR=$(${IP_CMD} -4 a s ${DEVI}|${AWK_CMD} '{ if (( $1 == "inet" ) && ( $6 == "global" ) && ( $7 != "secondary")) print $2}'|${HEAD_CMD} -1)
 			if [ "x${IPADDR}" = "x" ]; then
 				IPADDR="N/A"
 			fi
@@ -191,7 +192,7 @@ do
 				else
 					DESC="N/A"
 				fi
-				IPADDR=$(${IP_CMD} -4 a s ${DEVI}|${AWK_CMD} '{ if (( $1 == "inet" ) && ( $6 == "global" ) && ( $7 != "secondary")) print $2}')
+				IPADDR=$(${IP_CMD} -4 a s ${DEVI}|${AWK_CMD} '{ if (( $1 == "inet" ) && ( $6 == "global" ) && ( $7 != "secondary")) print $2}'|${HEAD_CMD} -1)
 				if [ "x${IPADDR}" = "x" ]; then
 					IPADDR="N/A"
 				fi
