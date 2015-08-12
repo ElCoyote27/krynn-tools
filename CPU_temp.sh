@@ -1,5 +1,5 @@
 #!/bin/bash
-# $Id: CPU_temp.sh,v 1.10 2014/12/24 07:42:43 root Exp $
+# $Id: CPU_temp.sh,v 1.11 2015/08/12 19:50:35 root Exp $
 #
 export LC_ALL=C
 
@@ -19,13 +19,14 @@ fi
 
 # IPMITOOL
 if [ -x /usr/bin/ipmitool ] ; then
-	if [ -c /dev/ipmi0 ]; then
-#	AMB_TEMP=`/usr/bin/ipmitool sdr list|awk -F '|' '{ if (( $1 ~ /Ambient/ ) && ( $3 ~ /ok/ )) print $2}'`
-#	AMB_TEMP=`/usr/sbin/ipmi-sensors -t Temperature --ignore-not-available-sensors|awk -F '|' '{ if ( $2 ~ /Ambient/ ) print $4,$5}'|xargs`
-	AMB_TEMP=`/usr/sbin/ipmi-sensors -s 10 --ignore-not-available-sensors|awk -F '|' '{ if ( $2 ~ /Ambient/ ) print $4,$5}'|xargs`
-	if [ "x${AMB_TEMP}" != "x" ]; then
-		echo "Ambient Temp: ${AMB_TEMP}"
-	fi
+	/usr/bin/ipmitool sdr info > /dev/null 2>&1
+	if [ $? -eq 0 ]; then
+	#	AMB_TEMP=`/usr/bin/ipmitool sdr list|awk -F '|' '{ if (( $1 ~ /Ambient/ ) && ( $3 ~ /ok/ )) print $2}'`
+	#	AMB_TEMP=`/usr/sbin/ipmi-sensors -t Temperature --ignore-not-available-sensors|awk -F '|' '{ if ( $2 ~ /Ambient/ ) print $4,$5}'|xargs`
+		AMB_TEMP=`/usr/sbin/ipmi-sensors -s 10 --ignore-not-available-sensors|awk -F '|' '{ if ( $2 ~ /Ambient/ ) print $4,$5}'|xargs`
+		if [ "x${AMB_TEMP}" != "x" ]; then
+			echo "Ambient Temp: ${AMB_TEMP}"
+		fi
 	fi
 fi
 
