@@ -1,9 +1,9 @@
 #!/bin/bash
-# $Id: ptree,v 1.10 2015/07/04 03:07:26 root Exp $
+# $Id: ptree,v 1.11 2015/09/23 17:09:26 root Exp $
 
 # ptree only supports one and exactly one PID so forget other args..
-MPSARGS="-planA"
-#MPSARGS="-planG"
+#MPSARGS="-planA"		### ASCII
+MPSARGS="-planG"		### Graphics
 
 # Initialization
 myPID=$1
