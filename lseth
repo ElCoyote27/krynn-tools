@@ -1,7 +1,8 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.24 2015/10/23 22:10:28 root Exp $
+# $Id: lseth,v 1.25 2015/10/23 22:22:04 root Exp $
 #
+# TODO: rx/tx buffers, MTU, firmware version?
 
 # Sanity Check
 if [ "x$(uname -s)" != "xLinux" ]; then
