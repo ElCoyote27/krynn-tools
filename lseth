@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.23 2015/10/23 21:32:30 root Exp $
+# $Id: lseth,v 1.24 2015/10/23 22:10:28 root Exp $
 #
 
 # Sanity Check
@@ -59,7 +59,7 @@ maxlen=0
 
 #all_if=$(${AWK_CMD} '{ if ( $1 ~ ":" ) print substr($1, 0, length($1)-1) }' /proc/net/dev)
 maxlen=$(cd /sys/class/net; ls -d eth* ib* 2>/dev/null|${AWK_CMD} 'BEGIN { l=0 } { if ( length($1) > length(l) ) { l=length($1) } } END { print l }' )
-PHYS_PRINT_PATTERN="%-$(($maxlen+1))s%8s%8s %-14s%-14s%-24s%-21s%s\n"
+PHYS_PRINT_PATTERN="%-$(($maxlen+1))s%9s%7s %-14s%-14s%-24s%-21s%s\n"
 
 # Physical interfaces
 for mydev in $(ls -d /sys/class/net/eth* /sys/class/net/ib* 2> /dev/null|xargs -n1|${SORT_CMD})
@@ -170,7 +170,7 @@ case $KREV in
 esac
 
 maxlen=$(${AWK_CMD} 'BEGIN { l=0 } { if ( $1 ~ ":" ) { if ( length($1) > length(l) ) { l=length($1) } } } END { print l }' /proc/net/dev )
-VIRT_PRINT_PATTERN="%-$(($maxlen+1))s%6s %-32s%-24s%-21s%s\n"
+VIRT_PRINT_PATTERN="%-$(($maxlen+1))s%6s %-$((42-$maxlen))s%-24s%-21s%s\n"
 
 # Virtual interfaces
 for mydev in $(ls -d ${VGLOB}* 2> /dev/null |xargs -n1|${SORT_CMD})
@@ -215,7 +215,16 @@ do
 				if [ "x${drvver}" = "x" ]; then
 					drvver=$(uname -r|${SED_CMD} -e 's@\.el.*@@')
 				fi
-				SWDRIVER="${tmpdrv} (${drvver})"
+				drvdesc="${tmpdrv} (${drvver})"
+
+				# Cut-off for driver desc is at 24...
+				P1=$(echo ${drvdesc}|${CUT_CMD} -c-24)
+				P2=$(echo ${drvdesc}|${CUT_CMD} -c24-)
+				if [ "x$P2" = "x" ]; then
+					SWDRIVER=$P1
+				else
+					SWDRIVER="$(echo "${tmpdrv} (${drvver})"|${CUT_CMD} -c-22)...)"
+				fi
 
 				# Printout
 				printf "${VIRT_PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SWDRIVER}" "${MCADDR}" "${IPADDR}" "${DESC}"
@@ -223,3 +232,4 @@ do
 		fi
 	fi
 done|${OFILTER}
+
