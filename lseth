@@ -59,11 +59,11 @@ hstate=0
 maxlen=0
 
 #all_if=$(${AWK_CMD} '{ if ( $1 ~ ":" ) print substr($1, 0, length($1)-1) }' /proc/net/dev)
-maxlen=$(cd /sys/class/net; ls -d {eth,ib,wl,ww,en,sl}* 2>/dev/null|${AWK_CMD} 'BEGIN { l=0 } { if ( length($1) > l ) { l=length($1) } } END { print l }' )
+maxlen=$(cd /sys/class/net; /bin/ls -d {eth,ib,wl,ww,en,sl,em,p[0-9]}* 2>/dev/null|${AWK_CMD} 'BEGIN { l=0 } { if ( length($1) > l ) { l=length($1) } } END { print l }' )
 PHYS_PRINT_PATTERN="%-$(($maxlen+2))s%-7s%-9s %-14s%-14s%-24s%-21s%s\n"
 
 # Physical interfaces
-for mydev in $(ls -d /sys/class/net/{eth,ib,wl,ww,en,sl}* 2> /dev/null|xargs -n1|${SORT_CMD})
+for mydev in $(/bin/ls -d /sys/class/net/{eth,ib,wl,ww,en,sl,em,p[0-9]}* 2> /dev/null|xargs -n1|${SORT_CMD})
 do
 	if [ "x${mydev}" != "x" ]; then
 		HWPATH="${mydev}/device"
@@ -84,7 +84,7 @@ do
 				fi
 			fi
 			case ${DEVI} in
-				eth*|en*|wl*|ww*)
+				{eth,wl,ww,en,sl,em,p[0-9]}*)
 					SWDRIVER=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "driver:" ) { print $2}}' )
 					PCIPATH=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "bus-info:" ) { print $2}}' )
 					if [ -f ${mydev}/address ]; then
