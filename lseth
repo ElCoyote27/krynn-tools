@@ -158,6 +158,7 @@ done
 # Header state
 hstate=0
 maxlen=0
+declare -A alldrvs
 
 KREV=$(uname -r|${CUT_CMD} -d- -f1)
 case $KREV in
@@ -214,9 +215,18 @@ do
 				if [ "x${tmpdrv}" = "x" ]; then
 					tmpdrv=$(echo ${DEVI}|${SED_CMD} -e 's@[0-9]\{1,\}@@')
 				fi
-				drvver=$(/sbin/modinfo -F version ${tmpdrv} 2> /dev/null)
-				if [ "x${drvver}" = "x" ]; then
-					drvver=$(uname -r|${SED_CMD} -e 's@\.el.*@@')
+
+				# Test if result not already in cache..
+				if [[ "x${alldrvs[${tmpdrv}]}" == "x" ]]; then
+					#### echo "NOT a cached value: ${tmpdrv}: ${alldrvs[${tmpdrv}]}"
+					drvver=$(/sbin/modinfo -F version ${tmpdrv} 2> /dev/null)
+					if [ "x${drvver}" = "x" ]; then
+						drvver=$(uname -r|${SED_CMD} -e 's@\.el.*@@')
+					fi
+					alldrvs["${tmpdrv}"]="${drvver}"
+				else
+					#### echo "Got a cached value: ${tmpdrv}: ${alldrvs[${tmpdrv}]}"
+					drvver=${alldrvs[${tmpdrv}]}
 				fi
 				drvdesc="${tmpdrv} (${drvver})"
 
