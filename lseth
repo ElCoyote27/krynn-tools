@@ -20,6 +20,7 @@ ETHTOOL_CMD=/sbin/ethtool
 STTY_CMD=/bin/stty
 CAT_CMD=/bin/cat
 HEAD_CMD=/usr/bin/head
+XARGS_CMD=/usr/bin/xargs
 
 # Check for sort version
 SORT_VER=$(sort --version|${AWK_CMD} '{ if (($1 == "sort" ) && ($2 ~ /GNU/)) { ver=$4 } } END { if (ver != "") print ver ; else print 0 } '|${CUT_CMD} -d. -f1)
@@ -59,11 +60,11 @@ hstate=0
 maxlen=0
 
 #all_if=$(${AWK_CMD} '{ if ( $1 ~ ":" ) print substr($1, 0, length($1)-1) }' /proc/net/dev)
-maxlen=$(cd /sys/class/net; /bin/ls -d {eth,ib,wl,ww,en,sl,em,p[0-9]}* 2>/dev/null|${AWK_CMD} 'BEGIN { l=0 } { if ( length($1) > l ) { l=length($1) } } END { print l }' )
+maxlen=$(cd /sys/class/net; /bin/ls -1d {eth,ib,wl,ww,en,sl,em,p[0-9]}* 2>/dev/null|${AWK_CMD} 'BEGIN { l=0 } { if ( length($1) > l ) { l=length($1) } } END { print l }' )
 PHYS_PRINT_PATTERN="%-$(($maxlen+2))s%-7s%-9s %-14s%-14s%-24s%-21s%s\n"
 
 # Physical interfaces
-for mydev in $(/bin/ls -d /sys/class/net/{eth,ib,wl,ww,en,sl,em,p[0-9]}* 2> /dev/null|xargs -n1|${SORT_CMD})
+for mydev in $(/bin/ls -1d /sys/class/net/{eth,ib,wl,ww,en,sl,em,p[0-9]}* 2> /dev/null|${SORT_CMD})
 do
 	if [ "x${mydev}" != "x" ]; then
 		HWPATH="${mydev}/device"
@@ -78,13 +79,13 @@ do
 			if [ -f ${mydev}/speed -a "x${STATE}" = "xup" -a "x$(echo ${DEVI}|${CUT_CMD} -c-2)" != "xib" ]; then
 				tmp=$(cat ${mydev}/speed 2>/dev/null)
 			else
-				tmp=$(${ETHTOOL_CMD} ${DEVI} 2>/dev/null|${AWK_CMD} '{ if (( $1 == "Speed:" ) && ( $2 ~ /Mb.s/ )) { print $2}}' |${SED_CMD} -e 's@Mb.s@@' )
+				tmp=$(${ETHTOOL_CMD} ${DEVI} 2>/dev/null|${AWK_CMD} '{ if (( $1 == "Speed:" ) && ( $2 ~ /Mb.s/ )) { sub(/Mb.s/,"",$2) ; print $2}}' )
 			fi
 			if [ "x${tmp}" != "x" ]; then
 				SPEED=${tmp}
 			fi
 			case ${DEVI} in
-				{eth,wl,ww,en,sl,em,p[0-9]}*)
+				eth*|wl*|wl*|ww*|en*|sl*|em*|p[0-9]*)
 					SWDRIVER=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "driver:" ) { print $2}}' )
 					PCIPATH=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "bus-info:" ) { print $2}}' )
 					if [ -f ${mydev}/address ]; then
@@ -127,18 +128,18 @@ do
 				# For some drivers, there is often much info in the Subsystem field..
 				ixgbe|sfc|e1000e|igb)
 					MIN_DESCLEN=16
-					DEV_VEND=$(/sbin/lspci -vmm -s ${PCIPATH} 2> /dev/null|${GREP_CMD} '^SVendor'|${CUT_CMD} -d: -f2|xargs)
-					DEV_DESC=$(/sbin/lspci -vmm -s ${PCIPATH} 2> /dev/null|${GREP_CMD} '^SDevice'|${CUT_CMD} -d: -f2|xargs)
+					DEV_VEND=$(/sbin/lspci -vmm -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ FS=":"; OFS=" " ; if ( $1 == "SVendor" ) { sub(/\t/,"",$2) ;print $2 } }'|${XARGS_CMD})
+					DEV_DESC=$(/sbin/lspci -vmm -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ FS=":"; OFS=" " ; if ( $1 == "SDevice" ) { sub(/\t/,"",$2) ;print $2 } }'|${XARGS_CMD})
 					if [ $(echo ${DEV_DESC}|wc -c) -ge ${MIN_DESCLEN} ]; then
 						# Desc is long enough, let's try it
 						DESC="${DEV_VEND} ${DEV_DESC}"
 					else
 						# Desc is too short, fall back
-						DESC=$(/sbin/lspci -D -s ${PCIPATH} 2> /dev/null|${SED_CMD} -e 's@.*: @@' )
+						DESC=$(/sbin/lspci -D -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ sub(/.*: /,""); print $0}')
 					fi
 					;;
 				*)
-					DESC=$(/sbin/lspci -D -s ${PCIPATH} 2> /dev/null|${SED_CMD} -e 's@.*: @@' )
+					DESC=$(/sbin/lspci -D -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ sub(/.*: /,""); print $0}')
 					;;
 			esac
 
@@ -151,7 +152,8 @@ do
 			printf "${PHYS_PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SPEED}" "${SWDRIVER}" "${PCIPATH}" "${MCADDR}" "${IPADDR}" "${DESC}"
 		fi
 	fi
-done|${OFILTER}
+#done|${OFILTER}
+done
 
 # Header state
 hstate=0
@@ -174,7 +176,7 @@ maxlen=$(${AWK_CMD} 'BEGIN { l=0 } { if ( $1 ~ ":" ) { if ( length($1) > l ) { l
 VIRT_PRINT_PATTERN="%-$(($maxlen+2))s%6s %-$((42-$maxlen))s%-24s%-21s%s\n"
 
 # Virtual interfaces
-for mydev in $(ls -d ${VGLOB}* 2> /dev/null |xargs -n1|${SORT_CMD})
+for mydev in $(ls -1d ${VGLOB}* 2> /dev/null|${SORT_CMD})
 do
 	if [ "x${mydev}" != "x" ]; then
 		HWTYPE="${mydev}/type"
@@ -189,14 +191,14 @@ do
 				STATE=$(${IP_CMD} l sh ${DEVI}|${AWK_CMD} ' { if ($4 == "mtu") { if ($3 ~ /,UP,/ ) print "up"; else print "(down)" }}')
 				if [ -f ${mydev}/bonding/slaves ]; then
 					SLAVES=$(cat ${mydev}/bonding/slaves)
-					actv=$(${GREP_CMD} "Currently Active Slave:" /proc/net/bonding/${DEVI}|${CUT_CMD} -f2 -d:|xargs)
+					actv=$(${GREP_CMD} "Currently Active Slave:" /proc/net/bonding/${DEVI}|${CUT_CMD} -f2 -d:|${XARGS_CMD})
 					ESLAVES=""
 					for ifs in ${SLAVES}
 					do
 						if [ "x${ifs}" = "x${actv}" ]; then
-							ESLAVES=$(echo "${ESLAVES} ${ifs}"|xargs)
+							ESLAVES=$(echo "${ESLAVES} ${ifs}"|${XARGS_CMD})
 						else
-							ESLAVES=$(echo "${ESLAVES} (${ifs})"|xargs)
+							ESLAVES=$(echo "${ESLAVES} (${ifs})"|${XARGS_CMD})
 						fi
 					done
 					DESC="[ ${ESLAVES} ]"
@@ -232,5 +234,6 @@ do
 			fi
 		fi
 	fi
-done|${OFILTER}
+#done|${OFILTER}
+done
 
