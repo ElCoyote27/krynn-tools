@@ -76,12 +76,12 @@ do
 			DEVI=$(basename ${mydev})
 			STATE=$(${IP_CMD} l sh ${DEVI}|${AWK_CMD} ' { if ($4 == "mtu") { if ($3 ~ /,UP,/ ) print "up"; else print "(down)" }}')
 			if [ -f ${mydev}/speed -a "x${STATE}" = "xup" -a "x$(echo ${DEVI}|${CUT_CMD} -c-2)" != "xib" ]; then
-				SPEED=$(cat ${mydev}/speed)
+				tmp=$(cat ${mydev}/speed 2>/dev/null)
 			else
 				tmp=$(${ETHTOOL_CMD} ${DEVI} 2>/dev/null|${AWK_CMD} '{ if (( $1 == "Speed:" ) && ( $2 ~ /Mb.s/ )) { print $2}}' |${SED_CMD} -e 's@Mb.s@@' )
-				if [ "x${tmp}" != "x" ]; then
-					SPEED=${tmp}
-				fi
+			fi
+			if [ "x${tmp}" != "x" ]; then
+				SPEED=${tmp}
 			fi
 			case ${DEVI} in
 				{eth,wl,ww,en,sl,em,p[0-9]}*)
