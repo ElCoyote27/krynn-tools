@@ -152,8 +152,7 @@ do
 			printf "${PHYS_PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SPEED}" "${SWDRIVER}" "${PCIPATH}" "${MCADDR}" "${IPADDR}" "${DESC}"
 		fi
 	fi
-#done|${OFILTER}
-done
+done|${OFILTER}
 
 # Header state
 hstate=0
@@ -244,6 +243,5 @@ do
 			fi
 		fi
 	fi
-#done|${OFILTER}
-done
+done|${OFILTER}
 
