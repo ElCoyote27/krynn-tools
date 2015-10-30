@@ -61,7 +61,7 @@ maxlen=0
 
 #all_if=$(${AWK_CMD} '{ if ( $1 ~ ":" ) print substr($1, 0, length($1)-1) }' /proc/net/dev)
 maxlen=$(cd /sys/class/net; /bin/ls -1d {eth,ib,wl,ww,en,sl,em,p[0-9]}* 2>/dev/null|${AWK_CMD} 'BEGIN { l=0 } { if ( length($1) > l ) { l=length($1) } } END { print l }' )
-PHYS_PRINT_PATTERN="%-$(($maxlen+2))s%-7s%-9s %-14s%-14s%-24s%-21s%s\n"
+PHYS_PRINT_PATTERN="%-$(($maxlen+1))s%7s%7s%6s %-14s%-14s%-24s%-21s%s\n"
 
 # Physical interfaces
 for mydev in $(/bin/ls -1d /sys/class/net/{eth,ib,wl,ww,en,sl,em,p[0-9]}* 2> /dev/null|${SORT_CMD})
@@ -71,7 +71,7 @@ do
 		SPEED="N/A"
 		if [ -d ${HWPATH} ]; then
 			if [ $hstate -eq 0 ]; then
-				printf "\n${PHYS_PRINT_PATTERN}" "#PHYS" "STATE" "SPEED" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description"
+				printf "\n${PHYS_PRINT_PATTERN}" "#PHYS" "STATE" "SPEED" "MTU" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description"
 				hstate+=1
 			fi
 			DEVI=$(basename ${mydev})
@@ -90,6 +90,7 @@ do
 			if [ "x${tmp}" != "x" ]; then
 				SPEED=${tmp}
 			fi
+			MTU=$(${IP_CMD} l sh ${DEVI}|${AWK_CMD} '{ if ( $4 ~ /mtu/ ) print $5 }')
 			case ${DEVI} in
 				eth*|wl*|wl*|ww*|en*|sl*|em*|p[0-9]*)
 					SWDRIVER=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "driver:" ) { print $2}}' )
@@ -97,7 +98,7 @@ do
 					if [ -f ${mydev}/address ]; then
 						MCADDR=$(cat ${mydev}/address)
 					else
-						MCADDR=$(${IP_CMD} a l ${DEVI}|${AWK_CMD} '{ if ( $1 ~ /link.ether/ ) print $2 }')
+						MCADDR=$(${IP_CMD} l sh ${DEVI}|${AWK_CMD} '{ if ( $1 ~ /link.ether/ ) print $2 }')
 					fi
 					# Now look for the real MAC if that devi is enslaved and inactive..
 					enslvd=$(${GREP_CMD} -H "Slave Interface: ${DEVI}\$" /proc/net/bonding/bond* 2> /dev/null)
@@ -155,7 +156,7 @@ do
 			fi
 
 			# Printout
-			printf "${PHYS_PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SPEED}" "${SWDRIVER}" "${PCIPATH}" "${MCADDR}" "${IPADDR}" "${DESC}"
+			printf "${PHYS_PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SPEED}" "${MTU}" "${SWDRIVER}" "${PCIPATH}" "${MCADDR}" "${IPADDR}" "${DESC}"
 		fi
 	fi
 done|${OFILTER}
@@ -179,7 +180,7 @@ case $KREV in
 esac
 
 maxlen=$(${AWK_CMD} 'BEGIN { l=0 } { if ( $1 ~ ":" ) { if ( length($1) > l ) { l=length($1) } } } END { print l }' /proc/net/dev )
-VIRT_PRINT_PATTERN="%-$(($maxlen+2))s%6s %-$((42-$maxlen))s%-24s%-21s%s\n"
+VIRT_PRINT_PATTERN="%-$(($maxlen+2))s%6s%6s %-$((42-$maxlen))s%-24s%-21s%s\n"
 
 # Virtual interfaces
 for mydev in $(ls -1d ${VGLOB}* 2> /dev/null|${SORT_CMD})
@@ -190,7 +191,7 @@ do
 		if [ -f ${HWTYPE} ]; then
 			if [ "x$(cat ${HWTYPE})" = "x1" ]; then
 				if [ $hstate -eq 0 ]; then
-					printf "\n${VIRT_PRINT_PATTERN}" "#VIRT" "STATE" "DRIVER" "Active MAC" "IP_Addr" "Description"
+					printf "\n${VIRT_PRINT_PATTERN}" "#VIRT" "STATE" "MTU" "DRIVER" "Active MAC" "IP_Addr" "Description"
 					hstate+=1
 				fi
 				# First attempt to detect state
@@ -200,6 +201,7 @@ do
 						STATE=$(cat ${mydev}/operstate)
 					fi
 				fi
+				MTU=$(${IP_CMD} l sh ${DEVI}|${AWK_CMD} '{ if ( $4 ~ /mtu/ ) print $5 }')
 				if [ -f ${mydev}/bonding/slaves ]; then
 					SLAVES=$(cat ${mydev}/bonding/slaves)
 					actv=$(${GREP_CMD} "Currently Active Slave:" /proc/net/bonding/${DEVI}|${CUT_CMD} -f2 -d:|${XARGS_CMD})
@@ -250,7 +252,7 @@ do
 				fi
 
 				# Printout
-				printf "${VIRT_PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SWDRIVER}" "${MCADDR}" "${IPADDR}" "${DESC}"
+				printf "${VIRT_PRINT_PATTERN}" "${DEVI}" "${STATE}" "${MTU}" "${SWDRIVER}" "${MCADDR}" "${IPADDR}" "${DESC}"
 			fi
 		fi
 	fi
