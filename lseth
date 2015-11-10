@@ -21,6 +21,14 @@ STTY_CMD=/bin/stty
 CAT_CMD=/bin/cat
 HEAD_CMD=/usr/bin/head
 XARGS_CMD=/usr/bin/xargs
+# lsusb is a special animal
+if [ -x /usr/sbin/lsusb ]; then
+	LSUSB_CMD=/usr/sbin/lsusb
+else
+	if [ -x /usr/bin/lsusb ]; then
+		LSUSB_CMD=/usr/bin/lsusb
+	fi
+fi
 
 # Check for sort version
 SORT_VER=$(sort --version|${AWK_CMD} '{ if (($1 == "sort" ) && ($2 ~ /GNU/)) { ver=$4 } } END { if (ver != "") print ver ; else print 0 } '|${CUT_CMD} -d. -f1)
@@ -39,7 +47,7 @@ else
 fi
 
 # Check for binaries
-for myexec in "${AWK_CMD}" "${CUT_CMD}" "${SED_CMD}" "${GREP_CMD}" "${SORT_CMD}"
+for myexec in "${AWK_CMD}" "${CUT_CMD}" "${SED_CMD}" "${GREP_CMD}" "${SORT_CMD}" "${LSUSB_CMD}" "/sbin/lspci"
 do
 	case ${myexec} in
 		${AWK_CMD})
@@ -149,6 +157,19 @@ do
 						# Desc is too short, fall back
 						DESC=$(/sbin/lspci -D -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ sub(/.*: /,""); print $0}')
 					fi
+					;;
+				# known USB driver
+				ax88179_178a)
+					USBPATH=$(/bin/ls -1ld ${mydev} |${AWK_CMD} '{ if ( $11 ~ /usb/ ) {
+						sub(/.*usb[0-9]*\//,"")
+						sub(/\/.*/,"")
+						print $0 }
+					}')
+					if [ "x${USBPATH}" != "x" ]; then
+						DESC=$(${LSUSB_CMD} -s ${USBPATH}|${CUT_CMD} -c34-)
+					else
+						DESC="N/A"
+					fi						
 					;;
 				*)
 					DESC=$(/sbin/lspci -D -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ sub(/.*: /,""); print $0}')
