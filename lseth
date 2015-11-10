@@ -76,7 +76,12 @@ do
 			fi
 			DEVI=$(basename ${mydev})
 			# First attempt to detect state
-			STATE=$(${IP_CMD} l sh ${DEVI}|${AWK_CMD} ' { if ($4 == "mtu") { if ($3 ~ /,UP/ ) print "up"; else print "(down)" }}')
+			STATE=$(${IP_CMD} -o l sh ${DEVI}|${AWK_CMD} \
+				'{ if ($4 == "mtu") {
+					if ($8 ==  "state" ) { if ( $9  == "UP" ) print "up"; else print "(down)" }
+					if ($10 ==  "state" ) { if ( $11  == "UP" ) print "up"; else print "(down)" }
+				}
+			}')
 			if [ "x${STATE}" = "x" ]; then
 				if [ -f ${mydev}/operstate ]; then
 					STATE=$(cat ${mydev}/operstate)
@@ -90,7 +95,7 @@ do
 			if [ "x${tmp}" != "x" ]; then
 				SPEED=${tmp}
 			fi
-			MTU=$(${IP_CMD} l sh ${DEVI}|${AWK_CMD} '{ if ( $4 ~ /mtu/ ) print $5 }')
+			MTU=$(${IP_CMD} -o l sh ${DEVI}|${AWK_CMD} '{ if ( $4 ~ /mtu/ ) print $5 }')
 			case ${DEVI} in
 				eth*|wl*|wl*|ww*|en*|sl*|em*|p[0-9]*)
 					SWDRIVER=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "driver:" ) { print $2}}' )
@@ -164,7 +169,7 @@ done|${OFILTER}
 # Header state
 hstate=0
 maxlen=0
-declare -A alldrvs
+declare -a alldrvs
 
 KREV=$(uname -r|${CUT_CMD} -d- -f1)
 case $KREV in
@@ -195,7 +200,17 @@ do
 					hstate+=1
 				fi
 				# First attempt to detect state
-				STATE=$(${IP_CMD} l sh ${DEVI}|${AWK_CMD} ' { if ($4 == "mtu") { if ($3 ~ /,UP/ ) print "up"; else print "(down)" }}')
+				STATE=$(${IP_CMD} -o l sh ${DEVI}|${AWK_CMD} \
+					'{ if ($4 == "mtu") {
+						if ($8 ==  "state" ) { if (( $9  == "UP" ) || (( $9 == "UNKNOWN" ) && ( $3 ~ /,UP/)))
+									print "up"
+									else print "(down)" }
+						if ($10 ==  "state" ) { if (( $11  == "UP" ) || (( $11 == "UNKNOWN" ) && ( $3 ~ /,UP/)))
+									print "up"
+									else print "(down)" }
+						#if ($10 ==  "state" ) { if ( $11  == "UP" ) print "up"; else print "(down)" }
+					}
+				}')
 				if [ "x${STATE}" = "x" ]; then
 					if [ -f ${mydev}/operstate ]; then
 						STATE=$(cat ${mydev}/operstate)
