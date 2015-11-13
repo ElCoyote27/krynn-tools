@@ -11,32 +11,25 @@ if [ "x$(uname -s)" != "xLinux" ]; then
 fi
 
 # Defines
-AWK_CMD=/usr/bin/awk
-SED_CMD=/bin/sed
-GREP_CMD=/bin/grep
-CUT_CMD=/bin/cut
-IP_CMD=/sbin/ip
-ETHTOOL_CMD=/sbin/ethtool
-STTY_CMD=/bin/stty
-CAT_CMD=/bin/cat
-HEAD_CMD=/usr/bin/head
-XARGS_CMD=/usr/bin/xargs
-# lsusb is a special animal
-if [ -x /usr/sbin/lsusb ]; then
-	LSUSB_CMD=/usr/sbin/lsusb
-else
-	if [ -x /usr/bin/lsusb ]; then
-		LSUSB_CMD=/usr/bin/lsusb
-	fi
-fi
+AWK_CMD=`which awk`
+SED_CMD=`which sed`
+GREP_CMD=`which grep`
+CUT_CMD=`which cut`
+IP_CMD=`which ip`
+ETHTOOL_CMD=`which ethtool`
+STTY_CMD=`which stty`
+CAT_CMD=`which cat`
+HEAD_CMD=`which head`
+XARGS_CMD=`which xargs`
+LSUSB_CMD=`which lsusb`
+LSPCI_CMD=`which lspci`
+SORT_CMD=`which sort`
 
 # Check for sort version
 SORT_VER=$(sort --version|${AWK_CMD} '{ if (($1 == "sort" ) && ($2 ~ /GNU/)) { ver=$4 } } END { if (ver != "") print ver ; else print 0 } '|${CUT_CMD} -d. -f1)
 
 if [ $SORT_VER -ge 8 ]; then
-	SORT_CMD="/bin/sort -V"
-else
-	SORT_CMD="/bin/sort"
+	SORT_CMD="$SORT_CMD -V"
 fi
 
 MAX_COL=$(${STTY_CMD} size|${AWK_CMD} '{ print $2}')
@@ -47,7 +40,7 @@ else
 fi
 
 # Check for binaries
-for myexec in "${AWK_CMD}" "${CUT_CMD}" "${SED_CMD}" "${GREP_CMD}" "${SORT_CMD}" "${LSUSB_CMD}" "/sbin/lspci"
+for myexec in "${AWK_CMD}" "${CUT_CMD}" "${SED_CMD}" "${GREP_CMD}" "${SORT_CMD}" "${LSUSB_CMD}" "${LSPCI_CMD}"
 do
 	case ${myexec} in
 		${AWK_CMD})
@@ -58,7 +51,7 @@ do
 			;;
 	esac
 	if [ ! -x ${mybinexec} ]; then
-		echo "WARNING: ${myexec} missing!"
+		echo "WARNING: ${mybinexec} missing!"
 		exit 127
 	fi
 done
@@ -148,14 +141,14 @@ do
 				# For some drivers, there is often much info in the Subsystem field..
 				ixgbe|sfc|e1000e|igb)
 					MIN_DESCLEN=16
-					DEV_VEND=$(/sbin/lspci -vmm -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ FS=":"; OFS=" " ; if ( $1 == "SVendor" ) { sub(/\t/,"",$2) ;print $2 } }'|${XARGS_CMD})
-					DEV_DESC=$(/sbin/lspci -vmm -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ FS=":"; OFS=" " ; if ( $1 == "SDevice" ) { sub(/\t/,"",$2) ;print $2 } }'|${XARGS_CMD})
+					DEV_VEND=$(${LSPCI_CMD} -vmm -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ FS=":"; OFS=" " ; if ( $1 == "SVendor" ) { sub(/\t/,"",$2) ;print $2 } }'|${XARGS_CMD})
+					DEV_DESC=$(${LSPCI_CMD} -vmm -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ FS=":"; OFS=" " ; if ( $1 == "SDevice" ) { sub(/\t/,"",$2) ;print $2 } }'|${XARGS_CMD})
 					if [ $(echo ${DEV_DESC}|wc -c) -ge ${MIN_DESCLEN} ]; then
 						# Desc is long enough, let's try it
 						DESC="${DEV_VEND} ${DEV_DESC}"
 					else
 						# Desc is too short, fall back
-						DESC=$(/sbin/lspci -D -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ sub(/.*: /,""); print $0}')
+						DESC=$(${LSPCI_CMD} -D -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ sub(/.*: /,""); print $0}')
 					fi
 					;;
 				# known USB driver
@@ -172,7 +165,7 @@ do
 					fi						
 					;;
 				*)
-					DESC=$(/sbin/lspci -D -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ sub(/.*: /,""); print $0}')
+					DESC=$(${LSPCI_CMD} -D -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ sub(/.*: /,""); print $0}')
 					;;
 			esac
 
