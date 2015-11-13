@@ -9,59 +9,44 @@ if [ "x$(uname -s)" != "xLinux" ]; then
 	echo "Not supported on $(uname -s)! Exit!"
 	exit 127
 fi
+#defines
+WHICH_CMD=/usr/bin/which
 
-# Defines
-AWK_CMD=/usr/bin/awk
-SED_CMD=/bin/sed
-GREP_CMD=/bin/grep
-CUT_CMD=/bin/cut
-IP_CMD=/sbin/ip
-ETHTOOL_CMD=/sbin/ethtool
-STTY_CMD=/bin/stty
-CAT_CMD=/bin/cat
-HEAD_CMD=/usr/bin/head
-XARGS_CMD=/usr/bin/xargs
-# lsusb is a special animal
-if [ -x /usr/sbin/lsusb ]; then
-	LSUSB_CMD=/usr/sbin/lsusb
-else
-	if [ -x /usr/bin/lsusb ]; then
-		LSUSB_CMD=/usr/bin/lsusb
-	fi
-fi
+# Check for binaries
+export PATH=/sbin:/usr/sbin:/bin:/usr/bin:${PATH}
+for myexec in awk sed grep cut ip ethtool stty cat head xargs lspci lsusb sort
+do
+	val="$(echo ${myexec}|/usr/bin/tr '[:lower:]' '[:upper:]')_CMD"
+	tmp_exec="$(which ${myexec} 2> /dev/null)"
 
-# Check for sort version
-SORT_VER=$(sort --version|${AWK_CMD} '{ if (($1 == "sort" ) && ($2 ~ /GNU/)) { ver=$4 } } END { if (ver != "") print ver ; else print 0 } '|${CUT_CMD} -d. -f1)
+	case ${myexec} in
+		sort)
+			# Check for sort version
+			SORT_VER=$(${tmp_exec} --version|${AWK_CMD} '{ if (($1 == "sort" ) && ($2 ~ /GNU/)) { ver=$4 } } END { if (ver != "") print ver ; else print 0 } '|${CUT_CMD} -d. -f1)
 
-if [ $SORT_VER -ge 8 ]; then
-	SORT_CMD="/bin/sort -V"
-else
-	SORT_CMD="/bin/sort"
-fi
+			if [ $SORT_VER -ge 8 ]; then
+				mybinexec="/bin/sort -V"
+			else
+				mybinexec="/bin/sort"
+			fi
+			;;
+		awk)
+			mybinexec="${tmp_exec}"
+			;;
+		*)
+			mybinexec="${tmp_exec}"
+			;;
+	esac
+	export ${val}="${mybinexec}"
+done
 
+# Examine terminal..
 MAX_COL=$(${STTY_CMD} size|${AWK_CMD} '{ print $2}')
 if [ "x${MAX_COL}" = "x" ]; then
 	OFILTER="$CAT_CMD"
 else
 	OFILTER="$CUT_CMD -c-${MAX_COL}"
 fi
-
-# Check for binaries
-for myexec in "${AWK_CMD}" "${CUT_CMD}" "${SED_CMD}" "${GREP_CMD}" "${SORT_CMD}" "${LSUSB_CMD}" "/sbin/lspci"
-do
-	case ${myexec} in
-		${AWK_CMD})
-			mybinexec="${myexec}"
-			;;
-		*)
-			mybinexec=$(echo "${myexec}"|${AWK_CMD} '{ print $1}')
-			;;
-	esac
-	if [ ! -x ${mybinexec} ]; then
-		echo "WARNING: ${myexec} missing!"
-		exit 127
-	fi
-done
 
 # Header state
 hstate=0
@@ -148,14 +133,14 @@ do
 				# For some drivers, there is often much info in the Subsystem field..
 				ixgbe|sfc|e1000e|igb)
 					MIN_DESCLEN=16
-					DEV_VEND=$(/sbin/lspci -vmm -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ FS=":"; OFS=" " ; if ( $1 == "SVendor" ) { sub(/\t/,"",$2) ;print $2 } }'|${XARGS_CMD})
-					DEV_DESC=$(/sbin/lspci -vmm -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ FS=":"; OFS=" " ; if ( $1 == "SDevice" ) { sub(/\t/,"",$2) ;print $2 } }'|${XARGS_CMD})
+					DEV_VEND=$(${LSPCI_CMD} -vmm -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ FS=":"; OFS=" " ; if ( $1 == "SVendor" ) { sub(/\t/,"",$2) ;print $2 } }'|${XARGS_CMD})
+					DEV_DESC=$(${LSPCI_CMD} -vmm -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ FS=":"; OFS=" " ; if ( $1 == "SDevice" ) { sub(/\t/,"",$2) ;print $2 } }'|${XARGS_CMD})
 					if [ $(echo ${DEV_DESC}|wc -c) -ge ${MIN_DESCLEN} ]; then
 						# Desc is long enough, let's try it
 						DESC="${DEV_VEND} ${DEV_DESC}"
 					else
 						# Desc is too short, fall back
-						DESC=$(/sbin/lspci -D -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ sub(/.*: /,""); print $0}')
+						DESC=$(${LSPCI_CMD} -D -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ sub(/.*: /,""); print $0}')
 					fi
 					;;
 				# known USB driver
@@ -172,7 +157,7 @@ do
 					fi						
 					;;
 				*)
-					DESC=$(/sbin/lspci -D -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ sub(/.*: /,""); print $0}')
+					DESC=$(${LSPCI_CMD} -D -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ sub(/.*: /,""); print $0}')
 					;;
 			esac
 
