@@ -7,7 +7,7 @@
 # Sanity Check
 if [ "x$(uname -s)" != "xLinux" ]; then
 	echo "Not supported on $(uname -s)! Exit!"
-	exit 127
+	exit 125
 fi
 #defines
 WHICH_CMD=/usr/bin/which
@@ -18,6 +18,14 @@ for myexec in awk sed grep cut ip ethtool stty cat head xargs lspci lsusb sort
 do
 	val="$(echo ${myexec}|/usr/bin/tr '[:lower:]' '[:upper:]')_CMD"
 	tmp_exec="$(which ${myexec} 2> /dev/null)"
+
+	# Sanity checks
+	if [ "x${tmp_exec}" = "x" ]; then
+		echo "Unable to find '${myexec}' in PATH! Aborting.."; exit 126
+	fi
+	if [ ! -x ${tmp_exec} ]; then
+		echo "${tmp_exec} not executable! Aborting..."; exit 127
+	fi
 
 	case ${myexec} in
 		sort)
