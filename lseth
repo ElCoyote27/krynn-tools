@@ -25,9 +25,9 @@ do
 			SORT_VER=$(${tmp_exec} --version|${AWK_CMD} '{ if (($1 == "sort" ) && ($2 ~ /GNU/)) { ver=$4 } } END { if (ver != "") print ver ; else print 0 } '|${CUT_CMD} -d. -f1)
 
 			if [ $SORT_VER -ge 8 ]; then
-				mybinexec="/bin/sort -V"
+				mybinexec="${tmp_exec} -V"
 			else
-				mybinexec="/bin/sort"
+				mybinexec="${tmp_exec}"
 			fi
 			;;
 		awk)
