@@ -78,10 +78,8 @@ do
 			DEVI=$(basename ${mydev})
 			# First attempt to detect state
 			STATE=$(${IP_CMD} -o l sh ${DEVI}|${AWK_CMD} \
-				'{ if ($4 == "mtu") {
-					if ($8 ==  "state" ) { if ( $9  == "UP" ) print "up"; else print "(down)" }
-					if ($10 ==  "state" ) { if ( $11  == "UP" ) print "up"; else print "(down)" }
-				}
+			'{
+				if ( $3 ~ /[!<,]UP[!>,]/ ) { print "up" } else { print "(down)" }
 			}')
 			if [ "x${STATE}" = "x" ]; then
 				if [ -f ${mydev}/operstate ]; then
@@ -215,15 +213,8 @@ do
 				fi
 				# First attempt to detect state
 				STATE=$(${IP_CMD} -o l sh ${DEVI}|${AWK_CMD} \
-					'{ if ($4 == "mtu") {
-						if ($8 ==  "state" ) { if (( $9  == "UP" ) || (( $9 == "UNKNOWN" ) && ( $3 ~ /,UP/)))
-									print "up"
-									else print "(down)" }
-						if ($10 ==  "state" ) { if (( $11  == "UP" ) || (( $11 == "UNKNOWN" ) && ( $3 ~ /,UP/)))
-									print "up"
-									else print "(down)" }
-						#if ($10 ==  "state" ) { if ( $11  == "UP" ) print "up"; else print "(down)" }
-					}
+				'{
+					if ( $3 ~ /[!<,]UP[!>,]/ ) { print "up" } else { print "(down)" }
 				}')
 				if [ "x${STATE}" = "x" ]; then
 					if [ -f ${mydev}/operstate ]; then
