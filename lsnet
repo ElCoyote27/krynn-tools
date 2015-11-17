@@ -32,8 +32,13 @@ LDTable = [ [] * 16 for i in range(16) ]
 Outputs = {}
 
 # Startup
+os.environ["PATH"] += os.pathsep + '/sbin'
+os.environ["PATH"] += os.pathsep + '/usr/sbin'
+os.environ["PATH"] += os.pathsep + '/bin'
+os.environ["PATH"] += os.pathsep + '/usr/bin'
+os.environ["PATH"] += os.pathsep + os.path.dirname(os.path.realpath(sys.argv[0]))
 def print_usage():
-	print 'Usage: megaraid-status [--nagios|--debug]'
+	print 'Usage: lsnet [--nagios|--debug]'
 
 # We need root access to query
 if __name__ == '__main__':
@@ -70,11 +75,8 @@ def which(program):
 			return program
 	else:
 		# Add some defaults
-		os.environ["PATH"] += os.pathsep + '/opt/MegaRAID/MegaCli'
-		os.environ["PATH"] += os.pathsep + '/ms/dist/hwmgmt/bin'
-		os.environ["PATH"] += os.pathsep + os.path.dirname(os.path.realpath(sys.argv[0]))
 		for path in os.environ["PATH"].split(os.pathsep):
-			dbgprint ('Looking in PATH '+str(path))
+			dbgprint ('Looking for "'+str(program)+'" in PATH '+str(path))
 			path = path.strip('"')
 			exe_file = os.path.join(path, program)
 			if is_exe(exe_file):
@@ -82,23 +84,23 @@ def which(program):
 				return exe_file
 	return None
 
-# Find MegaCli
-megaclipath = which("MegaCli64")
-if (megaclipath == None):
-	megaclipath = which("MegaCli")
-	if (megaclipath == None):
-		megaclipath = "MegaCli"
-
-# Check binary exists (and +x), if not print an error message
-if os.path.exists(megaclipath) and os.access(megaclipath, os.X_OK):
-	pass
-else:
-	if nestedmode:
-		print 'UNKNOWN - Cannot find '+megaclipath
+# Find various tools
+exectools = [ 'awk', 'sed', 'grep', 'cut', 'ip', 'ethtool', 'stty', 'cat', 'head', 'xargs', 'lspci', 'lsusb', 'sort', 'cksum']
+execpaths = {}
+for myexec in exectools:
+	myexecpath = which(myexec)
+	if (myexecpath == None):
+		dbgprint ('Failed to find "'+str(myexec)+str('" !!!\n'))
+		sys.exit(127)
 	else:
-		print 'Cannot find ' + megaclipath + 'in your PATH. Please install it.'
-	sys.exit(3)
-
+		# Check binary exists (and +x), if not print an error message
+		if os.path.exists(myexecpath) and os.access(myexecpath, os.X_OK):
+			name=str(myexec)+str('_path')
+			execpaths[name]=str(myexecpath)
+			dbgprint (str(name)+' = '+str(execpaths[name]))
+			pass
+		else:
+			sys.exit(3)
 
 #### pdb.set_trace()
 
@@ -170,12 +172,6 @@ def returnROCTemp(output):
 	else:
 		return str('N/A')
 
-def returnArrayNumber(output):
-	i = 0
-	for line in output:
-		if re.match(r'^Virtual Drive:.*$',line.strip()):
-			i += 1
-	return i
 
 def returnHBAPCIInfo(output):
 	busprefix = '0000'
@@ -441,13 +437,15 @@ def returnUnconfDiskInfo(output,controllerid):
 				table.append([ mtype, model, dsize, fstate, speed, temp, enclid, slotid, lsidid])
 	return table
 
-cmd = '%s -adpCount -NoLog' % (megaclipath)
+#cmd = '/bin/ls -1d /sys/class/net/{eth,ib,wl,ww,en,sl,em,p[0-9]}* 2> /dev/null|%s' % (sort_path)
+cmd = '/bin/ls -1d /sys/class/net/{eth,ib,wl,ww,en,sl,em,p[0-9]}* 2> /dev/null|sort'
 output = getOutput(cmd)
+print(output)
 controllernumber = returnControllerNumber(output)
 
 bad = False
 
-# List available controller
+# List available physical interfaces
 if printcontroller:
 	if controllernumber:
 		if not nagiosmode:
@@ -484,241 +482,3 @@ if printcontroller:
 	else:
 		print "No MegaRAID or PERC adapter detected on your system!"
 		exit(1)
-
-if printarray:
-	if not nagiosmode:
-		print '-- Array information --'
-
-	controllerid = 0
-	pcipath = ''
-	diskpath = ''
-	i = 0 ; j = 0
-	mlen = 0
-	rlen = 0
-	while controllerid < controllernumber:
-		arrayid = 0
-
-		cmd = '%s -LDInfo -lall -a%d -NoLog' % (megaclipath, controllerid)
-		output = getOutput(cmd)
-		arraynumber = returnArrayNumber(output)
-		# We need to explore each HBA to look for gaps in LD's
-		ldid = 0 ; ldcount = 0
-		while ldcount < arraynumber:
-			cmd = '%s -LDInfo -l%d -a%d -NoLog' % (megaclipath, ldid, controllerid)
-			output = getOutput(cmd)
-			for line in output:
-				if re.match(r'^Adapter.*Virtual Drive .* Does not Exist',line.strip()):
-					ldid += 1
-				if re.match(r'^Virtual Drive:',line.strip()):
-					LDTable[controllerid].append ( ldid )
-					ldcount += 1
-					ldid += 1
-
-		while arrayid < arraynumber:
-			ldid = LDTable[controllerid][arrayid]
-			cmd = '%s -LDInfo -l%d -a%d -NoLog' % (megaclipath, ldid, controllerid)
-			output = getOutput(cmd)
-			arrayinfo = returnArrayInfo(output, controllerid, ldid)
-			if ( len(arrayinfo[4]) > mlen):
-				mlen = len(arrayinfo[4])
-			if ( len(arrayinfo[1]) > rlen):
-				rlen = len(arrayinfo[1])
-			arrayid += 1
-		controllerid += 1
-
-	controllerid = 0
-	while controllerid < controllernumber:
-		arrayid = 0
-
-		cmd = '%s -AdpGetPciInfo -a%d -NoLog' % (megaclipath, controllerid)
-		output = getOutput(cmd)
-		pcipath = returnHBAPCIInfo(output)
-
-		cmd = '%s -LDInfo -lall -a%d -NoLog' % (megaclipath, controllerid)
-		output = getOutput(cmd)
-		arraynumber = returnArrayNumber(output)
-		while arrayid < arraynumber:
-			ldid = LDTable[controllerid][arrayid]
-			cmd = '%s -LDInfo -l%d -a%d -NoLog' % (megaclipath, ldid, controllerid)
-			output = getOutput(cmd)
-			arrayinfo = returnArrayInfo(output,controllerid, ldid)
-
-			if pcipath:
-				diskprefix = str('/dev/disk/by-path/pci-' + pcipath + '-scsi-0:')
-				for j in range (8):
-					diskpath = diskprefix + str(j) + ':' + str(arrayinfo[7]) + ':0'
-					if os.path.exists(diskpath):
-						arrayinfo[7] = os.path.realpath(diskpath)
-			else:
-				arrayinfo[7] = 'N/A'
-
-			ldfmt = str('%-5s | %-'+str(rlen)+'s | %7s | %7s | %'+str(mlen)+'s | %8s | %8s | %8s | %-12s ')
-			# Header
-			if ( i == 0 ):
-				if not nagiosmode:
-					print ldfmt % ("-- ID", "Type", "Size", "Strpsz", "Flags", "DskCache", "Status", "OS Path", "InProgress" )
-			if not nagiosmode:
-				print ldfmt % (
-					arrayinfo[0],
-					arrayinfo[1],
-					arrayinfo[2],
-					arrayinfo[3],
-					arrayinfo[4],
-					arrayinfo[5],
-					arrayinfo[6],
-					arrayinfo[7],
-					arrayinfo[8])
-			dbgprint("Array state : "+arrayinfo[6])
-			if not arrayinfo[6] == 'Optimal':
-				bad = True
-				nagiosbadarray=nagiosbadarray+1
-			else:
-				nagiosgoodarray=nagiosgoodarray+1
-			arrayid += 1
-			i += 1
-		controllerid += 1
-	if not nagiosmode:
-		print ''
-
-controllerid = 0
-while controllerid < controllernumber:
-	cmd = '%s -PDGetNum -a%d -NoLog' % (megaclipath, controllerid)
-	output = getOutput(cmd)
-	totaldrivenumber += returnTotalDriveNumber(output)
-	controllerid += 1
-
-if totaldrivenumber:
-	if not nagiosmode:
-		print '-- Disk information --'
-
-	i = 0
-	mlen = 0
-	flen = 0
-	controllerid = 0
-	while controllerid < controllernumber:
-		arrayid = 0
-		cmd = '%s -LDInfo -lall -a%d -NoLog' % (megaclipath, controllerid)
-		output = getOutput(cmd)
-		arraynumber = returnArrayNumber(output)
-		#### BUG: -LdPdInfo shows all PD on the adapter, not just for said LD..
-		#### while arrayid <= arraynumber:
-		cmd = '%s -LdPdInfo -a%d -NoLog' % (megaclipath, controllerid)
-		output = getOutput(cmd)
-		arraydisk = returnDiskInfo(output,controllerid)
-		for array in arraydisk:
-			dbgprint('Disk c'+str(controllerid)+'u'+array[0]+'p'+array[1] + ' status : ' + array[5])
-			if not array[5] == 'Online' and not array[5] == 'Online, Spun Up':
-				bad = True
-				nagiosbaddisk=nagiosbaddisk+1
-			else:
-				nagiosgooddisk=nagiosgooddisk+1
-
-		if ( returnWdthFromArrayCol(arraydisk,3) > mlen):
-			mlen = returnWdthFromArrayCol(arraydisk,3)
-		if ( returnWdthFromArrayCol(arraydisk,5) > flen):
-			flen = returnWdthFromArrayCol(arraydisk,5)
-		controllerid += 1
-
-	controllerid = 0
-	while controllerid < controllernumber:
-		arrayid = 0
-
-		cmd = '%s -LDInfo -lall -a%d -NoLog' % (megaclipath, controllerid)
-		output = getOutput(cmd)
-		arraynumber = returnArrayNumber(output)
-		#### BUG: -LdPdInfo shows all PD on the adapter, not just for said LD..
-		#### while arrayid <= arraynumber:
-
-		cmd = '%s -LdPdInfo -a%d -NoLog' % (megaclipath, controllerid)
-		output = getOutput(cmd)
-		arraydisk = returnDiskInfo(output,controllerid)
-
-		# Adjust print format with width computed above
-		drvfmt = "%-7s | %-4s | %-"+str(mlen)+"s | %-8s | %-"+str(flen)+"s | %-8s | %-4s | %-8s | %-8s"
-		for array in arraydisk:
-			# Header
-			if ( i == 0 ):
-				if not nagiosmode:
-					print drvfmt % (
-					"-- ID", "Type", "Drive Model", "Size", "Status", "Speed", "Temp", "Slot ID", "LSI Device ID")
-			# Drive information
-			if not nagiosmode:
-				print drvfmt % (
-					str('c'+str(controllerid)+'u'+array[0]+'p'+array[1]),		# c0p0
-					array[2],							# HDD/SDD
-					array[3],							# Model Information (Variable len)
-					array[4],							# Size
-					array[5],							# Status (Variable len)
-					array[6],							# Speed
-					array[7],							# Temp
-					str('['+array[8]+':'+array[9]+']'),				# Slot ID
-					array[10])							# LSI ID
-			i = i + 1
-		controllerid += 1
-	if not nagiosmode:
-		print ''
-
-controllerid = 0
-while controllerid < controllernumber:
-	cmd = '%s -LdPdInfo -a%d -NoLog' % (megaclipath, controllerid)
-	output = getOutput(cmd)
-	totalunconfdrivenumber += returnUnconfDriveNumber(output)
-	controllerid += 1
-
-if totalunconfdrivenumber:
-	if not nagiosmode:
-		print '-- Unconfigured Disk information --'
-
-	controllerid = 0
-	while controllerid < controllernumber:
-		arrayid = 0
-
-		cmd = '%s -LDInfo -lall -a%d -NoLog' % (megaclipath, controllerid)
-		output = getOutput(cmd)
-		arraynumber = returnArrayNumber(output)
-		#### BUG: -LdPdInfo shows all PD on the adapter, not just for said LD..
-		#### while arrayid <= arraynumber:
-
-		cmd = '%s -PDList -a%d -NoLog' % (megaclipath, controllerid)
-		output = getOutput(cmd)
-		arraydisk = returnUnconfDiskInfo(output,controllerid)
-		for array in arraydisk:
-			dbgprint('Disk c'+str(controllerid)+'uXpY status : ' + array[3])
-			if not array[3] == 'Online' and not array[3] == 'Unconfigured(good), Spun Up':
-				bad = True
-				nagiosbaddisk=nagiosbaddisk+1
-			else:
-				nagiosgooddisk=nagiosgooddisk+1
-
-		mlen = returnWdthFromArrayCol(arraydisk,1)
-		flen = returnWdthFromArrayCol(arraydisk,3)
-
-		# Adjust print format with widths computed above
-		drvfmt = "%-7s | %-4s | %-"+str(mlen)+"s | %-8s | %-"+str(flen)+"s | %-8s | %-4s | %-8s | %-8s"
-		i = 0
-		for array in arraydisk:
-			# Header
-			if ( i == 0 ):
-				if not nagiosmode:
-					print drvfmt % (
-					"-- ID", "Type", "Drive Model", "Size", "Status", "Speed", "Temp", "Slot ID", "LSI Device ID")
-			# Drive information
-			if not nagiosmode:
-				print drvfmt % (
-					str('c'+str(controllerid)+'uXpY'),				# cXpY
-					array[0],							# HDD/SDD
-					array[1],							# Model Information (Variable len)
-					array[2],							# Size
-					array[3],							# Status (Variable len)
-					array[4],							# Speed
-					array[5],							# Temp
-					str('['+array[6]+':'+array[7]+']'),				# Slot ID
-					array[8])							# LSI ID
-			i = i + 1
-		controllerid += 1
-	if not nagiosmode:
-		print ''
-
-if bad:
-	print '\nThere is at least one disk/array in a NOT OPTIMAL state.'
-	sys.exit(1)
