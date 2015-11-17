@@ -14,7 +14,7 @@ WHICH_CMD=/usr/bin/which
 
 # Check for binaries
 export PATH=/sbin:/usr/sbin:/bin:/usr/bin:${PATH}
-for myexec in awk sed grep cut ip ethtool stty cat head xargs lspci lsusb sort
+for myexec in awk sed grep cut ip ethtool stty cat head xargs lspci lsusb sort cksum
 do
 	val="$(echo ${myexec}|/usr/bin/tr '[:lower:]' '[:upper:]')_CMD"
 	tmp_exec="$(which ${myexec} 2> /dev/null)"
@@ -87,12 +87,19 @@ do
 				fi
 			fi
 			if [ -f ${mydev}/speed -a "x${STATE}" = "xup" -a "x$(echo ${DEVI}|${CUT_CMD} -c-2)" != "xib" ]; then
-				tmp=$(cat ${mydev}/speed 2>/dev/null)
+				tmp_speed=$(cat ${mydev}/speed 2>/dev/null)
 			else
-				tmp=$(${ETHTOOL_CMD} ${DEVI} 2>/dev/null|${AWK_CMD} '{ if (( $1 == "Speed:" ) && ( $2 ~ /Mb.s/ )) { sub(/Mb.s/,"",$2) ; print $2}}' )
+				tmp_speed=$(${ETHTOOL_CMD} ${DEVI} 2>/dev/null|${AWK_CMD} '{ if (( $1 == "Speed:" ) && ( $2 ~ /Mb.s/ )) { sub(/Mb.s/,"",$2) ; print $2}}' )
 			fi
-			if [ "x${tmp}" != "x" ]; then
-				SPEED=${tmp}
+			# Did we obtain a value?
+			if [ "x${tmp_speed}" != "x" -a "x${tmp_speed}" != "xN/A" ]; then
+				# Sometimes ${mydev}/speed will report speed as 4294967295, skip it
+				re='^[0-9]+$'
+				if [[ ${tmp_speed} =~ $re  ]]; then
+				if [ ${tmp_speed} -lt 2000000000 ]; then
+					SPEED=${tmp_speed}
+				fi
+				fi
 			fi
 			MTU=$(${IP_CMD} -o l sh ${DEVI}|${AWK_CMD} '{ if ( $4 ~ /mtu/ ) print $5 }')
 			case ${DEVI} in
@@ -243,24 +250,26 @@ do
 					IPADDR="N/A"
 				fi
 				MCADDR=$(${IP_CMD} a l ${DEVI}|${AWK_CMD} '{ if ( $1 ~ /link.ether/ ) print $2 }')
-				tmpdrv=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "driver:" ) print $2 }')
-				if [ "x${tmpdrv}" = "x" ]; then
-					tmpdrv=$(echo ${DEVI}|${SED_CMD} -e 's@[0-9]\{1,\}@@')
+				tmp_drv=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "driver:" ) print $2 }')
+				if [ "x${tmp_drv}" = "x" ]; then
+					tmp_drv="$(echo ${DEVI}|${SED_CMD} -e 's@[0-9]\{1,\}@@')"
 				fi
 
+				# We emulate BASH4 hashed arrays, our index is based on the cksum of the driver's name.
+				myihash=$(echo tmp_drv| ${CKSUM_CMD}|${AWK_CMD} '{ print $1}')
 				# Test if result not already in cache..
-				if [[ "x${alldrvs[${tmpdrv}]}" == "x" ]]; then
-					#### echo "NOT a cached value: ${tmpdrv}: ${alldrvs[${tmpdrv}]}"
-					drvver=$(/sbin/modinfo -F version ${tmpdrv} 2> /dev/null)
+				if [ "x${alldrvs[${myihash}]}" = "x" ]; then
+					#### echo "NOT a cached value: ${tmp_drv}: ${alldrvs[${myihash}]}"
+					drvver=$(/sbin/modinfo -F version ${tmp_drv} 2> /dev/null)
 					if [ "x${drvver}" = "x" ]; then
 						drvver=$(uname -r|${SED_CMD} -e 's@\.el.*@@')
 					fi
-					alldrvs["${tmpdrv}"]="${drvver}"
+					alldrvs["${myihash}"]="${drvver}"
 				else
-					#### echo "Got a cached value: ${tmpdrv}: ${alldrvs[${tmpdrv}]}"
-					drvver=${alldrvs[${tmpdrv}]}
+					#### echo "Got a cached value: ${tmp_drv}: ${alldrvs[${myihash}]}"
+					drvver="${alldrvs[${myihash}]}"
 				fi
-				drvdesc="${tmpdrv} (${drvver})"
+				drvdesc="${tmp_drv} (${drvver})"
 
 				# Cut-off for driver desc is at 24...
 				P1=$(echo ${drvdesc}|${CUT_CMD} -c-24)
@@ -268,7 +277,7 @@ do
 				if [ "x$P2" = "x" ]; then
 					SWDRIVER=$P1
 				else
-					SWDRIVER="$(echo "${tmpdrv} (${drvver})"|${CUT_CMD} -c-22)...)"
+					SWDRIVER="$(echo "${tmp_drv} (${drvver})"|${CUT_CMD} -c-22)...)"
 				fi
 
 				# Printout
@@ -277,4 +286,3 @@ do
 		fi
 	fi
 done|${OFILTER}
-
