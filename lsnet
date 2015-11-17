@@ -10,14 +10,9 @@ import re
 import sys
 import pdb
 
-def_megaclipath = "/opt/MegaRAID/MegaCli/MegaCli64"
-
 # Non-Nagios Mode defaults
+nagiosmode = False
 nestedmode = False
-nagiosgoodarray = 0
-nagiosbadarray = 0
-nagiosgooddisk = 0
-nagiosbaddisk = 0
 
 # Sane defaults
 printarray = True
@@ -97,7 +92,7 @@ for myexec in exectools:
 		if os.path.exists(myexecpath) and os.access(myexecpath, os.X_OK):
 			name=str(myexec)+str('_path')
 			execpaths[name]=str(myexecpath)
-			dbgprint (str(name)+' = '+str(execpaths[name]))
+			dbgprint (str(name)+' = ' + str(execpaths[name]))
 			pass
 		else:
 			sys.exit(3)
@@ -440,10 +435,8 @@ def returnUnconfDiskInfo(output,controllerid):
 #cmd = '/bin/ls -1d /sys/class/net/{eth,ib,wl,ww,en,sl,em,p[0-9]}* 2> /dev/null|%s' % (sort_path)
 cmd = '/bin/ls -1d /sys/class/net/{eth,ib,wl,ww,en,sl,em,p[0-9]}* 2> /dev/null|sort'
 output = getOutput(cmd)
-print(output)
-controllernumber = returnControllerNumber(output)
-
-bad = False
+#controllernumber = returnControllerNumber(output)
+controllernumber = len(output)
 
 # List available physical interfaces
 if printcontroller:
@@ -480,5 +473,5 @@ if printcontroller:
 		if not nagiosmode:
 			print ''
 	else:
-		print "No MegaRAID or PERC adapter detected on your system!"
+		print "No network controller detected on your system!"
 		exit(1)
