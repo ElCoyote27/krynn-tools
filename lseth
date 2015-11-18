@@ -21,10 +21,17 @@ do
 
 	# Sanity checks
 	if [ "x${tmp_exec}" = "x" ]; then
-		echo "Unable to find '${myexec}' in PATH! Aborting.."; exit 126
-	fi
-	if [ ! -x ${tmp_exec} ]; then
-		echo "${tmp_exec} not executable! Aborting..."; exit 127
+		case ${myexec} in
+			lsusb)
+				;;
+			*)
+				echo "Unable to find '${myexec}' in PATH! Aborting.."; exit 126
+				;;
+		esac
+	else
+		if [ ! -x ${tmp_exec} ]; then
+			echo "${tmp_exec} not executable! Aborting..."; exit 127
+		fi
 	fi
 
 	case ${myexec} in
@@ -163,7 +170,7 @@ do
 						sub(/\/.*/,"")
 						print $0 }
 					}')
-					if [ "x${USBPATH}" != "x" ]; then
+					if [ "x${USBPATH}" != "x" -a "x${LSUSB_CMD}" != "x" ]; then
 						DESC=$(${LSUSB_CMD} -s ${USBPATH}|${CUT_CMD} -c34-)
 					else
 						DESC="N/A"
