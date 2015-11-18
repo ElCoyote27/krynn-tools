@@ -257,8 +257,9 @@ do
 				fi
 
 				# We emulate BASH4 hashed arrays, our index is based on the cksum of the driver's name.
-				myihash=$(echo tmp_drv| ${CKSUM_CMD}|${AWK_CMD} '{ print $1}')
+				myihash=$(echo ${tmp_drv}| ${CKSUM_CMD}|${AWK_CMD} '{ print $1}')
 				# Test if result not already in cache..
+				drvver=""
 				if [ "x${alldrvs[${myihash}]}" = "x" ]; then
 					#### echo "NOT a cached value: ${tmp_drv}: ${alldrvs[${myihash}]}"
 					drvver=$(/sbin/modinfo -F version ${tmp_drv} 2> /dev/null)
