@@ -69,7 +69,7 @@ pmaxlen=0
 
 #all_if=$(${AWK_CMD} '{ if ( $1 ~ ":" ) print substr($1, 0, length($1)-1) }' /proc/net/dev)
 pmaxlen=$(cd /sys/class/net; /bin/ls -1d {eth,ib,wl,ww,en,sl,em,p[0-9]}* 2>/dev/null|${AWK_CMD} 'BEGIN { l=0 } { if ( length($1) > l ) { l=length($1) } } END { print l }' )
-PHYS_PRINT_PATTERN="%-$((${pmaxlen}+1))s%7s%7s%6s %-14s%-14s%-24s%-21s%s\n"
+PHYS_PRINT_PATTERN="%-$((${pmaxlen}+1))s%7s%7s%6s %-14s%-16s%-24s%-21s%s\n"
 
 # Physical interfaces
 for mydev in $(/bin/ls -1d /sys/class/net/{eth,ib,wl,ww,en,sl,em,p[0-9]}* 2> /dev/null|${SORT_CMD})
@@ -212,7 +212,7 @@ esac
 
 # 34 = 7 + 7 + 6 + 14 (cf PHYS_PRINT_PATTERN above)
 vmaxlen=$(${AWK_CMD} 'BEGIN { l=0 } { if ( $1 ~ ":" ) { if ( length($1) > l ) { l=length($1) } } } END { print l }' /proc/net/dev )
-VIRT_PRINT_PATTERN="%-$((${vmaxlen}+2))s%6s%6s %-$((${pmaxlen}+34+1-${vmaxlen}))s%-24s%-21s%s\n"
+VIRT_PRINT_PATTERN="%-$((${vmaxlen}+2))s%6s%6s %-$((${pmaxlen}+36+1-${vmaxlen}))s%-24s%-21s%s\n"
 
 # Virtual interfaces
 for mydev in $(ls -1d ${VGLOB}* 2> /dev/null|${SORT_CMD})
@@ -280,13 +280,13 @@ do
 				fi
 				drvdesc="${tmp_drv} (${drvver})"
 
-				# Cut-off for driver desc is at 24...
-				P1=$(echo ${drvdesc}|${CUT_CMD} -c-24)
-				P2=$(echo ${drvdesc}|${CUT_CMD} -c24-)
+				# Cut-off for driver desc is at 26-4...
+				P1=$(echo ${drvdesc}|${CUT_CMD} -c-23)
+				P2=$(echo ${drvdesc}|${CUT_CMD} -c23-)
 				if [ "x$P2" = "x" ]; then
 					SWDRIVER=$P1
 				else
-					SWDRIVER="$(echo "${tmp_drv} (${drvver})"|${CUT_CMD} -c-22)...)"
+					SWDRIVER="$(echo "${tmp_drv} (${drvver})"|${CUT_CMD} -c-22)..)"
 				fi
 
 				# Printout
