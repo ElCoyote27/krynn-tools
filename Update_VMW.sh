@@ -39,8 +39,8 @@ do
 	tgtlib="/usr/lib/vmware/lib/$(basename $mylib)/$(basename $mylib)"
 	if [ ! -f "${tgtlib}.${FCX}" ]; then
 		echo "(II) Backing up to ${tgtlib}.${FCX}..."
-		/bin/cp -afv ${tgtlib} ${tgtlib}.${FCX}
+		/bin/cp -Lfv ${tgtlib} ${tgtlib}.${FCX}
 	fi
 	echo "(II) Replacing ${tgtlib} ..."
- 	/bin/cp -afv ${mylib} ${tgtlib}
+ 	/bin/cp -Lfv ${mylib} ${tgtlib}
 done
