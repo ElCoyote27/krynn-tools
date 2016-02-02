@@ -171,7 +171,7 @@ do
 						print $0 }
 					}')
 					if [ "x${USBPATH}" != "x" -a "x${LSUSB_CMD}" != "x" ]; then
-						DESC=$(${LSUSB_CMD} -s ${USBPATH}|${CUT_CMD} -c34-)
+						DESC=$(${LSUSB_CMD} -s ${USBPATH}|${CUT_CMD} -c34-|${HEAD_CMD} -1)
 					else
 						DESC="N/A"
 					fi						
