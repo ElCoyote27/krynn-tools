@@ -221,7 +221,7 @@ do
 		HWTYPE="${mydev}/type"
 		DEVI=$(basename ${mydev})
 		if [ -f ${HWTYPE} ]; then
-			if [ "x$(cat ${HWTYPE})" = "x1" ]; then
+			if [ "x$(cat ${HWTYPE})" != "x" ]; then
 				if [ $hstate -eq 0 ]; then
 					printf "\n${VIRT_PRINT_PATTERN}" "#VIRT" "STATE" "MTU" "DRIVER" "Active MAC" "IP_Addr" "Description"
 					hstate+=1
