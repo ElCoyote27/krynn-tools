@@ -68,12 +68,13 @@ hstate=0
 pmaxlen=0
 
 #all_if=$(${AWK_CMD} '{ if ( $1 ~ ":" ) print substr($1, 0, length($1)-1) }' /proc/net/dev)
-pmaxlen=$(cd /sys/class/net; /bin/ls -1d {eth,ib,wl,ww,en,sl,em,p[0-9]}* 2>/dev/null|${AWK_CMD} 'BEGIN { l=0 } { if ( length($1) > l ) { l=length($1) } } END { print l }' )
+pmaxlen=$(cd /sys/class/net; /bin/ls -1d {eth,ib,wl,ww,en,sl,em,o,t,p[0-9],q,w}* 2>/dev/null|${AWK_CMD} 'BEGIN { l=0 } { if ( length($1) > l ) { l=length($1) } } END { print l }' )
 PHYS_PRINT_PATTERN="%-$((${pmaxlen}+1))s%7s%7s%6s %-14s%-16s%-24s%-21s%s\n"
 
 # Physical interfaces
-for mydev in $(/bin/ls -1d /sys/class/net/{eth,ib,wl,ww,en,sl,em,p[0-9]}* 2> /dev/null|${SORT_CMD})
+for mydev in $(/bin/ls -1d /sys/class/net/* 2> /dev/null|${SORT_CMD})
 do
+	if [ ! -f /sys/class/net/${mydev}/device ]; then
 	if [ "x${mydev}" != "x" ]; then
 		HWPATH="${mydev}/device"
 		SPEED="N/A"
@@ -108,15 +109,15 @@ do
 				fi
 				fi
 			fi
-			MTU=$(${IP_CMD} -o l sh ${DEVI}|${AWK_CMD} '{ if ( $4 ~ /mtu/ ) print $5 }')
+			MTU=$(${IP_CMD} -o l sh ${DEVI}|${AWK_CMD} '{ if ( $4 ~ /mtu/ ) { print $5 ; exit } }')
 			case ${DEVI} in
-				eth*|wl*|wl*|ww*|en*|sl*|em*|p[0-9]*)
+				eth*|wl*|wl*|ww*|en*|sl*|em*|o*|t*|p[0-9]*|q*|w*)
 					SWDRIVER=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "driver:" ) { print $2}}' )
 					PCIPATH=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "bus-info:" ) { print $2}}' )
 					if [ -f ${mydev}/address ]; then
 						MCADDR=$(cat ${mydev}/address)
 					else
-						MCADDR=$(${IP_CMD} l sh ${DEVI}|${AWK_CMD} '{ if ( $1 ~ /link.ether/ ) print $2 }')
+						MCADDR=$(${IP_CMD} l sh ${DEVI}|${AWK_CMD} '{ if ( ( $1 ~ /link.ether/ ) || ( $1 ~ /link.loopback/ )) print $2 }')
 					fi
 					# Now look for the real MAC if that devi is enslaved and inactive..
 					enslvd=$(${GREP_CMD} -H "Slave Interface: ${DEVI}\$" /proc/net/bonding/bond* 2> /dev/null)
@@ -168,7 +169,8 @@ do
 					USBPATH=$(/bin/ls -1ld ${mydev} |${AWK_CMD} '{ if ( $11 ~ /usb/ ) {
 						sub(/.*usb[0-9]*\//,"")
 						sub(/\/.*/,"")
-						print $0 }
+						print $0
+						exit }
 					}')
 					if [ "x${USBPATH}" != "x" -a "x${LSUSB_CMD}" != "x" ]; then
 						DESC=$(${LSUSB_CMD} -s ${USBPATH}|${CUT_CMD} -c34-|${HEAD_CMD} -1)
@@ -181,7 +183,7 @@ do
 					;;
 			esac
 
-			IPADDR=$(${IP_CMD} -4 a s ${DEVI}|${AWK_CMD} '{ if (( $1 == "inet" ) && ( $6 == "global" ) && ( $7 != "secondary")) print $2}'|${HEAD_CMD} -1)
+			IPADDR=$(${IP_CMD} -o -4 a s ${DEVI}|${AWK_CMD} '{ if (( $3 == "inet" ) && ( $8 == "global" ) && ( $9 != "secondary")) { print $4; exit }}')
 			if [ "x${IPADDR}" = "x" ]; then
 				IPADDR="N/A"
 			fi
@@ -189,6 +191,7 @@ do
 			# Printout
 			printf "${PHYS_PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SPEED}" "${MTU}" "${SWDRIVER}" "${PCIPATH}" "${MCADDR}" "${IPADDR}" "${DESC}"
 		fi
+	fi
 	fi
 done|${OFILTER}
 
@@ -253,11 +256,19 @@ do
 				else
 					DESC="N/A"
 				fi
-				IPADDR=$(${IP_CMD} -4 a s ${DEVI}|${AWK_CMD} '{ if (( $1 == "inet" ) && ( $6 == "global" ) && ( $7 != "secondary")) print $2}'|${HEAD_CMD} -1)
+
+				if [ "x${DEVI}" = "xlo" ]; then
+					IPADDR=$(${IP_CMD} -o -4 a s ${DEVI}|${AWK_CMD} '{ if (( $3 == "inet" ) && ( $6 == "host" )) { print $4; exit }}')
+				else
+					IPADDR=$(${IP_CMD} -o -4 a s ${DEVI}|${AWK_CMD} '{ if (( $3 == "inet" ) && ( $8 == "global" ) && ( $9 != "secondary")) { print $4; exit }}')
+				fi
 				if [ "x${IPADDR}" = "x" ]; then
 					IPADDR="N/A"
 				fi
-				MCADDR=$(${IP_CMD} a l ${DEVI}|${AWK_CMD} '{ if ( $1 ~ /link.ether/ ) print $2 }')
+				MCADDR=$(${IP_CMD} a l ${DEVI}|${AWK_CMD} '{ if (( $1 ~ /link.ether/ ) || ( $1 ~ /link.loopback/ )) { print $2 ; exit }}')
+				if [ "x${MCADDR}" = "x" ]; then
+					MCADDR="N/A"
+				fi
 				tmp_drv=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "driver:" ) print $2 }')
 				if [ "x${tmp_drv}" = "x" ]; then
 					tmp_drv="$(echo ${DEVI}|${SED_CMD} -e 's@[0-9]\{1,\}@@')"
