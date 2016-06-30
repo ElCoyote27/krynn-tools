@@ -9,7 +9,7 @@ if [ "x$(id -u)" != "x0" ]; then
 fi
 
 # Check distro
-KVER=$(uname -r|grep fc23)
+KVER=$(uname -r|grep fc2[34])
 if [ "x${KVER}" = "x" ];then
 	echo "(**) Fedora 23 not detected, Exit!"
 	exit 1
