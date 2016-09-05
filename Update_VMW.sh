@@ -60,7 +60,7 @@ fi
 cat <<'EOF1' > modules.patch
 diff -ur vmw_mods.orig/vmblock-only/linux/control.c vmw_mods/vmblock-only/linux/control.c
 --- vmw_mods.orig/vmblock-only/linux/control.c	2016-04-14 19:31:30.000000000 -0400
-+++ vmw_mods/vmblock-only/linux/control.c	2015-12-14 16:07:48.000000000 -0500
++++ vmw_mods/vmblock-only/linux/control.c	2016-09-05 15:13:34.526217167 -0400
 @@ -208,9 +208,11 @@
     VMBlockSetProcEntryOwner(controlProcMountpoint);
  
@@ -116,7 +116,7 @@ diff -ur vmw_mods.orig/vmblock-only/linux/control.c vmw_mods/vmblock-only/linux/
  }
 diff -ur vmw_mods.orig/vmblock-only/linux/dentry.c vmw_mods/vmblock-only/linux/dentry.c
 --- vmw_mods.orig/vmblock-only/linux/dentry.c	2016-04-14 19:31:30.000000000 -0400
-+++ vmw_mods/vmblock-only/linux/dentry.c	2015-12-14 16:07:48.000000000 -0500
++++ vmw_mods/vmblock-only/linux/dentry.c	2016-09-05 15:13:34.528217197 -0400
 @@ -63,7 +63,7 @@
                     struct nameidata *nd)   // IN: lookup flags & intent
  {
@@ -128,7 +128,7 @@ diff -ur vmw_mods.orig/vmblock-only/linux/dentry.c vmw_mods/vmblock-only/linux/d
  
 diff -ur vmw_mods.orig/vmblock-only/linux/file.c vmw_mods/vmblock-only/linux/file.c
 --- vmw_mods.orig/vmblock-only/linux/file.c	2016-04-14 19:31:30.000000000 -0400
-+++ vmw_mods/vmblock-only/linux/file.c	2015-12-14 16:07:48.000000000 -0500
++++ vmw_mods/vmblock-only/linux/file.c	2016-09-05 15:13:34.528217197 -0400
 @@ -132,7 +132,7 @@
      * and that would try to acquire the inode's semaphore; if the two inodes
      * are the same we'll deadlock.
@@ -175,7 +175,7 @@ diff -ur vmw_mods.orig/vmblock-only/linux/file.c vmw_mods/vmblock-only/linux/fil
  };
 diff -ur vmw_mods.orig/vmblock-only/linux/filesystem.c vmw_mods/vmblock-only/linux/filesystem.c
 --- vmw_mods.orig/vmblock-only/linux/filesystem.c	2016-04-14 19:31:30.000000000 -0400
-+++ vmw_mods/vmblock-only/linux/filesystem.c	2015-12-14 16:07:48.000000000 -0500
++++ vmw_mods/vmblock-only/linux/filesystem.c	2016-09-05 15:13:34.529217212 -0400
 @@ -322,7 +322,7 @@
  {
     VMBlockInodeInfo *iinfo;
@@ -187,7 +187,7 @@ diff -ur vmw_mods.orig/vmblock-only/linux/filesystem.c vmw_mods/vmblock-only/lin
  
 diff -ur vmw_mods.orig/vmblock-only/linux/inode.c vmw_mods/vmblock-only/linux/inode.c
 --- vmw_mods.orig/vmblock-only/linux/inode.c	2016-04-14 19:31:30.000000000 -0400
-+++ vmw_mods/vmblock-only/linux/inode.c	2015-12-14 16:07:48.000000000 -0500
++++ vmw_mods/vmblock-only/linux/inode.c	2016-09-05 15:13:34.530217227 -0400
 @@ -35,10 +35,18 @@
  
  
@@ -310,7 +310,7 @@ diff -ur vmw_mods.orig/vmblock-only/linux/inode.c vmw_mods/vmblock-only/linux/in
 +
 diff -ur vmw_mods.orig/vmblock-only/shared/compat_namei.h vmw_mods/vmblock-only/shared/compat_namei.h
 --- vmw_mods.orig/vmblock-only/shared/compat_namei.h	2016-04-14 19:31:30.000000000 -0400
-+++ vmw_mods/vmblock-only/shared/compat_namei.h	2016-05-25 12:30:06.602993677 -0400
++++ vmw_mods/vmblock-only/shared/compat_namei.h	2016-09-05 15:13:34.530217227 -0400
 @@ -26,21 +26,21 @@
   * struct. They were both replaced with a struct path.
   */
@@ -338,13 +338,13 @@ diff -ur vmw_mods.orig/vmblock-only/shared/compat_namei.h vmw_mods/vmblock-only/
  #endif
 diff -ur vmw_mods.orig/vmmon-only/linux/hostif.c vmw_mods/vmmon-only/linux/hostif.c
 --- vmw_mods.orig/vmmon-only/linux/hostif.c	2016-04-14 19:48:44.000000000 -0400
-+++ vmw_mods/vmmon-only/linux/hostif.c	2016-05-25 10:51:47.677306367 -0400
++++ vmw_mods/vmmon-only/linux/hostif.c	2016-09-05 15:33:03.514131550 -0400
 @@ -1162,8 +1162,13 @@
     int retval;
  
     down_read(&current->mm->mmap_sem);
 +#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 6, 0)
-+   retval = get_user_pages((unsigned long)uvAddr,
++   retval = get_user_pages_remote(current, current->mm, (unsigned long)uvAddr,
 +   numPages, 0, 0, ppages, NULL);
 +#else
     retval = get_user_pages(current, current->mm, (unsigned long)uvAddr,
@@ -356,7 +356,7 @@ diff -ur vmw_mods.orig/vmmon-only/linux/hostif.c vmw_mods/vmmon-only/linux/hosti
     return retval != numPages;
 diff -ur vmw_mods.orig/vmnet-only/netif.c vmw_mods/vmnet-only/netif.c
 --- vmw_mods.orig/vmnet-only/netif.c	2016-04-14 19:48:47.000000000 -0400
-+++ vmw_mods/vmnet-only/netif.c	2016-05-25 12:07:14.959944026 -0400
++++ vmw_mods/vmnet-only/netif.c	2016-09-05 15:25:32.794994960 -0400
 @@ -39,8 +39,8 @@
  #include <linux/proc_fs.h>
  #include <linux/file.h>
@@ -367,15 +367,27 @@ diff -ur vmw_mods.orig/vmnet-only/netif.c vmw_mods/vmnet-only/netif.c
  #include "vmnetInt.h"
  
  
+@@ -465,7 +465,11 @@
+    VNetSend(&netIf->port.jack, skb);
+ 
+    netIf->stats.tx_packets++;
++   #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 7, 0)
++   netif_trans_update(dev);
++   #else
+    dev->trans_start = jiffies;
++   #endif
+ 
+    return 0;
+ }
 diff -ur vmw_mods.orig/vmnet-only/userif.c vmw_mods/vmnet-only/userif.c
 --- vmw_mods.orig/vmnet-only/userif.c	2016-04-14 19:48:47.000000000 -0400
-+++ vmw_mods/vmnet-only/userif.c	2016-05-25 10:50:57.215044260 -0400
++++ vmw_mods/vmnet-only/userif.c	2016-09-05 15:33:55.618911804 -0400
 @@ -113,8 +113,12 @@
     int retval;
  
     down_read(&current->mm->mmap_sem);
 +#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 6, 0)
-+   retval = get_user_pages(addr, 1, 1, 0, &page, NULL);
++   retval = get_user_pages_remote(current, current->mm, addr, 1, 1, 0, &page, NULL);
 +#else
     retval = get_user_pages(current, current->mm, addr,
 -			   1, 1, 0, &page, NULL);
@@ -386,7 +398,7 @@ diff -ur vmw_mods.orig/vmnet-only/userif.c vmw_mods/vmnet-only/userif.c
     if (retval != 1) {
 diff -ur vmw_mods.orig/vmnet-only/vm_device_version.h vmw_mods/vmnet-only/vm_device_version.h
 --- vmw_mods.orig/vmnet-only/vm_device_version.h	2016-04-14 19:48:47.000000000 -0400
-+++ vmw_mods/vmnet-only/vm_device_version.h	2016-05-25 11:59:27.676539573 -0400
++++ vmw_mods/vmnet-only/vm_device_version.h	2016-09-05 15:13:34.532217257 -0400
 @@ -53,7 +53,9 @@
   *    VMware HD Audio codec
   *    VMware HD Audio controller
@@ -414,6 +426,15 @@ cat <<'EOF2' > util.patch
 EOF2
 
 if [ "x${VTEMP_DIR}" != "x" ]; then
+	cd ${VTEMP_DIR} || exit 127
+	for mymod in vmmon vmnet vmblock
+	do
+	if [ -f ${MODS_SRC_DIR}/${mymod}.tar.orig ]; then
+		echo "(WW) Backup ${MODS_SRC_DIR}/${mymod}.tar.orig already exists! Restoring original tar..."
+		/bin/cp -fv ${MODS_SRC_DIR}/${mymod}.tar.orig  ${MODS_SRC_DIR}/${mymod}.tar
+	fi
+	done
+
 	for mymod in vmmon vmnet vmblock
 	do
 		if [ -f ${MODS_SRC_DIR}/${mymod}.tar ]; then
@@ -427,12 +448,12 @@ if [ "x${VTEMP_DIR}" != "x" ]; then
 	for mymod in vmmon vmnet vmblock
 	do
 		if [ -f ${MODS_SRC_DIR}/${mymod}.tar.orig ]; then
-			echo "(WW) Backup ${MODS_SRC_DIR}/${mymod}.tar.orig already exists! Not replacing original tar..."
+			echo "(WW) Backup ${MODS_SRC_DIR}/${mymod}.tar.orig already exists! Not replacing original tar backup..."
 		else
 			echo "(II) Rebuilding ${MODS_SRC_DIR}/${mymod}.tar from ${VTEMP_DIR}/${mymod}-only ..."
 			/bin/cp -Lfv ${MODS_SRC_DIR}/${mymod}.tar{,.orig}
-			/usr/bin/tar cf ${MODS_SRC_DIR}/${mymod}.tar ${mymod}-only || exit 127
 		fi
+		/usr/bin/tar cf ${MODS_SRC_DIR}/${mymod}.tar ${mymod}-only || exit 127
 	done
 
 	# on recent systems VMW uses vmware-fuse-block, no need for vmblock anymore..
