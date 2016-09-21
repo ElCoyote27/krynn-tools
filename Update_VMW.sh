@@ -11,16 +11,47 @@ fi
 # Check distro
 KVER=$(uname -r|grep fc2[34])
 if [ "x${KVER}" = "x" ];then
-	echo "(**) Fedora 23 not detected, Exit!"
+	echo "(**) Fedora 23/24 not detected, Exit!"
 	exit 1
 fi
 
 # Check presence of VMW
-if [ -f /usr/lib/vmware/lib/libvmwareui.so/libvmwareui.so ]; then
-	echo "(II) /usr/lib/vmware/lib/libvmwareui.so/libvmwareui.so present, continuing..."
+if [ -x /usr/bin/vmware-installer ]; then
+	echo "(II) /usr/bin/vmware-installer present, continuing..."
 else
-	echo "(**) VMWare Workstation not detected, exit!"; exit 1
+	echo "(**) VMWare Product installer not detected, exit!"; exit 1
 fi
+
+# Check VMWare Workstation revision
+VMWVER_L=$(/usr/bin/vmware-installer -l|awk '{ if ( $1 ~ /vmware.workstation/ ) print $2 }')
+if [ "x${VMWVER_L}" != "x" ]; then
+
+	# Break down in smaller vars
+	VMWVER_M=$(echo ${VMWVER_L}|cut -d '.' -f-2)
+	VMWVER_S=$(echo ${VMWVER_L}|cut -d '.' -f-1)
+
+	case ${VMWVER_S} in
+	12)
+		case ${VMWVER_M} in
+		12.0|12.1)
+			echo "(II) Version of VMware Workstation (v${VMWVER_M}) supported by this tool, continuing..."
+			;;
+		*)
+			echo "(**) Version of installed VMware Workstation (v${VMWVER_M}) not supported by this tool, exit!"; exit 1
+			;;
+		esac
+		;;
+	11)
+		echo "(II) Version of VMware Workstation (v${VMWVER_S}) supported by this tool, continuing..."
+		;;
+	*)
+		echo "(**) Version of installed VMware Workstation (v${VMWVER_L}) not supported by this tool, exit!"; exit 1
+		;;
+	esac
+else
+	echo "(**) VMWare Workstation not detected (tried 'vmware-installer -l'), exit!"; exit 1
+fi
+
 
 # Force use of VMWare bundled libs
 if [ -f /etc/vmware/bootstrap ]; then
