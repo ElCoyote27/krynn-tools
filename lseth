@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.28 2016/03/15 20:52:52 root Exp root $
+# $Id: lseth,v 1.30 2018/02/09 17:23:59 root Exp root $
 #
 # TODO: rx/tx buffers, MTU, firmware version?
 
