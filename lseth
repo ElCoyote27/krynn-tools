@@ -253,6 +253,13 @@ do
 						fi
 					done
 					DESC="[ ${ESLAVES} ]"
+				elif [ -d ${mydev}/brif ]; then
+					SLAVES=$(cd ${mydev}/brif ; ls )
+					if [ "x${SLAVES}" = "x" ]; then
+						DESC="N/A"
+					else
+						DESC="[ ${SLAVES} ]"
+					fi
 				else
 					DESC="N/A"
 				fi
