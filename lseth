@@ -78,6 +78,13 @@ do
 	if [ "x${mydev}" != "x" ]; then
 		HWPATH="${mydev}/device"
 		SPEED="N/A"
+		STATE=""
+		MTU=0
+		SWDRIVER=""
+		PCIPATH=""
+		MCADDR=""
+		IPADDR=""
+		DESC=""
 		if [ -d ${HWPATH} ]; then
 			if [ $hstate -eq 0 ]; then
 				printf "\n${PHYS_PRINT_PATTERN}" "#PHYS" "STATE" "SPEED" "MTU" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description"
@@ -223,6 +230,13 @@ do
 	if [ "x${mydev}" != "x" ]; then
 		HWTYPE="${mydev}/type"
 		DEVI=$(basename ${mydev})
+		STATE=""
+		MTU=0
+		SWDRIVER=""
+		PCIPATH=""
+		MCADDR=""
+		IPADDR=""
+		DESC=""
 		if [ -f ${HWTYPE} ]; then
 			if [ "x$(cat ${HWTYPE})" != "x" ]; then
 				if [ $hstate -eq 0 ]; then
