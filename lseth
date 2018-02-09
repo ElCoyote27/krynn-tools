@@ -268,7 +268,7 @@ do
 					done
 					DESC="[ ${ESLAVES} ]"
 				elif [ -d ${mydev}/brif ]; then
-					SLAVES=$(cd ${mydev}/brif ; ls )
+					SLAVES=$(cd ${mydev}/brif ; ls 2>/dev/null|xargs )
 					if [ "x${SLAVES}" = "x" ]; then
 						DESC="N/A"
 					else
