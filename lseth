@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.31 2018/02/09 22:08:58 root Exp root $
+# $Id: lseth,v 1.32 2018/02/22 03:54:46 root Exp root $
 #
 # TODO: rx/tx buffers, MTU, firmware version?
 
@@ -281,7 +281,7 @@ do
 				if [ "x${DEVI}" = "xlo" ]; then
 					IPADDR=$(${IP_CMD} -o -4 a s ${DEVI}|${AWK_CMD} '{ if (( $3 == "inet" ) && ( $6 == "host" )) { print $4; exit }}')
 				else
-					IPADDR=$(${IP_CMD} -o -4 a s ${DEVI}|${AWK_CMD} '{ if (( $3 == "inet" ) && ( $8 == "global" ) && ( $9 != "secondary")) { print $4; exit }}')
+					IPADDR=$(${IP_CMD} -o -4 a s ${DEVI}|${AWK_CMD} '{ if (( $3 == "inet" ) && (( $8 == "global" ) || ( $6 == "global" )) && ( $9 != "secondary")) { print $4; exit }}')
 				fi
 				if [ "x${IPADDR}" = "x" ]; then
 					IPADDR="N/A"
