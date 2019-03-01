@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: dellfanctl,v 1.7 2019/01/11 21:58:08 root Exp root $
+# $Id: dellfanctl,v 1.2 2019/02/18 18:39:53 root Exp root $
 #
 # dellfanctl : Reconfigure LSI cache behaviour upon boot/shutdown
 #
@@ -47,13 +47,17 @@ start() {
 	GOOD_MSG="(II) Enabled Manual fan Control on host $(uname -n)"
 	case "$(uname -n)" in
 		thorbardin|daltigoth)
-			# Set for Manual ctrl + 1080rpm
+			# Set to Manual ctrl
 			/usr/bin/ipmitool raw 0x30 0x30 0x01 0x00 > /dev/null 2>&1
-			/usr/bin/ipmitool raw 0x30 0x30 0x02 0xff 0x0d > /dev/null 2>&1
+			# Set to 1080rpm
+			# /usr/bin/ipmitool raw 0x30 0x30 0x02 0xff 0x0d > /dev/null 2>&1
+			# Set to 960rpm
+			/usr/bin/ipmitool raw 0x30 0x30 0x02 0xff 0x0b > /dev/null 2>&1
 			;;
 		palanthas)
-			# Set for Auto ctrl + 1080rpm
+			# Set to Auto ctrl
 			/usr/bin/ipmitool raw 0x30 0x30 0x01 0x01 > /dev/null 2>&1
+			# Set to 1080rpm
 			#/usr/bin/ipmitool raw 0x30 0x30 0x02 0xff 0x0d > /dev/null 2>&1
 			;;
 		*)
@@ -81,13 +85,13 @@ stop() {
 
 	GOOD_MSG="(II) Enabled Auto fan Control on host $(uname -n)"
 	case "$(uname -n)" in
-		thorbardin)
-			# Set back to Auto
-			/usr/bin/ipmitool raw 0x30 0x30 0x01 0x01 > /dev/null 2>&1
-			;;
-		daltigoth)
+		thorbardin|daltigoth)
 			# Set back to Auto
 			#### /usr/bin/ipmitool raw 0x30 0x30 0x01 0x01 > /dev/null 2>&1
+			;;
+		palanthas)
+			# Set back to Auto
+			/usr/bin/ipmitool raw 0x30 0x30 0x01 0x01 > /dev/null 2>&1
 			;;
 		*)
 			# Do nothing
