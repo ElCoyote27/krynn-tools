@@ -10,18 +10,17 @@ fi
 
 # Loop
 
-nrindex=$(/bin/grep -s AnonHugePages /proc/*/smaps|grep -v '0 kB$'|wc -l)
+nrindex=$(/bin/grep -s 'KernelPageSize:.*2048 kB' /proc/*/smaps|grep -v '0 kB$'|wc -l)
 if [ ${nrindex} -eq 0 ]; then
-	printf "No Transparent HugePages found!\n"
+	printf "No HugePages found!\n"
 else
 	if [ $index -eq 0 ]; then
 		# Header
-		printf "${PRINT_PATTERN}" "procname" "PID" "Size" "unit"
+		printf "${PRINT_PATTERN}" "procname (2Mb HugePages)" "PID" "Size" "unit"
 	fi
 
-	(/bin/grep -s AnonHugePages /proc/*/smaps| \
-		grep -v '0 kB$'| \
-		sed -e 's@/proc/@@' -e 's@/smaps:AnonHugePages:@@' | \
+	(/bin/grep -B11 -s 'KernelPageSize:.*2048 kB' /proc/*/smaps| grep '/smaps.Size:'| \
+		sed -e 's@/proc/@@' -e 's@/smaps.Size:@@' | \
 		awk '{ print $2,$3,$1}'| \
 		sort -n | \
 		while read size unit pid
@@ -29,7 +28,7 @@ else
 		if [ -f /proc/${pid}/status ]; then
 			pidname=$(grep -s 'Name:' /proc/${pid}/status|awk '{ print $2}')
 			if [  "$pidname" = "qemu-kvm" ]; then
-				guestname="$(strings -a /proc/${pid}/cmdline |grep -A1 -i '^-name'|tail -1)"
+				guestname="$(strings -a /proc/${pid}/cmdline |grep -A1 -i '^-name'|sed -e 's@,debug.*@@' -e 's@guest=@@'|tail -1)"
 				printf "${PRINT_PATTERN}" "${pidname} [ ${guestname} ]" "(${pid})" "${size}" "${unit}"
 			else
 				printf "${PRINT_PATTERN}" "${pidname}" "(${pid})" "${size}" "${unit}"
