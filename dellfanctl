@@ -1,11 +1,11 @@
 #!/bin/bash
 #
-# $Id: dellfanctl,v 1.2 2019/02/18 18:39:53 root Exp root $
+# $Id: dellfanctl,v 1.11 2019/06/22 02:35:31 root Exp root $
 #
 # dellfanctl : Reconfigure LSI cache behaviour upon boot/shutdown
 #
 # chkconfig: 2345 75 02
-# description:	Enables WB after boot and disables it just before shutdown.
+# description:	Enables manual IPMI Dell Fan control after boot
 #
 
 if [ -r /lib/lsb/init-functions ]; then
@@ -46,19 +46,33 @@ start() {
 	
 	GOOD_MSG="(II) Enabled Manual fan Control on host $(uname -n)"
 	case "$(uname -n)" in
-		thorbardin|daltigoth)
-			# Set to Manual ctrl
+		thorbardin)
+			# Set to Manual
+			/usr/bin/ipmitool raw 0x30 0x30 0x01 0x00 > /dev/null 2>&1
+			# Set to 1200rpm
+			# /usr/bin/ipmitool raw 0x30 0x30 0x02 0xff 0x0f > /dev/null 2>&1
+			# Set to 1320rpm
+			/usr/bin/ipmitool raw 0x30 0x30 0x02 0xff 0x12 > /dev/null 2>&1
+			;;
+		daltigoth)
+			# Set to Manual
 			/usr/bin/ipmitool raw 0x30 0x30 0x01 0x00 > /dev/null 2>&1
 			# Set to 1080rpm
-			# /usr/bin/ipmitool raw 0x30 0x30 0x02 0xff 0x0d > /dev/null 2>&1
-			# Set to 960rpm
 			/usr/bin/ipmitool raw 0x30 0x30 0x02 0xff 0x0b > /dev/null 2>&1
 			;;
 		palanthas)
-			# Set to Auto ctrl
-			/usr/bin/ipmitool raw 0x30 0x30 0x01 0x01 > /dev/null 2>&1
-			# Set to 1080rpm
+			# Set to Manual
+			/usr/bin/ipmitool raw 0x30 0x30 0x01 0x00 > /dev/null 2>&1
+			# Set to 1200rpm (all fans)
 			#/usr/bin/ipmitool raw 0x30 0x30 0x02 0xff 0x0d > /dev/null 2>&1
+			# Back fans get set to 1320rpm
+			/usr/bin/ipmitool raw 0x30 0x30 0x02 0x00 0x10 > /dev/null 2>&1
+			/usr/bin/ipmitool raw 0x30 0x30 0x02 0x01 0x10 > /dev/null 2>&1
+			# Front fans get set to 960rpm
+			/usr/bin/ipmitool raw 0x30 0x30 0x02 0x02 0x08 > /dev/null 2>&1
+			/usr/bin/ipmitool raw 0x30 0x30 0x02 0x03 0x08 > /dev/null 2>&1
+			/usr/bin/ipmitool raw 0x30 0x30 0x02 0x04 0x08 > /dev/null 2>&1
+			/usr/bin/ipmitool raw 0x30 0x30 0x02 0x05 0x08 > /dev/null 2>&1
 			;;
 		*)
 			# Do nothing
@@ -83,13 +97,46 @@ stop() {
 	RETVAL=0
 	dellfancommon 2>&1 |sed -e '/^\r.*$/d' -e '/^$/d' -e '/Exit Code:/d'
 
+	GOOD_MSG="(II) Not stopping manual fan Control on host $(uname -n)"
+	case "$(uname -n)" in
+		palanthas)
+			# Set back to Auto ## Disabled 20190621
+			#/usr/bin/ipmitool raw 0x30 0x30 0x01 0x01 > /dev/null 2>&1
+			;;
+		daltigoth|thorbardin)
+			# Set back to Auto ## Disabled 20190621
+			#/usr/bin/ipmitool raw 0x30 0x30 0x01 0x01 > /dev/null 2>&1
+			;;
+		*)
+			# Do nothing
+			GOOD_MSG="(II) Nothing to do for host $(uname -n)"
+			;;
+	esac
+
+	RETVAL=$(($? + $RETVAL))
+
+	if [ ${RETVAL} -eq 0 ]; then
+		/bin/rm -f ${LOCKFILE} && log_success_msg "${GOOD_MSG}"
+        else
+                rm -f ${LOCKFILE}
+                log_failure_msg "(**) ${prog} returned ${RETVAL}"
+	fi
+
+	return ${RETVAL}
+}
+
+auto() {
+	#
+	RETVAL=0
+	dellfancommon 2>&1 |sed -e '/^\r.*$/d' -e '/^$/d' -e '/Exit Code:/d'
+
 	GOOD_MSG="(II) Enabled Auto fan Control on host $(uname -n)"
 	case "$(uname -n)" in
-		thorbardin|daltigoth)
-			# Set back to Auto
-			#### /usr/bin/ipmitool raw 0x30 0x30 0x01 0x01 > /dev/null 2>&1
-			;;
 		palanthas)
+			# Set back to Auto
+			/usr/bin/ipmitool raw 0x30 0x30 0x01 0x01 > /dev/null 2>&1
+			;;
+		daltigoth|thorbardin)
 			# Set back to Auto
 			/usr/bin/ipmitool raw 0x30 0x30 0x01 0x01 > /dev/null 2>&1
 			;;
@@ -139,7 +186,7 @@ check() {
 
 	CUR_TEMP=$(/usr/bin/sensors |grep '^Core '|sed -e 's@.*:[[:space:]]*+@@' -e 's@°C.*@@' -e 's@\.0$@@'|sort -un|tail -1)
 	if [ ${CUR_TEMP} -ge ${MAX_TEMP} ]; then
-		stop > /dev/null 2>&1
+		auto > /dev/null 2>&1
 		GOOD_MSG="(II) Over temp ( ${CUR_TEMP}C >= ${MAX_TEMP}C ), reverting to Auto fan control"
 	else
 		start > /dev/null 2>&1
@@ -174,6 +221,11 @@ case "$1" in
 	    RETVAL=$?
 	    ;;
 	
+	auto)
+	    auto
+	    RETVAL=$?
+	    ;;
+	
 	status)
 	    status
 	    RETVAL=$?
@@ -192,7 +244,7 @@ case "$1" in
 	    ;;
 	
 	*)
-	    echo $"Usage: $0 {start|stop|restart|status}"
+	    echo $"Usage: $0 {start|stop|auto|restart|status}"
 	    exit 1
 
 esac
