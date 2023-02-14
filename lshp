@@ -27,7 +27,7 @@ else
 	do
 		if [ -f /proc/${pid}/status ]; then
 			pidname=$(egrep -s 'Name:' /proc/${pid}/status|awk '{ print $2}')
-			if [  "$pidname" = "qemu-kvm" ]; then
+			if [[  "$pidname" = "qemu-kvm" || "$pidname" = "qemu-system-x86" ]]; then
 				guestname="$(strings -a /proc/${pid}/cmdline |egrep -A1 -i '^-name'|sed -e 's@,debug.*@@' -e 's@guest=@@'|tail -1)"
 			else
 				guestname=""
@@ -55,7 +55,7 @@ else
 	do
 		if [ -f /proc/${pid}/status ]; then
 			pidname=$(egrep -s 'Name:' /proc/${pid}/status|awk '{ print $2}')
-			if [  "$pidname" = "qemu-kvm" ]; then
+			if [[  "$pidname" = "qemu-kvm" || "$pidname" = "qemu-system-x86" ]]; then
 				guestname="$(strings -a /proc/${pid}/cmdline |egrep -A1 -i '^-name'|sed -e 's@,debug.*@@' -e 's@guest=@@'|tail -1)"
 			else
 				guestname=""
