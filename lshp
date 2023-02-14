@@ -16,7 +16,7 @@ if [ ${nrindex} -eq 0 ]; then
 else
 	if [ $index -eq 0 ]; then
 		# Header
-		printf "${PRINT_PATTERN}" "#### procname (2Mb HugePages)" "PID" "Size" "unit"
+		printf "${PRINT_PATTERN}" "# [procname] (2Mb HugePages)" "PID" "Size" "unit"
 	fi
 
 	(/bin/egrep -B11 -s 'KernelPageSize:[[:space:]]+2048 kB' /proc/*/smaps| grep '/smaps.Size:'| \
@@ -29,10 +29,10 @@ else
 			pidname=$(egrep -s 'Name:' /proc/${pid}/status|awk '{ print $2}')
 			if [  "$pidname" = "qemu-kvm" ]; then
 				guestname="$(strings -a /proc/${pid}/cmdline |egrep -A1 -i '^-name'|sed -e 's@,debug.*@@' -e 's@guest=@@'|tail -1)"
-				printf "${PRINT_PATTERN}" "${pidname} [ ${guestname} ]" "(${pid})" "${size}" "${unit}"
 			else
-				printf "${PRINT_PATTERN}" "${pidname}" "(${pid})" "${size}" "${unit}"
+				guestname=""
 			fi
+			printf "${PRINT_PATTERN}" "${pidname} [ ${guestname} ]" "(${pid})" "${size}" "${unit}"
 		fi
 		index=1
 	done)|sort -u
@@ -44,7 +44,7 @@ if [ ${nrindex} -eq 0 ]; then
 else
 	if [ $index -eq 0 ]; then
 		# Header
-		printf "${PRINT_PATTERN}" "#### procname (1Gb HugePages)" "PID" "Size" "unit"
+		printf "${PRINT_PATTERN}" "# [procname] (1Gb HugePages)" "PID" "Size" "unit"
 	fi
 
 	(/bin/egrep -B11 -s 'KernelPageSize:[[:space:]]+1048576 kB' /proc/*/smaps| egrep '/smaps.Size:'| \
@@ -57,10 +57,10 @@ else
 			pidname=$(egrep -s 'Name:' /proc/${pid}/status|awk '{ print $2}')
 			if [  "$pidname" = "qemu-kvm" ]; then
 				guestname="$(strings -a /proc/${pid}/cmdline |egrep -A1 -i '^-name'|sed -e 's@,debug.*@@' -e 's@guest=@@'|tail -1)"
-				printf "${PRINT_PATTERN}" "${pidname} [ ${guestname} ]" "(${pid})" "${size}" "${unit}"
 			else
-				printf "${PRINT_PATTERN}" "${pidname}" "(${pid})" "${size}" "${unit}"
+				guestname=""
 			fi
+			printf "${PRINT_PATTERN}" "${pidname} [ ${guestname} ]" "(${pid})" "${size}" "${unit}"
 		fi
 		index=1
 	done)|sort -u
