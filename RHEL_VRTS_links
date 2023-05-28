@@ -45,10 +45,11 @@ esac
 
 # myecho function
 myecho() {
+	# if --exec not specified, then print to screen
 	if [ $run_exec -eq 0 ]; then
-		echo $*
+		echo "$*"
 	else
-		$*
+		bash -c "$*"
 	fi
 }
 
@@ -82,18 +83,18 @@ do
 	mysubrev="$(echo ${myker}|cut -d'.' -f1-3|cut -d- -f2)"
 	for i in ${allsubrevs}
 	do
-		if [[ ${i} -gt ${mysubrev} ]]; then
+		if [ ${i} -gt ${mysubrev} ]; then
 			KMOD_BLACKLIST="$(echo $i ${KMOD_BLACKLIST}|xargs)"
 		fi
 	done
 	# Build the KMOD_BLACKLIST_PATTERN pattern..
 	for j in ${KMOD_BLACKLIST}
 	do
-		if [[ "$j" != "" ]]; then
+		if [ "$j" != "" ]; then
 			KMOD_BLACKLIST_PATTERN="($(echo ${KMOD_BLACKLIST}|sed -e 's@ @|@g')"
 		fi
 	done
-	if [[ ${KMOD_BLACKLIST_PATTERN} != "" ]]; then
+	if [ ${KMOD_BLACKLIST_PATTERN} != "" ]; then
 		KMOD_BLACKLIST_PATTERN="${KMOD_BLACKLIST_PATTERN})"
 	else
 		KMOD_BLACKLIST_PATTERN="(FAKE_CONDITION)"
@@ -197,6 +198,20 @@ done
 if [ ${action} -ne 0 ]; then
 	myecho "/usr/bin/dracut --regenerate-all"
 fi
+
+# sync
+if [ ${action} -ne 0 ]; then
+	myecho "/usr/bin/sync -f /lib/modules"
+	myecho "/usr/bin/sync -f /boot"
+fi
+
+# Immediately load modules
+for mymod in vxspec vxio fdd vxportal vxdmp
+do
+	if [ ${action} -ne 0 ]; then
+		myecho "/usr/sbin/modprobe ${mymod}"
+	fi
+done
 
 # override exit code
 exit 0

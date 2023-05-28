@@ -1,0 +1,15 @@
+[Unit]
+Description=Make sure all Infoscale kernel modules are properly installed.
+Conflicts=shutdown.target reboot.target
+After=systemd-remount-fs.service
+Before=veki.service
+ConditionPathExists=/usr/sbin/RHEL_VRTS_links
+ConditionPathIsReadWrite=/lib/modules/
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c '/usr/sbin/RHEL_VRTS_links --exec'
+
+[Install]
+WantedBy=multi-user.target
