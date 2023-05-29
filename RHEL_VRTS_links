@@ -196,13 +196,19 @@ done
 
 # Last one (in case something was missed):
 if [ ${action} -ne 0 ]; then
-	myecho "/usr/bin/dracut --regenerate-all"
+	myecho "/usr/bin/dracut --regenerate-all -o zfs -a lvm -a dm"
 fi
 
 # sync
 if [ ${action} -ne 0 ]; then
 	myecho "/usr/bin/sync -f /lib/modules"
 	myecho "/usr/bin/sync -f /boot"
+fi
+
+# label for loading kmods
+if [ ${action} -ne 0 ]; then
+	myecho "/sbin/semanage fcontext -a -t modules_object_t -s system_u \"/etc/vx/kernel(/.*)?\""
+	myecho "/sbin/restorecon -rFv /etc/vx/kernel"
 fi
 
 # Immediately load modules
