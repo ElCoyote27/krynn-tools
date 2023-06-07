@@ -94,7 +94,7 @@ do
 			KMOD_BLACKLIST_PATTERN="($(echo ${KMOD_BLACKLIST}|sed -e 's@ @|@g')"
 		fi
 	done
-	if [ ${KMOD_BLACKLIST_PATTERN} != "" ]; then
+	if [ "${KMOD_BLACKLIST_PATTERN}" != "" ]; then
 		KMOD_BLACKLIST_PATTERN="${KMOD_BLACKLIST_PATTERN})"
 	else
 		KMOD_BLACKLIST_PATTERN="(FAKE_CONDITION)"
@@ -205,11 +205,17 @@ if [ ${action} -ne 0 ]; then
 	myecho "/usr/bin/sync -f /boot"
 fi
 
-# label for loading kmods
-if [ ${action} -ne 0 ]; then
-	myecho "/sbin/semanage fcontext -a -t modules_object_t -s system_u \"/etc/vx/kernel(/.*)?\""
-	myecho "/sbin/restorecon -rFv /etc/vx/kernel"
-fi
+# label for loading kmods, copy from /lib/modules
+for vx_mod_dir in /etc/vx/kernel /opt/VRTSamf/modules /opt/VRTSgab/modules /opt/VRTSllt/modules /opt/VRTSvxfen/modules /opt/VRTSvcs/rac/modules
+do
+	if [ -d ${vx_mod_dir} ]; then
+		semanage fcontext -C -l|grep -q "^${vx_mod_dir} = /lib/modules"
+		if [ $? -ne 0 ]; then
+			myecho "semanage fcontext -a -e /lib/modules ${vx_mod_dir}"
+			myecho "/sbin/restorecon -rFv ${vx_mod_dir}"
+		fi
+	fi
+done
 
 # Immediately load modules
 for mymod in vxspec vxio fdd vxportal vxdmp
