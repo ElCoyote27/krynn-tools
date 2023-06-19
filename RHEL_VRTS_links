@@ -168,8 +168,12 @@ do
 			for kmod_pattern in \
 				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*el[7-9].x86_64-nonrdma" \
 				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*el[7-9].x86_64" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*el[7-9]_[0-9]*.x86_64-nonrdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*el[7-9]_[0-9]*.x86_64" \
 				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9].x86_64-nonrdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9].x86_64"
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9].x86_64" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9]_[0-9]*.x86_64-nonrdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9]_[0-9]*.x86_64"
 			do
 				srcmod=$( ls -1 $(echo ${kmod_pattern}) 2>/dev/null|sort -n -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
 				if [ "x${srcmod}" != "x" ]; then
