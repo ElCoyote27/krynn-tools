@@ -79,7 +79,7 @@ do
 	fi
 
 	# Populate KMOD_BLACKLIST (Import if we're running EUS and VRTS has more recent kmods)
-	allsubrevs="$(ls -1  /etc/vx/kernel/*.ko.*|sed -e 's/^.*\.ko\.//'|sort -u |cut -d- -f2|sort -n|cut -d. -f1|xargs)"
+	allsubrevs="$(ls -1  /etc/vx/kernel/*.ko.*|sed -e 's/^.*\.ko\.//'|sort -u |cut -d- -f2|sort -V|cut -d. -f1|xargs)"
 	mysubrev="$(echo ${myker}|cut -d'.' -f1-3|cut -d- -f2)"
 	for i in ${allsubrevs}
 	do
@@ -104,9 +104,9 @@ do
 	for ksub in veki vxglm vxgms vxodm
 	do
 		# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
-		srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -n -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+		srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
 		if [ "x${srcmod}" = "x" ]; then
-			srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KREV}-* 2>/dev/null|sort -n -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+			srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KREV}-* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
 		fi
 		if [ "x${srcmod}" != "x" ]; then
 			if [ ! -d ${TOP_DIR}/veritas/${ksub} ]; then
@@ -126,9 +126,9 @@ do
 	for ksub in vxfs fdd vxportal vxcafs
 	do
 		# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
-		srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -n -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+		srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
 		if [ "x${srcmod}" = "x" ]; then
-			srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KREV}-* 2>/dev/null|sort -n -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+			srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KREV}-* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
 		fi
 		if [ "x${srcmod}" != "x" ]; then
 			if [ ${force} -eq 1 -o ! -s ${TOP_DIR}/veritas/vxfs/${ksub}.ko ]; then
@@ -147,9 +147,9 @@ do
 		dmpinv dmpjbod dmpnalsi dmpsvc #dmpkove
 	do
 		# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
-		srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -n -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+		srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
 		if [ "x${srcmod}" = "x" ]; then
-			srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KREV}-* 2>/dev/null|sort -n -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+			srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KREV}-* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
 		fi
 		if [ "x${srcmod}" != "x" ]; then
 			if [ ${force} -eq 1 -o ! -s ${TOP_DIR}/veritas/vxvm/${ksub}.ko ]; then
@@ -175,7 +175,7 @@ do
 				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9]_[0-9]*.x86_64-nonrdma" \
 				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9]_[0-9]*.x86_64"
 			do
-				srcmod=$( ls -1 $(echo ${kmod_pattern}) 2>/dev/null|sort -n -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+				srcmod=$( ls -1 $(echo ${kmod_pattern}) 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
 				if [ "x${srcmod}" != "x" ]; then
 					export srcmod
 					break
