@@ -13,6 +13,10 @@
 PATH_SCRIPT="$(cd $(/usr/bin/dirname $(whence -- $0 || echo $0));pwd)"
 export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/local/sbin:/usr/local/bin:${PATH_SCRIPT}
 
+# Step 1
+[ "root" != "$USER" ] && exec sudo $0 "$@"
+
+#
 EXEC_FILE=/root/DKMS_VRTS.sh
 #
 force=0
@@ -142,6 +146,7 @@ do
 	if [ ! -d ${TOP_DIR}/veritas/vxvm ]; then
 		test -d ${TOP_DIR}/veritas/vxvm || myecho "/bin/mkdir -p ${TOP_DIR}/veritas/vxvm"
 	fi
+	# we exclude dmpkove due to: dmpkove.ko needs unknown symbol kdsa_ext_ioctl
 	for ksub in vxdmp vxio vxspec \
 		dmpaaa dmpaa dmpalua dmpapf dmpapg dmpap \
 		dmpinv dmpjbod dmpnalsi dmpsvc #dmpkove
