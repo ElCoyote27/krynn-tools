@@ -4,28 +4,28 @@
 PRINT_PATTERN="%-38s %-10s : %s %s\n"
 typeset -i index=0
 
-if [ $UID -ne 0 ]; then
+if [[ $UID -ne 0 ]]; then
 	echo "Run $0 as root!" ; exit 127
 fi
 
 # Loop
 
-nrindex=$(/bin/egrep -s 'KernelPageSize:[[:space:]]+2048 kB' /proc/*/smaps|egrep -v '0 kB$'|wc -l)
-if [ ${nrindex} -eq 0 ]; then
+# find smaps for procs with 2Mb hugepages.
+huge_pid_list=$(/bin/egrep -s 'KernelPageSize:[[:space:]]+2048 kB' /proc/*/smaps|cut -d: -f1|xargs)
+if [[ -z ${huge_pid_list} ]]; then
 	printf "#### No 2Mb HugePages found!\n"
 else
-	if [ $index -eq 0 ]; then
+	if [[ $index -eq 0 ]]; then
 		# Header
 		printf "${PRINT_PATTERN}" "# [procname] (2Mb HugePages)" "PID" "Size" "unit"
 	fi
 
-	(/bin/egrep -B11 -s 'KernelPageSize:[[:space:]]+2048 kB' /proc/*/smaps| grep '/smaps.Size:'| \
+	(/bin/egrep -B11 -s 'KernelPageSize:[[:space:]]+2048 kB' ${huge_pid_list}| grep '/smaps.Size:'| \
 		sed -e 's@/proc/@@' -e 's@/smaps.Size:@@' | \
 		awk '{ print $2,$3,$1}'| \
-		sort -n | \
 		while read size unit pid
 	do
-		if [ -f /proc/${pid}/status ]; then
+		if [[ -f /proc/${pid}/status ]]; then
 			pidname=$(egrep -s 'Name:' /proc/${pid}/status|awk '{ print $2}')
 			if [[  "$pidname" = "qemu-kvm" || "$pidname" = "qemu-system-x86" ]]; then
 				guestname="$(strings -a /proc/${pid}/cmdline |egrep -A1 -i '^-name'|sed -e 's@,debug.*@@' -e 's@guest=@@'|tail -1)"
@@ -38,22 +38,22 @@ else
 	done)|sort -u
 fi
 
-nrindex=$(/bin/egrep -s 'KernelPageSize:[[:space:]]+1048576 kB' /proc/*/smaps|egrep -v '0 kB$'|wc -l)
-if [ ${nrindex} -eq 0 ]; then
+# find smaps for procs with 1Gb hugepages.
+huge_pid_list=$(/bin/egrep -s 'KernelPageSize:[[:space:]]+1048576 kB' /proc/*/smaps|cut -d: -f1|xargs)
+if [[ -z ${huge_pid_list} ]]; then
 	printf "#### No 1Gb HugePages found!\n"
 else
-	if [ $index -eq 0 ]; then
+	if [[ $index -eq 0 ]]; then
 		# Header
 		printf "${PRINT_PATTERN}" "# [procname] (1Gb HugePages)" "PID" "Size" "unit"
 	fi
 
-	(/bin/egrep -B11 -s 'KernelPageSize:[[:space:]]+1048576 kB' /proc/*/smaps| egrep '/smaps.Size:'| \
+	(/bin/egrep -B11 -s 'KernelPageSize:[[:space:]]+1048576 kB' ${huge_pid_list}| grep '/smaps.Size:'| \
 		sed -e 's@/proc/@@' -e 's@/smaps.Size:@@' | \
 		awk '{ print $2,$3,$1}'| \
-		sort -n | \
 		while read size unit pid
 	do
-		if [ -f /proc/${pid}/status ]; then
+		if [[ -f /proc/${pid}/status ]]; then
 			pidname=$(egrep -s 'Name:' /proc/${pid}/status|awk '{ print $2}')
 			if [[  "$pidname" = "qemu-kvm" || "$pidname" = "qemu-system-x86" ]]; then
 				guestname="$(strings -a /proc/${pid}/cmdline |egrep -A1 -i '^-name'|sed -e 's@,debug.*@@' -e 's@guest=@@'|tail -1)"
@@ -65,4 +65,3 @@ else
 		index=1
 	done)|sort -u
 fi
-
