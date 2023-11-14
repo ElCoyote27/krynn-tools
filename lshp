@@ -11,7 +11,7 @@ fi
 # Loop
 
 # find smaps for procs with 2Mb hugepages.
-huge_pid_list=$(/bin/grep -sF 'KernelPageSize:[[:space:]]+2048 kB' /proc/*/smaps|cut -d: -f1|xargs)
+huge_pid_list=$(/bin/egrep -s 'KernelPageSize:[[:space:]]+2048 kB' /proc/*/smaps|cut -d: -f1|xargs)
 if [[ -z ${huge_pid_list} ]]; then
 	printf "#### No 2Mb HugePages found!\n"
 else
