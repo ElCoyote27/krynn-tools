@@ -16,7 +16,7 @@ if [[ -z ${huge_pid_list} ]]; then
 else
 	if [[ $index -eq 0 ]]; then
 		# Header
-		printf "${PRINT_PATTERN}" "procname" "PID" "Size" "unit"
+		printf "${PRINT_PATTERN}" "# [procname]" "PID" "Size" "unit"
 	fi
 
 	(/bin/grep -s AnonHugePages ${huge_pid_list}| \
