@@ -8,8 +8,10 @@ if [[ $UID -ne 0 ]]; then
 	echo "Run $0 as root!" ; exit 127
 fi
 
-# Loop
+# Loop start
 
+
+if [[ -f /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages && $(cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages) != 0 ]]; then
 # find smaps for procs with 2Mb hugepages.
 huge_pid_list=$(/bin/egrep -s 'KernelPageSize:[[:space:]]+2048 kB' /proc/*/smaps|cut -d: -f1|xargs)
 if [[ -z ${huge_pid_list} ]]; then
@@ -37,8 +39,12 @@ else
 		index=1
 	done)|sort -u
 fi
+else
+	printf "#### No 2Mb HugePages found!\n"
+fi
 
 # find smaps for procs with 1Gb hugepages.
+if [[ -f /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages && $(cat /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages) != 0 ]]; then
 huge_pid_list=$(/bin/egrep -s 'KernelPageSize:[[:space:]]+1048576 kB' /proc/*/smaps|cut -d: -f1|xargs)
 if [[ -z ${huge_pid_list} ]]; then
 	printf "#### No 1Gb HugePages found!\n"
@@ -64,4 +70,7 @@ else
 		fi
 		index=1
 	done)|sort -u
+fi
+else
+	printf "#### No 1Gb HugePages found!\n"
 fi
