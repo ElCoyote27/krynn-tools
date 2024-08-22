@@ -105,7 +105,7 @@ do
 	fi
 
 	# Generic modules
-	for ksub in veki vxglm vxgms vxodm
+	for ksub in veki vxglm vxgms vxodm storageapi
 	do
 		# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
 		srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
@@ -149,7 +149,8 @@ do
 	# we exclude dmpkove due to: dmpkove.ko needs unknown symbol kdsa_ext_ioctl
 	for ksub in vxdmp vxio vxspec \
 		dmpaaa dmpaa dmpalua dmpapf dmpapg dmpap \
-		dmpinv dmpjbod dmpnalsi dmpsvc #dmpkove
+		dmpCLARiiON dmpEngenio dmphuawei dmpvmax \
+		dmpinv dmpjbod dmpnalsi dmpnvme dmpsun7x10alua dmpsvc #dmpkove
 	do
 		# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
 		srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
@@ -164,21 +165,55 @@ do
 		fi
 	done
 
-	# VCS
+	# VCS (gab llt vxfen amf)
 	for ksub in gab llt vxfen amf
 	do
 		LOCAL_KMOD_DIR="/opt/VRTS${ksub}/modules"
 		if [ -d ${LOCAL_KMOD_DIR} ]; then
 			# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
 			for kmod_pattern in \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*el[7-9].x86_64-nonrdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*el[7-9].x86_64" \
 				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*el[7-9]_[0-9]*.x86_64-nonrdma" \
 				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*el[7-9]_[0-9]*.x86_64" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9].x86_64-nonrdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9].x86_64" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*el[7-9].x86_64-nonrdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*el[7-9].x86_64" \
 				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9]_[0-9]*.x86_64-nonrdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9]_[0-9]*.x86_64"
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9]_[0-9]*.x86_64" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9].x86_64-nonrdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9].x86_64"
+			do
+				srcmod=$( ls -1 $(echo ${kmod_pattern}) 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+				if [ "x${srcmod}" != "x" ]; then
+					export srcmod
+					break
+				fi
+			done
+			if [ "x${srcmod}" != "x" ]; then
+				if [ ! -d ${TOP_DIR}/veritas/vcs ]; then
+					test -d ${TOP_DIR}/veritas/vcs || myecho "/bin/mkdir -p ${TOP_DIR}/veritas/vcs"
+				fi
+				if [ ${force} -eq 1 -o ! -f ${TOP_DIR}/veritas/vcs/${ksub}.ko ]; then
+					myecho "/bin/cp -aLf ${srcmod} ${TOP_DIR}/veritas/vcs/${ksub}.ko"
+					action=$(( action + 1))
+				fi
+			fi
+		fi
+	done
+
+	# VCSmm (gab llt vxfen amf)
+	for ksub in vcsmm
+	do
+		LOCAL_KMOD_DIR="/opt/VRTSvcs/rac/modules"
+		if [ -d ${LOCAL_KMOD_DIR} ]; then
+			# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
+			for kmod_pattern in \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*el[7-9]_[0-9]*.x86_64-nonrdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*el[7-9]_[0-9]*.x86_64" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*el[7-9].x86_64-nonrdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*el[7-9].x86_64" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9]_[0-9]*.x86_64-nonrdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9]_[0-9]*.x86_64" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9].x86_64-nonrdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*el[7-9].x86_64"
 			do
 				srcmod=$( ls -1 $(echo ${kmod_pattern}) 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
 				if [ "x${srcmod}" != "x" ]; then
