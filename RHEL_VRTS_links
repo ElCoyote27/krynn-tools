@@ -1,5 +1,5 @@
 #!/bin/bash
-# $Id: DKMS_VRTS_links.sh,v 1.22 2019/03/06 21:55:47 root Exp $
+# $Id: RHEL_VRTS_links.sh,v 1.22 2019/03/06 21:55:47 root Exp $
 
 # history:
 # 20180524: commented out amf as it is not needed under /lib/modules (trying to solve thor's crashes).
@@ -17,7 +17,7 @@ export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/local/sbin:/usr/local/bin:${PATH_
 [ "root" != "$USER" ] && exec sudo $0 "$@"
 
 #
-EXEC_FILE=/root/DKMS_VRTS.sh
+EXEC_FILE=/root/RHEL_VRTS.sh
 #
 force=0
 silent=0
@@ -193,6 +193,7 @@ do
 				fi
 				if [ ${force} -eq 1 -o ! -f ${TOP_DIR}/veritas/vcs/${ksub}.ko ]; then
 					myecho "/bin/cp -aLf ${srcmod} ${TOP_DIR}/veritas/vcs/${ksub}.ko"
+					myecho "/bin/chmod 0755 ${srcmod} ${TOP_DIR}/veritas/vcs/${ksub}.ko"
 					action=$(( action + 1))
 				fi
 			fi
@@ -227,6 +228,7 @@ do
 				fi
 				if [ ${force} -eq 1 -o ! -f ${TOP_DIR}/veritas/vcs/${ksub}.ko ]; then
 					myecho "/bin/cp -aLf ${srcmod} ${TOP_DIR}/veritas/vcs/${ksub}.ko"
+					myecho "/bin/chmod 0755 ${srcmod} ${TOP_DIR}/veritas/vcs/${ksub}.ko"
 					action=$(( action + 1))
 				fi
 			fi
