@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# $Id: lseth,v 1.32 2018/02/22 03:54:46 root Exp root $
+# $Id: lseth,v 1.33 2024/11/14 03:54:46 root Exp $
 #
 # TODO: rx/tx buffers, MTU, firmware version?
 
@@ -69,7 +69,7 @@ pmaxlen=0
 
 #all_if=$(${AWK_CMD} '{ if ( $1 ~ ":" ) print substr($1, 0, length($1)-1) }' /proc/net/dev)
 pmaxlen=$(cd /sys/class/net; /bin/ls -1d {eth,ib,wl,ww,en,sl,em,o,t,p[0-9],q,w}* 2>/dev/null|${AWK_CMD} 'BEGIN { l=0 } { if ( length($1) > l ) { l=length($1) } } END { print l }' )
-PHYS_PRINT_PATTERN="%-$((${pmaxlen}+1))s%7s%7s%6s %-14s%-16s%-24s%-21s%s\n"
+PHYS_PRINT_PATTERN="%-$((${pmaxlen}+1))s%7s%7s%6s %-12s%-24s%-19s%-18s%s\n"
 
 # Physical interfaces
 for mydev in $(/bin/ls -1d /sys/class/net/* 2> /dev/null|${SORT_CMD})
@@ -171,8 +171,8 @@ do
 						DESC=$(${LSPCI_CMD} -D -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ sub(/.*: /,""); print $0}')
 					fi
 					;;
-				# known USB driver
-				ax88179_178a)
+				# known USB drivers
+				aqc111|asix|ax88179_178a|catc|cdc_eem|cdc_ether|cdc_mbim|cdc_ncm|cdc_subset|ch9200|cx82310_eth|dm9601|gl620a|hso|huawei_cdc_ncm|int51x1|ipheth|kalmia|kaweth|lan78xx|lg-vl600|mcs7830|net1080|pegasus|plusb|qmi_wwan|r8152|r8153_ecm|rndis_host|rtl8150|sierra_net|smsc75xx|smsc95xx|sr9700|usbnet|zaurus)
 					USBPATH=$(/bin/ls -1ld ${mydev} |${AWK_CMD} '{ if ( $11 ~ /usb/ ) {
 						sub(/.*usb[0-9]*\//,"")
 						sub(/\/.*/,"")
@@ -180,10 +180,12 @@ do
 						exit }
 					}')
 					if [ "x${USBPATH}" != "x" -a "x${LSUSB_CMD}" != "x" ]; then
-						DESC=$(${LSUSB_CMD} -s ${USBPATH}|${CUT_CMD} -c34-|${HEAD_CMD} -1)
+						VID=$(udevadm info --no-pager ${mydev} --json=pretty|jq -r .ID_USB_VENDOR_ID)
+						PID=$(udevadm info --no-pager ${mydev} --json=pretty|jq -r .ID_USB_MODEL_ID)
+						DESC=$(${LSUSB_CMD} -d ${VID}:${PID}|sed -e "s@.*${VID}:${PID} @@")
 					else
 						DESC="N/A"
-					fi						
+					fi
 					;;
 				*)
 					DESC=$(${LSPCI_CMD} -D -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ sub(/.*: /,""); print $0}')
