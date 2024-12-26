@@ -180,8 +180,8 @@ do
 						exit }
 					}')
 					if [ "x${USBPATH}" != "x" -a "x${LSUSB_CMD}" != "x" ]; then
-						VID=$(udevadm info --no-pager ${mydev} --json=pretty|jq -r .ID_USB_VENDOR_ID)
-						PID=$(udevadm info --no-pager ${mydev} --json=pretty|jq -r .ID_USB_MODEL_ID)
+						VID=$(udevadm info ${mydev} -x|egrep -w '(ID_USB_VENDOR_ID|ID_USB_VENDOR_ID)'|cut -d= -f2)
+						PID=$(udevadm info ${mydev} -x|egrep -w '(ID_USB_MODEL_ID|ID_MODEL_ID)'|cut -d= -f2)
 						DESC=$(${LSUSB_CMD} -d ${VID}:${PID}|sed -e "s@.*${VID}:${PID} @@")
 					else
 						DESC="N/A"
