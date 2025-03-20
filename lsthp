@@ -10,7 +10,7 @@ fi
 
 # Loop
 
-huge_pid_list=$(/bin/egrep -s 'AnonHugePages:' /proc/*/smaps|grep -v ' 0 kB$'|cut -d: -f1|xargs)
+huge_pid_list=$(/bin/egrep -H -s 'AnonHugePages:' /proc/*/smaps|grep -v ' 0 kB$'|cut -d: -f1|xargs)
 if [[ -z ${huge_pid_list} ]]; then
 	printf "No Transparent HugePages found!\n"
 else
@@ -19,7 +19,7 @@ else
 		printf "${PRINT_PATTERN}" "# [procname]" "PID" "Size" "unit"
 	fi
 
-	(/bin/grep -s AnonHugePages ${huge_pid_list}| \
+	(/bin/grep -H -s AnonHugePages ${huge_pid_list}| \
 		grep -v '0 kB$'| \
 		sed -e 's@/proc/@@' -e 's@/smaps:AnonHugePages:@@' | \
 		awk '{ print $2,$3,$1}'| \
