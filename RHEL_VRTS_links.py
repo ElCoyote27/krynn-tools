@@ -59,12 +59,19 @@ class VRTSLinker:
             print(command)
         else:
             try:
-                result = subprocess.run(command, shell=True, check=True,
+                result = subprocess.run(command, shell=True, check=False,
                                       capture_output=False)
-                return result.returncode == 0
-            except subprocess.CalledProcessError as e:
-                print(f"Command failed: {command}")
-                return False
+                
+                # Handle specific commands with acceptable non-zero exit codes
+                if "dracut" in command and result.returncode == 3:
+                    self.debug_print(f"dracut returned exit code 3 (no work needed) - this is OK")
+                    return True
+                elif result.returncode != 0:
+                    print(f"Command failed with exit code {result.returncode}: {command}")
+                    return False
+                else:
+                    return True
+                    
             except Exception as e:
                 print(f"Error executing command: {command} - {e}")
                 return False

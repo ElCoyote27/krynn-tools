@@ -69,7 +69,7 @@ pmaxlen=0
 
 #all_if=$(${AWK_CMD} '{ if ( $1 ~ ":" ) print substr($1, 0, length($1)-1) }' /proc/net/dev)
 pmaxlen=$(cd /sys/class/net; /bin/ls -1d {eth,ib,wl,ww,en,sl,em,o,t,p[0-9],q,w}* 2>/dev/null|${AWK_CMD} 'BEGIN { l=0 } { if ( length($1) > l ) { l=length($1) } } END { print l }' )
-PHYS_PRINT_PATTERN="%-$((${pmaxlen}+1))s%7s%7s%6s %-12s%-24s%-19s%-18s%s\n"
+PHYS_PRINT_PATTERN="%-$((${pmaxlen}+1))s%7s%7s%6s %-16s%-24s%-19s%-18s%s\n"
 
 # Physical interfaces
 for mydev in $(/bin/ls -1d /sys/class/net/* 2> /dev/null|${SORT_CMD})
@@ -180,8 +180,8 @@ do
 						exit }
 					}')
 					if [ "x${USBPATH}" != "x" -a "x${LSUSB_CMD}" != "x" ]; then
-						VID=$(udevadm info ${mydev} -x|egrep -w '(ID_USB_VENDOR_ID|ID_USB_VENDOR_ID)'|cut -d= -f2)
-						PID=$(udevadm info ${mydev} -x|egrep -w '(ID_USB_MODEL_ID|ID_MODEL_ID)'|cut -d= -f2)
+						VID=$(udevadm info ${mydev} -x|egrep -w '(ID_USB_VENDOR_ID|ID_USB_VENDOR_ID)'|cut -d= -f2|head -1)
+						PID=$(udevadm info ${mydev} -x|egrep -w '(ID_USB_MODEL_ID|ID_MODEL_ID)'|cut -d= -f2|head -1)
 						DESC=$(${LSUSB_CMD} -d ${VID}:${PID}|sed -e "s@.*${VID}:${PID} @@")
 					else
 						DESC="N/A"
