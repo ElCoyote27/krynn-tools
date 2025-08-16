@@ -99,18 +99,16 @@ class VRTSLinker:
             print("Error: Could not query installed kernels")
             return []
 
-    def get_blacklist_pattern(self, kernel_version: str) -> str:
-        """Build blacklist pattern for kernel modules
+    def get_blacklist_subrevs(self, kernel_version: str) -> set:
+        """Get set of subrevision numbers to blacklist for kernel modules
 
-        This replicates the bash logic:
-        allsubrevs="$(ls -1  /etc/vx/kernel/*.ko.*|sed -e 's/^.*\.ko\.//'|sort -u |cut -d- -f2|sort -V|cut -d. -f1|xargs)"
-        mysubrev="$(echo ${myker}|cut -d'.' -f1-3|cut -d- -f2)"
+        This replicates the bash logic but returns a clean set instead of a regex pattern
         """
         try:
             # Get all available subrevisions from /etc/vx/kernel
             kmod_dir = Path('/etc/vx/kernel')
             if not kmod_dir.exists():
-                return "(FAKE_CONDITION)"
+                return set()
 
             ko_files = list(kmod_dir.glob('*.ko.*'))
             all_subrevs = set()
@@ -136,10 +134,7 @@ class VRTSLinker:
                                     continue
 
             # Get current kernel's subrevision
-            # mysubrev="$(echo ${myker}|cut -d'.' -f1-3|cut -d- -f2)"
             # For kernel_version like "5.14.0-284.11.1.el9_2.x86_64"
-            # cut -d'.' -f1-3 gives "5.14.0-284"
-            # cut -d- -f2 gives "284"
             kernel_parts = kernel_version.split('.')
             if len(kernel_parts) >= 3:
                 # Take first 3 parts: "5.14.0-284"
@@ -150,34 +145,25 @@ class VRTSLinker:
                         try:
                             my_subrev = int(dash_parts[1])  # e.g., 284
                         except ValueError:
-                            return "(FAKE_CONDITION)"
+                            return set()
                     else:
-                        return "(FAKE_CONDITION)"
+                        return set()
                 else:
-                    return "(FAKE_CONDITION)"
+                    return set()
             else:
-                return "(FAKE_CONDITION)"
+                return set()
 
-            # Find subrevisions greater than current
-            blacklist = [str(subrev) for subrev in sorted(all_subrevs) if subrev > my_subrev]
-
-            if blacklist:
-                return f"({'|'.join(blacklist)})"
-            else:
-                return "(FAKE_CONDITION)"
+            # Return subrevisions greater than current (these should be blacklisted)
+            return {subrev for subrev in all_subrevs if subrev > my_subrev}
 
         except Exception:
-            return "(FAKE_CONDITION)"
+            return set()
 
     def find_best_module(self, module_name: str, kernel_version: str,
-                        kmod_dir: str, blacklist_pattern: str) -> Optional[str]:
+                        kmod_dir: str, blacklist_subrevs: set) -> Optional[str]:
         """Find the best matching kernel module for given kernel version
 
-        This replicates the bash logic:
-        srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
-        if [ "x${srcmod}" = "x" ]; then
-            srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KREV}-* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
-        fi
+        This replicates the bash logic but uses a clean set-based blacklist approach
         """
         krev = kernel_version.split('-')[0]  # e.g., "5.14.0"
         ksubrev = '.'.join(kernel_version.split('.')[:3])  # e.g., "5.14.0"
@@ -192,7 +178,6 @@ class VRTSLinker:
             files = glob.glob(pattern)
             if files:
                 # Sort by version using a version-aware sort (similar to sort -V)
-                # Extract version parts for sorting
                 def version_key(filename):
                     # Extract version from filename like "module.ko.5.14.0-284.11.1.el9_2.x86_64"
                     parts = filename.split('.ko.')
@@ -212,12 +197,12 @@ class VRTSLinker:
 
                 files.sort(key=version_key)
 
-                # Filter out blacklisted versions using egrep -vw equivalent
-                if blacklist_pattern != "(FAKE_CONDITION)":
+                # Filter out blacklisted versions - much cleaner than regex matching
+                if blacklist_subrevs:
                     filtered_files = []
                     for f in files:
-                        # Use word boundary matching like egrep -vw
-                        if not re.search(blacklist_pattern, f):
+                        file_subrev = version_key(f)  # Extract subrev from filename
+                        if file_subrev not in blacklist_subrevs:
                             filtered_files.append(f)
                     files = filtered_files
 
@@ -231,12 +216,12 @@ class VRTSLinker:
         if not os.path.exists(directory):
             self.myecho(f"/bin/mkdir -p {directory}")
 
-    def process_generic_modules(self, kernel_version: str, top_dir: str, blacklist_pattern: str):
+    def process_generic_modules(self, kernel_version: str, top_dir: str, blacklist_subrevs: set):
         """Process generic Veritas modules"""
         kmod_dir = '/etc/vx/kernel'
 
         for module in self.generic_modules:
-            srcmod = self.find_best_module(module, kernel_version, kmod_dir, blacklist_pattern)
+            srcmod = self.find_best_module(module, kernel_version, kmod_dir, blacklist_subrevs)
             if srcmod:
                 target_dir = f"{top_dir}/veritas/{module}"
                 target_file = f"{target_dir}/{module}.ko"
@@ -247,7 +232,7 @@ class VRTSLinker:
                     self.myecho(f"/bin/ln -sf {srcmod} {target_file}")
                     self.action += 1
 
-    def process_vxfs_modules(self, kernel_version: str, top_dir: str, blacklist_pattern: str):
+    def process_vxfs_modules(self, kernel_version: str, top_dir: str, blacklist_subrevs: set):
         """Process VxFS modules"""
         kmod_dir = '/etc/vx/kernel'
         target_dir = f"{top_dir}/veritas/vxfs"
@@ -255,7 +240,7 @@ class VRTSLinker:
         self.create_directory_if_needed(target_dir)
 
         for module in self.vxfs_modules:
-            srcmod = self.find_best_module(module, kernel_version, kmod_dir, blacklist_pattern)
+            srcmod = self.find_best_module(module, kernel_version, kmod_dir, blacklist_subrevs)
             if srcmod:
                 target_file = f"{target_dir}/{module}.ko"
 
@@ -263,7 +248,7 @@ class VRTSLinker:
                     self.myecho(f"/bin/ln -sf {srcmod} {target_file}")
                     self.action += 1
 
-    def process_vxvm_modules(self, kernel_version: str, top_dir: str, blacklist_pattern: str):
+    def process_vxvm_modules(self, kernel_version: str, top_dir: str, blacklist_subrevs: set):
         """Process VxVM modules"""
         kmod_dir = '/etc/vx/kernel'
         target_dir = f"{top_dir}/veritas/vxvm"
@@ -271,7 +256,7 @@ class VRTSLinker:
         self.create_directory_if_needed(target_dir)
 
         for module in self.vxvm_modules:
-            srcmod = self.find_best_module(module, kernel_version, kmod_dir, blacklist_pattern)
+            srcmod = self.find_best_module(module, kernel_version, kmod_dir, blacklist_subrevs)
             if srcmod:
                 target_file = f"{target_dir}/{module}.ko"
 
@@ -280,7 +265,7 @@ class VRTSLinker:
                     self.action += 1
 
     def find_vcs_module(self, module_name: str, kernel_version: str,
-                       local_kmod_dir: str, blacklist_pattern: str) -> Optional[str]:
+                       local_kmod_dir: str, blacklist_subrevs: set) -> Optional[str]:
         """Find VCS module with complex pattern matching"""
         krev = kernel_version.split('-')[0]
         ksubrev = '.'.join(kernel_version.split('.')[:3])
@@ -296,16 +281,34 @@ class VRTSLinker:
             f"{local_kmod_dir}/{module_name}.ko.{krev}*el[7-9].x86_64"
         ]
 
+        def extract_vcs_subrev(filename):
+            """Extract subrevision from VCS module filename"""
+            # VCS modules have different naming but similar logic
+            parts = filename.split('.ko.')
+            if len(parts) >= 2:
+                version = parts[1]
+                if '-' in version:
+                    dash_parts = version.split('-')
+                    if len(dash_parts) >= 2:
+                        try:
+                            subrev = int(dash_parts[1].split('.')[0])
+                            return subrev
+                        except ValueError:
+                            return 0
+            return 0
+
         for pattern in patterns:
             files = glob.glob(pattern)
             if files:
-                # Sort and filter blacklisted versions
-                files.sort(key=lambda x: x.split('-')[-1] if '-' in x else x)
+                # Sort by version
+                files.sort(key=extract_vcs_subrev)
 
-                if blacklist_pattern != "(FAKE_CONDITION)":
+                # Filter out blacklisted versions - clean approach
+                if blacklist_subrevs:
                     filtered_files = []
                     for f in files:
-                        if not re.search(blacklist_pattern, f):
+                        file_subrev = extract_vcs_subrev(f)
+                        if file_subrev not in blacklist_subrevs:
                             filtered_files.append(f)
                     files = filtered_files
 
@@ -314,7 +317,7 @@ class VRTSLinker:
 
         return None
 
-    def process_vcs_modules(self, kernel_version: str, top_dir: str, blacklist_pattern: str):
+    def process_vcs_modules(self, kernel_version: str, top_dir: str, blacklist_subrevs: set):
         """Process VCS modules (gab, llt, vxfen, amf)"""
         target_dir = f"{top_dir}/veritas/vcs"
 
@@ -322,7 +325,7 @@ class VRTSLinker:
             local_kmod_dir = f"/opt/VRTS{module}/modules"
 
             if os.path.exists(local_kmod_dir):
-                srcmod = self.find_vcs_module(module, kernel_version, local_kmod_dir, blacklist_pattern)
+                srcmod = self.find_vcs_module(module, kernel_version, local_kmod_dir, blacklist_subrevs)
 
                 if srcmod:
                     self.create_directory_if_needed(target_dir)
@@ -333,14 +336,14 @@ class VRTSLinker:
                         self.myecho(f"/bin/chmod 0755 {srcmod} {target_file}")
                         self.action += 1
 
-    def process_vcsmm_modules(self, kernel_version: str, top_dir: str, blacklist_pattern: str):
+    def process_vcsmm_modules(self, kernel_version: str, top_dir: str, blacklist_subrevs: set):
         """Process VCSmm modules"""
         target_dir = f"{top_dir}/veritas/vcs"
         local_kmod_dir = "/opt/VRTSvcs/rac/modules"
 
         if os.path.exists(local_kmod_dir):
             for module in self.vcsmm_modules:
-                srcmod = self.find_vcs_module(module, kernel_version, local_kmod_dir, blacklist_pattern)
+                srcmod = self.find_vcs_module(module, kernel_version, local_kmod_dir, blacklist_subrevs)
 
                 if srcmod:
                     self.create_directory_if_needed(target_dir)
@@ -416,15 +419,15 @@ class VRTSLinker:
             veritas_dir = f"{top_dir}/veritas"
             self.create_directory_if_needed(veritas_dir)
 
-            # Get blacklist pattern for this kernel
-            blacklist_pattern = self.get_blacklist_pattern(kernel_version)
+            # Get blacklist subrevisions for this kernel
+            blacklist_subrevs = self.get_blacklist_subrevs(kernel_version)
 
             # Process different module types
-            self.process_generic_modules(kernel_version, top_dir, blacklist_pattern)
-            self.process_vxfs_modules(kernel_version, top_dir, blacklist_pattern)
-            self.process_vxvm_modules(kernel_version, top_dir, blacklist_pattern)
-            self.process_vcs_modules(kernel_version, top_dir, blacklist_pattern)
-            self.process_vcsmm_modules(kernel_version, top_dir, blacklist_pattern)
+            self.process_generic_modules(kernel_version, top_dir, blacklist_subrevs)
+            self.process_vxfs_modules(kernel_version, top_dir, blacklist_subrevs)
+            self.process_vxvm_modules(kernel_version, top_dir, blacklist_subrevs)
+            self.process_vcs_modules(kernel_version, top_dir, blacklist_subrevs)
+            self.process_vcsmm_modules(kernel_version, top_dir, blacklist_subrevs)
 
             # Run depmod if we made changes
             if self.action > 0:
