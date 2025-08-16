@@ -1,315 +1,631 @@
-#!/bin/bash
-# $Id: RHEL_VRTS_links.sh,v 1.22 2019/03/06 21:55:47 root Exp $
+#!/usr/bin/env python3
+# $Id: RHEL_VRTS_links.py,v 1.0 2024/01/01 00:00:00 converted from bash Exp $
 
-# history:
-# 20180524: commented out amf as it is not needed under /lib/modules (trying to solve thor's crashes).
+# Python rewrite of RHEL_VRTS_links bash script
+# Maintains same command syntax: --force, --silent, --exec
 
-# Step 0
-[ "$BASH" ] && function whence
-{
-	type -p "$@"
-}
-#
-PATH_SCRIPT="$(cd $(/usr/bin/dirname $(whence -- $0 || echo $0));pwd)"
-export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/local/sbin:/usr/local/bin:${PATH_SCRIPT}
+import os
+import sys
+import re
+import subprocess
+import glob
+import argparse
+from pathlib import Path
+from typing import List, Optional
 
-# Step 1
-[ "root" != "$USER" ] && exec sudo "$0" "$@"
+class VRTSLinker:
+    def __init__(self):
+        self.force = False
+        self.silent = False
+        self.run_exec = False
+        self.debug = False
+        self.action = 0
+        self.rhel_version = None
 
-#
-EXEC_FILE=/root/RHEL_VRTS.sh
-#
-force=0
-silent=0
-run_exec=0
+        # Module groups and their target directories
+        self.generic_modules = ['veki', 'vxglm', 'vxgms', 'vxodm', 'storageapi']
+        self.vxfs_modules = ['vxfs', 'fdd', 'vxportal', 'vxcafs']
+        # VxVM modules split into allowed and blacklisted (as per updated shell script)
+        self.vxvm_allowed_modules = [
+            'vxdmp', 'vxio', 'vxspec',
+            'dmpaaa', 'dmpaa', 'dmpalua', 'dmpapf', 'dmpapg', 'dmpap',
+            'dmpCLARiiON', 'dmpEngenio', 'dmphuawei', 'dmpvmax',
+            'dmpinv', 'dmpjbod', 'dmpnalsi', 'dmpnvme', 'dmpsun7x10alua', 'dmpsvc'
+        ]
+        # Blacklisted modules that should be REMOVED if they exist
+        self.vxvm_blacklisted_modules = [
+            'dmpkove'  # Excluded due to: dmpkove.ko needs unknown symbol kdsa_ext_ioctl
+        ]
+        self.vcs_modules = ['gab', 'llt', 'vxfen', 'amf']
+        self.vcsmm_modules = ['vcsmm']
 
-# Check for vxiod
-if [[ ! -x /sbin/vxiod ]]; then
-	echo "/sbin/vxiod missing!"
-	exit 0
-fi
+        # SELinux module directories to label
+        self.selinux_dirs = [
+            '/etc/vx/kernel',
+            '/opt/VRTSamf/modules',
+            '/opt/VRTSgab/modules',
+            '/opt/VRTSllt/modules',
+            '/opt/VRTSvxfen/modules',
+            '/opt/VRTSvcs/rac/modules'
+        ]
 
-#
-rhelvers="$(lsb_release -r|cut -d: -f2|cut -d. -f1)"
-export rhelvers
+        # Modules to load automatically
+        self.auto_load_modules = ['vxspec', 'vxio', 'fdd', 'vxportal', 'vxdmp']
 
-# Arg checking
-case ${1} in
-	'--force')
-		export force=1
-		;;
-	'--silent')
-		export silent=1
-		;;
-	'--exec')
-		export run_exec=1
-		export silent=1
-		;;
-esac
+    def debug_print(self, message: str):
+        """Print debug message prefixed with '#' for shell parseability"""
+        if self.debug:
+            print(f"# DEBUG: {message}")
 
-# myecho function
-myecho() {
-	# if --exec not specified, then print to screen
-	if [[ $run_exec -eq 0 ]]; then
-		echo "$*"
-	else
-		bash -c "$*"
-	fi
-}
+    def myecho(self, command: str):
+        """Execute command or print it based on run_exec flag"""
+        if not self.run_exec:
+            print(command)
+        else:
+            try:
+                result = subprocess.run(command, shell=True, check=False,
+                                      capture_output=False)
 
-# Banner
-if [[ $silent -eq 0 ]]; then
-	echo "#######################################################################################"
-	echo "###@@### Syntax: $0 [--force|--silent|--exec]"
-	echo "#######################################################################################"
-	echo ""
-fi
-#### COMMENTED OUT 20190926 ##### exec > >(tee ${EXEC_FILE})
+                # Handle specific commands with acceptable non-zero exit codes
+                if "dracut" in command and result.returncode == 3:
+                    self.debug_print(f"dracut returned exit code 3 (no work needed) - this is OK")
+                    return True
+                elif result.returncode != 0:
+                    print(f"Command failed with exit code {result.returncode}: {command}")
+                    return False
+                else:
+                    return True
 
-for myker in $(rpm -q kernel|grep kernel|cut -c8-)
-do
-	# Header/Init
-	TOP_DIR="$( echo /lib/modules/${myker})"
-	KMOD_DIR="/etc/vx/kernel"
-	KREV="$(echo ${myker}|cut -d'-' -f1)"
-	KSUBREV="$(echo ${myker}|cut -d'.' -f1-3)"
-	KMOD_BLACKLIST=""
-	KMOD_BLACKLIST_PATTERN=""
-	action=0
-	#
-	cd ${TOP_DIR} || exit 127
-	if [[ ! -d ${TOP_DIR}/veritas ]]; then
-		test -d ${TOP_DIR}/veritas || myecho "/bin/mkdir -p ${TOP_DIR}/veritas"
-	fi
+            except Exception as e:
+                print(f"Error executing command: {command} - {e}")
+                return False
 
-	# Populate KMOD_BLACKLIST (Import if we're running EUS and VRTS has more recent kmods)
-	allsubrevs="$(ls -1  /etc/vx/kernel/*.ko.*|sed -e 's/^.*\.ko\.//'|sort -u |cut -d- -f2|sort -V|cut -d. -f1|xargs)"
-	mysubrev="$(echo ${myker}|cut -d'.' -f1-3|cut -d- -f2)"
-	for i in ${allsubrevs}
-	do
-		if [[ ${i} -gt ${mysubrev} ]]; then
-			KMOD_BLACKLIST="$(echo $i ${KMOD_BLACKLIST}|xargs)"
-		fi
-	done
-	# Build the KMOD_BLACKLIST_PATTERN pattern..
-	for j in ${KMOD_BLACKLIST}
-	do
-		if [[ "$j" != "" ]]; then
-			KMOD_BLACKLIST_PATTERN="($(echo ${KMOD_BLACKLIST}|sed -e 's@ @|@g')"
-		fi
-	done
-	if [[ "${KMOD_BLACKLIST_PATTERN}" != "" ]]; then
-		KMOD_BLACKLIST_PATTERN="${KMOD_BLACKLIST_PATTERN})"
-	else
-		KMOD_BLACKLIST_PATTERN="(FAKE_CONDITION)"
-	fi
+    def check_root_privileges(self):
+        """Check if running as root, exec sudo if not"""
+        if os.getuid() != 0:
+            # Re-exec with sudo
+            sudo_cmd = ['sudo'] + sys.argv
+            os.execvp('sudo', sudo_cmd)
 
-	# Generic modules
-	for ksub in veki vxglm vxgms vxodm storageapi
-	do
-		# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
-		srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
-		if [[ "x${srcmod}" = "x" ]]; then
-			srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KREV}-* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
-		fi
-		if [[ "x${srcmod}" != "x" ]]; then
-			if [[ ! -d ${TOP_DIR}/veritas/${ksub} ]]; then
-				test -d ${TOP_DIR}/veritas/${ksub} || myecho "/bin/mkdir -p ${TOP_DIR}/veritas/${ksub}"
-			fi
-			if [[ ${force} -eq 1 || ! -s ${TOP_DIR}/veritas/${ksub}/${ksub}.ko ]]; then
-				myecho "/bin/ln -sf ${srcmod} ${TOP_DIR}/veritas/${ksub}/${ksub}.ko"
-				action=$(( action + 1))
-			fi
-		fi
-	done
+    def get_rhel_version(self):
+        """Get RHEL version using lsb_release"""
+        try:
+            result = subprocess.run(['lsb_release', '-r'],
+                                  capture_output=True, text=True, check=True)
+            # Extract version number (e.g., "Release: 8.5" -> "8")
+            version_line = result.stdout.strip()
+            version = version_line.split(':')[1].strip().split('.')[0]
+            rhel_version = int(version)
+            self.debug_print(f"Detected RHEL version: {rhel_version}")
+            return rhel_version
+        except (subprocess.CalledProcessError, ValueError, IndexError):
+            print("Warning: Could not determine RHEL version")
+            self.debug_print("Failed to detect RHEL version, defaulting to 8")
+            return 8  # Default to 8
 
-	# VxFS
-	if [[ ! -d ${TOP_DIR}/veritas/vxfs ]]; then
-		test -d ${TOP_DIR}/veritas/vxfs || myecho "/bin/mkdir -p ${TOP_DIR}/veritas/vxfs"
-	fi
-	for ksub in vxfs fdd vxportal vxcafs
-	do
-		# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
-		srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
-		if [[ "x${srcmod}" = "x" ]]; then
-			srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KREV}-* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
-		fi
-		if [[ "x${srcmod}" != "x" ]]; then
-			if [[ ${force} -eq 1 || ! -s ${TOP_DIR}/veritas/vxfs/${ksub}.ko ]]; then
-				myecho "/bin/ln -sf ${srcmod} ${TOP_DIR}/veritas/vxfs/${ksub}.ko"
-				action=$(( action + 1))
-			fi
-		fi
-	done
+    def get_installed_kernels(self) -> List[str]:
+        """Get list of installed kernel versions from RPM"""
+        try:
+            result = subprocess.run(['rpm', '-q', 'kernel'],
+                                  capture_output=True, text=True, check=True)
+            kernels = []
+            for line in result.stdout.strip().split('\n'):
+                if line.startswith('kernel-'):
+                    # Extract version from "kernel-4.18.0-348.el8.x86_64"
+                    kernel_version = line[7:]  # Remove "kernel-" prefix
+                    kernels.append(kernel_version)
 
-	# VxVM
-	if [[ ! -d ${TOP_DIR}/veritas/vxvm ]]; then
-		test -d ${TOP_DIR}/veritas/vxvm || myecho "/bin/mkdir -p ${TOP_DIR}/veritas/vxvm"
-	fi
+            self.debug_print(f"Found {len(kernels)} installed kernels:")
+            for kernel in kernels:
+                self.debug_print(f"  - {kernel}")
+            return kernels
+        except subprocess.CalledProcessError:
+            print("Error: Could not query installed kernels")
+            self.debug_print("Failed to query RPM for installed kernels")
+            return []
 
-	# Allowed modules
-	for ksub in vxdmp vxio vxspec \
-		dmpaaa dmpaa dmpalua dmpapf dmpapg dmpap \
-		dmpCLARiiON dmpEngenio dmphuawei dmpvmax \
-		dmpinv dmpjbod dmpnalsi dmpnvme dmpsun7x10alua dmpsvc
-	do
-		# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
-		srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
-		if [[ "x${srcmod}" = "x" ]]; then
-			srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KREV}-* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
-		fi
-		if [[ "x${srcmod}" != "x" ]]; then
-			if [[ ${force} -eq 1 || ! -s ${TOP_DIR}/veritas/vxvm/${ksub}.ko ]]; then
-				myecho "/bin/ln -sf ${srcmod} ${TOP_DIR}/veritas/vxvm/${ksub}.ko"
-				action=$(( action + 1))
-			fi
-		fi
-	done
+    def get_blacklist_subrevs(self, kernel_version: str) -> set:
+        """Get set of subrevision numbers to blacklist for kernel modules
 
-	# Blacklisted modules
-	# we exclude dmpkove due to: dmpkove.ko needs unknown symbol kdsa_ext_ioctl
-	for ksub in dmpkove
-	do
-		# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
-		srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
-		if [[ "x${srcmod}" = "x" ]]; then
-			srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KREV}-* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
-		fi
-		if [[ "x${srcmod}" != "x" ]]; then
-			if [[ ${force} -eq 1 || ! -s ${TOP_DIR}/veritas/vxvm/${ksub}.ko ]]; then
-				if [[ -f ${TOP_DIR}/veritas/vxvm/${ksub}.ko ]]; then
-					myecho "/bin/rm -fv ${TOP_DIR}/veritas/vxvm/${ksub}.ko"
-					action=$(( action + 1))
-				fi
-			fi
-		fi
-	done
+        This replicates the bash logic but returns a clean set instead of a regex pattern
+        """
+        self.debug_print(f"Analyzing blacklist logic for kernel: {kernel_version}")
+        try:
+            # Get all available subrevisions from /etc/vx/kernel
+            kmod_dir = Path('/etc/vx/kernel')
+            if not kmod_dir.exists():
+                self.debug_print("/etc/vx/kernel directory not found, no blacklisting")
+                return set()
 
-	# VCS (gab llt vxfen amf)
-	for ksub in gab llt vxfen amf
-	do
-		LOCAL_KMOD_DIR="/opt/VRTS${ksub}/modules"
-		if [[ -d ${LOCAL_KMOD_DIR} ]]; then
-			# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
-			for kmod_pattern in \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9]_[0-9]*.x86_64" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9]_[0-9]*.x86_64-nonrdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9]_[0-9]*.x86_64-rdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9].x86_64" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9].x86_64-nonrdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9].x86_64-rdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9]_[0-9]*.x86_64" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9]_[0-9]*.x86_64-nonrdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9]_[0-9]*.x86_64-rdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9].x86_64" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9].x86_64-nonrdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9].x86_64-rdma"
-			do
-				srcmod=$( ls -1 $(echo ${kmod_pattern}) 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
-				if [[ "x${srcmod}" != "x" ]]; then
-					if [[ "$(readlink -f ${srcmod})" != "/dev/null" ]]; then
-						export srcmod
-						break
-					else
-						# if readlink for the module points to /dev/null, skip item and continue
-						export srcmod=""
-						continue
-					fi
-				fi
-			done
-			if [[ "x${srcmod}" != "x" ]]; then
-				if [[ ! -d ${TOP_DIR}/veritas/vcs ]]; then
-					test -d ${TOP_DIR}/veritas/vcs || myecho "/bin/mkdir -p ${TOP_DIR}/veritas/vcs"
-				fi
-				if [[ ${force} -eq 1 || ! -f ${TOP_DIR}/veritas/vcs/${ksub}.ko ]]; then
-					myecho "/bin/cp -aLf ${srcmod} ${TOP_DIR}/veritas/vcs/${ksub}.ko"
-					myecho "/bin/chmod 0755 ${srcmod} ${TOP_DIR}/veritas/vcs/${ksub}.ko"
-					action=$(( action + 1))
-				fi
-			fi
-		fi
-	done
+            ko_files = list(kmod_dir.glob('*.ko.*'))
+            all_subrevs = set()
+            self.debug_print(f"Found {len(ko_files)} .ko files in /etc/vx/kernel")
 
-	# VCSmm (vcsmm)
-	for ksub in vcsmm
-	do
-		LOCAL_KMOD_DIR="/opt/VRTSvcs/rac/modules"
-		if [[ -d ${LOCAL_KMOD_DIR} ]]; then
-			# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
-			for kmod_pattern in \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9]_[0-9]*.x86_64" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9]_[0-9]*.x86_64-nonrdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9]_[0-9]*.x86_64-rdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9].x86_64" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9].x86_64-nonrdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9].x86_64-rdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9]_[0-9]*.x86_64" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9]_[0-9]*.x86_64-nonrdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9]_[0-9]*.x86_64-rdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9].x86_64" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9].x86_64-nonrdma" \
-				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9].x86_64-rdma"
-			do
-				srcmod=$( ls -1 $(echo ${kmod_pattern}) 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
-				if [[ "x${srcmod}" != "x" ]]; then
-					if [[ "$(readlink -f ${srcmod})" != "/dev/null" ]]; then
-						export srcmod
-						break
-					else
-						# if readlink for the module points to /dev/null, skip item and continue
-						export srcmod=""
-						continue
-					fi
-				fi
-			done
-			if [[ "x${srcmod}" != "x" ]]; then
-				if [[ ! -d ${TOP_DIR}/veritas/vcs ]]; then
-					test -d ${TOP_DIR}/veritas/vcs || myecho "/bin/mkdir -p ${TOP_DIR}/veritas/vcs"
-				fi
-				if [[ ${force} -eq 1 || ! -f ${TOP_DIR}/veritas/vcs/${ksub}.ko ]]; then
-					myecho "/bin/cp -aLf ${srcmod} ${TOP_DIR}/veritas/vcs/${ksub}.ko"
-					myecho "/bin/chmod 0755 ${srcmod} ${TOP_DIR}/veritas/vcs/${ksub}.ko"
-					action=$(( action + 1))
-				fi
-			fi
-		fi
-	done
+            for ko_file in ko_files:
+                # Extract version part after .ko.
+                # e.g., "vxfs.ko.5.14.0-284.11.1.el9_2.x86_64" -> "5.14.0-284.11.1.el9_2.x86_64"
+                name_parts = ko_file.name.split('.ko.')
+                if len(name_parts) >= 2:
+                    version_part = name_parts[1]  # e.g., "5.14.0-284.11.1.el9_2.x86_64"
+                    if '-' in version_part:
+                        # Cut by dash and take second field (index 1)
+                        dash_parts = version_part.split('-')
+                        if len(dash_parts) >= 2:
+                            subrev_part = dash_parts[1]  # e.g., "284.11.1.el9_2.x86_64"
+                            # Cut by dot and take first field (the subrevision number)
+                            dot_parts = subrev_part.split('.')
+                            if dot_parts:
+                                try:
+                                    subrev = int(dot_parts[0])  # e.g., 284
+                                    all_subrevs.add(subrev)
+                                except ValueError:
+                                    continue
 
-	if [[ ${action} -ne 0 ]]; then
-		myecho "/sbin/depmod -a ${myker}"
-	fi
-done
+            # Get current kernel's subrevision
+            # For kernel_version like "5.14.0-284.11.1.el9_2.x86_64"
+            kernel_parts = kernel_version.split('.')
+            if len(kernel_parts) >= 3:
+                # Take first 3 parts: "5.14.0-284"
+                first_three = '.'.join(kernel_parts[:3])
+                if '-' in first_three:
+                    dash_parts = first_three.split('-')
+                    if len(dash_parts) >= 2:
+                        try:
+                            my_subrev = int(dash_parts[1])  # e.g., 284
+                            self.debug_print(f"Current kernel subrevision: {my_subrev}")
+                        except ValueError:
+                            self.debug_print("Could not parse current kernel subrevision")
+                            return set()
+                    else:
+                        self.debug_print("No subrevision found in current kernel version")
+                        return set()
+                else:
+                    self.debug_print("No dash found in current kernel version")
+                    return set()
+            else:
+                self.debug_print("Invalid kernel version format")
+                return set()
 
-# Last one (in case something was missed):
-if [[ ${action} -ne 0 ]]; then
-	myecho "/usr/bin/dracut --regenerate-all -o zfs -a lvm -a dm"
-fi
+            # Find all available subrevisions
+            self.debug_print(f"All available subrevisions: {sorted(all_subrevs)}")
 
-# sync
-if [[ ${action} -ne 0 ]]; then
-	myecho "/usr/bin/sync -f /lib/modules"
-	myecho "/usr/bin/sync -f /boot"
-fi
+            # Return subrevisions greater than current (these should be blacklisted)
+            blacklist = {subrev for subrev in all_subrevs if subrev > my_subrev}
+            if blacklist:
+                self.debug_print(f"Blacklisted subrevisions (newer than {my_subrev}): {sorted(blacklist)}")
+            else:
+                self.debug_print("No subrevisions to blacklist (none newer than current)")
+            return blacklist
 
-# label for loading kmods, copy from /lib/modules
-for vx_mod_dir in /etc/vx/kernel /opt/VRTSamf/modules /opt/VRTSgab/modules /opt/VRTSllt/modules /opt/VRTSvxfen/modules /opt/VRTSvcs/rac/modules
-do
-	if [[ -d ${vx_mod_dir} ]]; then
-		semanage fcontext -C -l|grep -q "^${vx_mod_dir} = /lib/modules"
-		if [[ $? -ne 0 ]]; then
-			myecho "semanage fcontext -a -e /lib/modules ${vx_mod_dir}"
-			myecho "/sbin/restorecon -rFv ${vx_mod_dir}"
-		fi
-	fi
-done
+        except Exception as e:
+            self.debug_print(f"Exception in blacklist analysis: {e}")
+            return set()
 
-# Immediately load modules
-for mymod in vxspec vxio fdd vxportal vxdmp
-do
-	if [[ ${action} -ne 0 ]]; then
-		myecho "/usr/sbin/modprobe ${mymod}"
-	fi
-done
+    def find_best_module(self, module_name: str, kernel_version: str,
+                        kmod_dir: str, blacklist_subrevs: set) -> Optional[str]:
+        """Find the best matching kernel module for given kernel version
 
-# override exit code
-exit 0
+        This replicates the bash logic but uses a clean set-based blacklist approach
+        """
+        self.debug_print(f"Finding best module for {module_name} with kernel {kernel_version}")
+        krev = kernel_version.split('-')[0]  # e.g., "5.14.0"
+        ksubrev = '.'.join(kernel_version.split('.')[:3])  # e.g., "5.14.0"
+        self.debug_print(f"  KREV (base): {krev}, KSUBREV (full): {ksubrev}")
+
+        # Try with full subrevision first (KSUBREV), then with base revision (KREV)
+        patterns = [
+            f"{kmod_dir}/{module_name}.ko.{ksubrev}.*",
+            f"{kmod_dir}/{module_name}.ko.{krev}-*"
+        ]
+
+        for i, pattern in enumerate(patterns):
+            pattern_type = "KSUBREV" if i == 0 else "KREV"
+            self.debug_print(f"  Trying pattern {i+1}/2 ({pattern_type}): {pattern}")
+            files = glob.glob(pattern)
+            self.debug_print(f"    Found {len(files)} matching files")
+
+            if files:
+                # Sort by version using a version-aware sort (similar to sort -V)
+                def version_key(filename):
+                    # Extract version from filename like "module.ko.5.14.0-284.11.1.el9_2.x86_64"
+                    parts = filename.split('.ko.')
+                    if len(parts) >= 2:
+                        version = parts[1]
+                        # Split by dash to get the subrevision for sorting
+                        if '-' in version:
+                            dash_parts = version.split('-')
+                            if len(dash_parts) >= 2:
+                                try:
+                                    # Use the numeric part for sorting
+                                    subrev = int(dash_parts[1].split('.')[0])
+                                    return subrev
+                                except ValueError:
+                                    return 0
+                    return 0
+
+                files.sort(key=version_key)
+                if self.debug:
+                    self.debug_print(f"    Files sorted by version:")
+                    for f in files:
+                        subrev = version_key(f)
+                        self.debug_print(f"      {f} (subrev: {subrev})")
+
+                # Filter out blacklisted versions - much cleaner than regex matching
+                original_count = len(files)
+                if blacklist_subrevs:
+                    filtered_files = []
+                    for f in files:
+                        file_subrev = version_key(f)  # Extract subrev from filename
+                        if file_subrev not in blacklist_subrevs:
+                            filtered_files.append(f)
+                        else:
+                            self.debug_print(f"      FILTERED OUT: {f} (subrev {file_subrev} is blacklisted)")
+                    files = filtered_files
+                    self.debug_print(f"    After blacklist filtering: {len(files)}/{original_count} files remaining")
+
+                if files:
+                    selected = files[-1]  # Return the latest version (tail -1 equivalent)
+                    self.debug_print(f"    SELECTED: {selected}")
+                    return selected
+                else:
+                    self.debug_print(f"    No files remaining after filtering")
+
+        self.debug_print(f"  No suitable module found for {module_name}")
+        return None
+
+    def create_directory_if_needed(self, directory: str):
+        """Create directory if it doesn't exist"""
+        if not os.path.exists(directory):
+            self.myecho(f"/bin/mkdir -p {directory}")
+
+    def process_generic_modules(self, kernel_version: str, top_dir: str, blacklist_subrevs: set):
+        """Process generic Veritas modules"""
+        kmod_dir = '/etc/vx/kernel'
+
+        for module in self.generic_modules:
+            srcmod = self.find_best_module(module, kernel_version, kmod_dir, blacklist_subrevs)
+            if srcmod:
+                target_dir = f"{top_dir}/veritas/{module}"
+                target_file = f"{target_dir}/{module}.ko"
+
+                self.create_directory_if_needed(target_dir)
+
+                if self.force or not os.path.exists(target_file) or os.path.getsize(target_file) == 0:
+                    self.myecho(f"/bin/ln -sf {srcmod} {target_file}")
+                    self.action += 1
+
+    def process_vxfs_modules(self, kernel_version: str, top_dir: str, blacklist_subrevs: set):
+        """Process VxFS modules"""
+        kmod_dir = '/etc/vx/kernel'
+        target_dir = f"{top_dir}/veritas/vxfs"
+
+        self.create_directory_if_needed(target_dir)
+
+        for module in self.vxfs_modules:
+            srcmod = self.find_best_module(module, kernel_version, kmod_dir, blacklist_subrevs)
+            if srcmod:
+                target_file = f"{target_dir}/{module}.ko"
+
+                if self.force or not os.path.exists(target_file) or os.path.getsize(target_file) == 0:
+                    self.myecho(f"/bin/ln -sf {srcmod} {target_file}")
+                    self.action += 1
+
+    def process_vxvm_modules(self, kernel_version: str, top_dir: str, blacklist_subrevs: set):
+        """Process VxVM allowed modules"""
+        kmod_dir = '/etc/vx/kernel'
+        target_dir = f"{top_dir}/veritas/vxvm"
+
+        self.create_directory_if_needed(target_dir)
+
+        # Process allowed modules
+        for module in self.vxvm_allowed_modules:
+            srcmod = self.find_best_module(module, kernel_version, kmod_dir, blacklist_subrevs)
+            if srcmod:
+                target_file = f"{target_dir}/{module}.ko"
+
+                if self.force or not os.path.exists(target_file) or os.path.getsize(target_file) == 0:
+                    self.myecho(f"/bin/ln -sf {srcmod} {target_file}")
+                    self.action += 1
+
+    def process_vxvm_blacklisted_modules(self, kernel_version: str, top_dir: str, blacklist_subrevs: set):
+        """Process VxVM blacklisted modules - REMOVE them if they exist"""
+        kmod_dir = '/etc/vx/kernel'
+        target_dir = f"{top_dir}/veritas/vxvm"
+
+        self.debug_print("Processing blacklisted VxVM modules (for removal)...")
+
+        # Process blacklisted modules - these should be REMOVED
+        for module in self.vxvm_blacklisted_modules:
+            srcmod = self.find_best_module(module, kernel_version, kmod_dir, blacklist_subrevs)
+            if srcmod:
+                target_file = f"{target_dir}/{module}.ko"
+
+                if self.force or (os.path.exists(target_file) and os.path.getsize(target_file) > 0):
+                    if os.path.exists(target_file):
+                        self.debug_print(f"Removing blacklisted module: {target_file}")
+                        self.myecho(f"/bin/rm -fv {target_file}")
+                        self.action += 1
+                    else:
+                        self.debug_print(f"Blacklisted module {target_file} already absent")
+
+    def find_vcs_module(self, module_name: str, kernel_version: str,
+                       local_kmod_dir: str, blacklist_subrevs: set) -> Optional[str]:
+        """Find VCS module with complex pattern matching (updated with RDMA support and /dev/null detection)"""
+        krev = kernel_version.split('-')[0]
+        ksubrev = '.'.join(kernel_version.split('.')[:3])
+
+        self.debug_print(f"  Looking for VCS module {module_name} in {local_kmod_dir}")
+
+        # Updated patterns with RDMA support (matching new shell script order)
+        patterns = [
+            # KSUBREV patterns (prioritizing non-RDMA first, then RDMA)
+            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el[7-9]_[0-9]*.x86_64",
+            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el[7-9]_[0-9]*.x86_64-nonrdma",
+            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el[7-9]_[0-9]*.x86_64-rdma",
+            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el[7-9].x86_64",
+            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el[7-9].x86_64-nonrdma", 
+            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el[7-9].x86_64-rdma",
+            # KREV patterns
+            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el[7-9]_[0-9]*.x86_64",
+            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el[7-9]_[0-9]*.x86_64-nonrdma",
+            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el[7-9]_[0-9]*.x86_64-rdma",
+            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el[7-9].x86_64",
+            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el[7-9].x86_64-nonrdma",
+            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el[7-9].x86_64-rdma"
+        ]
+
+        def extract_vcs_subrev(filename):
+            """Extract subrevision from VCS module filename"""
+            # VCS modules have different naming but similar logic
+            parts = filename.split('.ko.')
+            if len(parts) >= 2:
+                version = parts[1]
+                if '-' in version:
+                    dash_parts = version.split('-')
+                    if len(dash_parts) >= 2:
+                        try:
+                            subrev = int(dash_parts[1].split('.')[0])
+                            return subrev
+                        except ValueError:
+                            return 0
+            return 0
+
+        for i, pattern in enumerate(patterns):
+            self.debug_print(f"    Trying VCS pattern {i+1}/{len(patterns)}: {pattern}")
+            files = glob.glob(pattern)
+            if files:
+                self.debug_print(f"      Found {len(files)} matching files")
+                # Sort by version
+                files.sort(key=extract_vcs_subrev)
+
+                # Filter out blacklisted versions
+                if blacklist_subrevs:
+                    filtered_files = []
+                    for f in files:
+                        file_subrev = extract_vcs_subrev(f)
+                        if file_subrev not in blacklist_subrevs:
+                            filtered_files.append(f)
+                        else:
+                            self.debug_print(f"        FILTERED OUT: {f} (subrev {file_subrev} is blacklisted)")
+                    files = filtered_files
+                    self.debug_print(f"      After blacklist filtering: {len(files)} files remaining")
+
+                if files:
+                    selected = files[-1]
+
+                    # NEW: Check if symlink points to /dev/null (disabled module)
+                    try:
+                        real_path = os.path.realpath(selected)
+                        if real_path == '/dev/null':
+                            self.debug_print(f"      SKIPPED: {selected} -> /dev/null (disabled module)")
+                            continue
+                        else:
+                            self.debug_print(f"      SELECTED VCS module: {selected}")
+                            return selected
+                    except OSError:
+                        # If readlink fails, assume it's a regular file
+                        self.debug_print(f"      SELECTED VCS module: {selected}")
+                        return selected
+
+        self.debug_print(f"  No suitable VCS module found for {module_name}")
+        return None
+
+    def process_vcs_modules(self, kernel_version: str, top_dir: str, blacklist_subrevs: set):
+        """Process VCS modules (gab, llt, vxfen, amf)"""
+        target_dir = f"{top_dir}/veritas/vcs"
+
+        for module in self.vcs_modules:
+            local_kmod_dir = f"/opt/VRTS{module}/modules"
+
+            if os.path.exists(local_kmod_dir):
+                srcmod = self.find_vcs_module(module, kernel_version, local_kmod_dir, blacklist_subrevs)
+
+                if srcmod:
+                    self.create_directory_if_needed(target_dir)
+                    target_file = f"{target_dir}/{module}.ko"
+
+                    if self.force or not os.path.exists(target_file):
+                        self.myecho(f"/bin/cp -aLf {srcmod} {target_file}")
+                        self.myecho(f"/bin/chmod 0755 {srcmod} {target_file}")
+                        self.action += 1
+
+    def process_vcsmm_modules(self, kernel_version: str, top_dir: str, blacklist_subrevs: set):
+        """Process VCSmm modules"""
+        target_dir = f"{top_dir}/veritas/vcs"
+        local_kmod_dir = "/opt/VRTSvcs/rac/modules"
+
+        if os.path.exists(local_kmod_dir):
+            for module in self.vcsmm_modules:
+                srcmod = self.find_vcs_module(module, kernel_version, local_kmod_dir, blacklist_subrevs)
+
+                if srcmod:
+                    self.create_directory_if_needed(target_dir)
+                    target_file = f"{target_dir}/{module}.ko"
+
+                    if self.force or not os.path.exists(target_file):
+                        self.myecho(f"/bin/cp -aLf {srcmod} {target_file}")
+                        self.myecho(f"/bin/chmod 0755 {srcmod} {target_file}")
+                        self.action += 1
+
+    def setup_selinux_contexts(self):
+        """Set up SELinux contexts for VxFS module directories"""
+        for vx_mod_dir in self.selinux_dirs:
+            if os.path.exists(vx_mod_dir):
+                try:
+                    # Check if context already exists
+                    result = subprocess.run(
+                        ['semanage', 'fcontext', '-C', '-l'],
+                        capture_output=True, text=True, check=True
+                    )
+
+                    context_exists = False
+                    for line in result.stdout.split('\n'):
+                        if line.startswith(f"{vx_mod_dir} = /lib/modules"):
+                            context_exists = True
+                            break
+
+                    if not context_exists:
+                        self.myecho(f"semanage fcontext -a -e /lib/modules {vx_mod_dir}")
+                        self.myecho(f"/sbin/restorecon -rFv {vx_mod_dir}")
+
+                except subprocess.CalledProcessError:
+                    # semanage might not be available, continue silently
+                    pass
+
+    def load_modules(self):
+        """Load kernel modules automatically"""
+        if self.action > 0:
+            for module in self.auto_load_modules:
+                self.myecho(f"/usr/sbin/modprobe {module}")
+
+    def run(self):
+        """Main execution function"""
+        # Check for vxiod
+        if not os.path.exists('/sbin/vxiod') or not os.access('/sbin/vxiod', os.X_OK):
+            print("/sbin/vxiod missing!")
+            sys.exit(0)
+
+        # Check root privileges
+        self.check_root_privileges()
+
+        # Get RHEL version
+        self.rhel_version = self.get_rhel_version()
+
+        # Get installed kernels
+        kernels = self.get_installed_kernels()
+        if not kernels:
+            print("No kernels found!")
+            sys.exit(1)
+
+        # Process each kernel
+        total_actions = 0
+        self.debug_print(f"Processing {len(kernels)} kernels")
+        for kernel_version in kernels:
+            self.debug_print(f"=== Processing kernel: {kernel_version} ===")
+            self.action = 0
+            top_dir = f"/lib/modules/{kernel_version}"
+
+            if not os.path.exists(top_dir):
+                self.debug_print(f"Skipping {kernel_version}: {top_dir} does not exist")
+                continue
+
+            self.debug_print(f"Working directory: {top_dir}")
+            os.chdir(top_dir)
+
+            # Create base veritas directory
+            veritas_dir = f"{top_dir}/veritas"
+            self.create_directory_if_needed(veritas_dir)
+
+            # Get blacklist subrevisions for this kernel
+            blacklist_subrevs = self.get_blacklist_subrevs(kernel_version)
+
+            # Process different module types
+            self.debug_print("Processing generic modules...")
+            self.process_generic_modules(kernel_version, top_dir, blacklist_subrevs)
+            self.debug_print("Processing VxFS modules...")
+            self.process_vxfs_modules(kernel_version, top_dir, blacklist_subrevs)
+            self.debug_print("Processing VxVM allowed modules...")
+            self.process_vxvm_modules(kernel_version, top_dir, blacklist_subrevs)
+            self.debug_print("Processing VxVM blacklisted modules...")
+            self.process_vxvm_blacklisted_modules(kernel_version, top_dir, blacklist_subrevs)
+            self.debug_print("Processing VCS modules...")
+            self.process_vcs_modules(kernel_version, top_dir, blacklist_subrevs)
+            self.debug_print("Processing VCSmm modules...")
+            self.process_vcsmm_modules(kernel_version, top_dir, blacklist_subrevs)
+
+            # Run depmod if we made changes
+            if self.action > 0:
+                self.debug_print(f"Made {self.action} changes for kernel {kernel_version}, running depmod")
+                self.myecho(f"/sbin/depmod -a {kernel_version}")
+                total_actions += self.action
+            else:
+                self.debug_print(f"No changes needed for kernel {kernel_version}")
+
+        # Final operations if any changes were made
+        if total_actions > 0:
+            self.debug_print(f"Total actions across all kernels: {total_actions}")
+            self.debug_print("Running final system operations...")
+            self.myecho("/usr/bin/dracut --regenerate-all -o zfs -a lvm -a dm")
+            self.myecho("/usr/bin/sync -f /lib/modules")
+            self.myecho("/usr/bin/sync -f /boot")
+        else:
+            self.debug_print("No changes made, skipping final operations")
+
+        # Set up SELinux contexts
+        self.debug_print("Setting up SELinux contexts...")
+        self.setup_selinux_contexts()
+
+        # Load modules
+        self.debug_print("Loading kernel modules...")
+        self.load_modules()
+
+        self.debug_print("Script completed successfully")
+        sys.exit(0)
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="RHEL Veritas Storage Foundation kernel module linker",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s                    # Show what would be done
+  %(prog)s --force           # Force recreation of existing links
+  %(prog)s --silent          # Run quietly
+  %(prog)s --exec            # Actually execute the commands
+        """
+    )
+
+    parser.add_argument('--force', action='store_true',
+                       help='Force recreation of existing module links')
+    parser.add_argument('--silent', action='store_true',
+                       help='Run in silent mode')
+    parser.add_argument('--exec', action='store_true',
+                       help='Execute commands instead of just displaying them')
+    parser.add_argument('--debug', action='store_true',
+                       help='Enable debug output showing matching logic (prefixed with #)')
+
+    args = parser.parse_args()
+
+    # Create and configure the linker
+    linker = VRTSLinker()
+    linker.force = args.force
+    linker.silent = args.silent
+    linker.run_exec = args.exec
+    linker.debug = args.debug
+
+    # If --exec is specified, also set silent mode
+    if args.exec:
+        linker.silent = True
+
+    # Print banner unless silent
+    if not linker.silent:
+        print("#" * 87)
+        print(f"###@@### Syntax: {sys.argv[0]} [--force|--silent|--exec|--debug]")
+        print("#" * 87)
+        print()
+
+    # Run the main functionality
+    linker.run()
+
+if __name__ == "__main__":
+    main()

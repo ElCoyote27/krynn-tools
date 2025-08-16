@@ -25,12 +25,16 @@ class VRTSLinker:
         # Module groups and their target directories
         self.generic_modules = ['veki', 'vxglm', 'vxgms', 'vxodm', 'storageapi']
         self.vxfs_modules = ['vxfs', 'fdd', 'vxportal', 'vxcafs']
-        self.vxvm_modules = [
+        # VxVM modules split into allowed and blacklisted (as per updated shell script)
+        self.vxvm_allowed_modules = [
             'vxdmp', 'vxio', 'vxspec',
             'dmpaaa', 'dmpaa', 'dmpalua', 'dmpapf', 'dmpapg', 'dmpap',
             'dmpCLARiiON', 'dmpEngenio', 'dmphuawei', 'dmpvmax',
             'dmpinv', 'dmpjbod', 'dmpnalsi', 'dmpnvme', 'dmpsun7x10alua', 'dmpsvc'
-            # Note: dmpkove excluded due to symbol issues
+        ]
+        # Blacklisted modules that should be REMOVED if they exist
+        self.vxvm_blacklisted_modules = [
+            'dmpkove'  # Excluded due to: dmpkove.ko needs unknown symbol kdsa_ext_ioctl
         ]
         self.vcs_modules = ['gab', 'llt', 'vxfen', 'amf']
         self.vcsmm_modules = ['vcsmm']
@@ -61,7 +65,7 @@ class VRTSLinker:
             try:
                 result = subprocess.run(command, shell=True, check=False,
                                       capture_output=False)
-                
+
                 # Handle specific commands with acceptable non-zero exit codes
                 if "dracut" in command and result.returncode == 3:
                     self.debug_print(f"dracut returned exit code 3 (no work needed) - this is OK")
@@ -71,7 +75,7 @@ class VRTSLinker:
                     return False
                 else:
                     return True
-                    
+
             except Exception as e:
                 print(f"Error executing command: {command} - {e}")
                 return False
@@ -307,13 +311,14 @@ class VRTSLinker:
                     self.action += 1
 
     def process_vxvm_modules(self, kernel_version: str, top_dir: str, blacklist_subrevs: set):
-        """Process VxVM modules"""
+        """Process VxVM allowed modules"""
         kmod_dir = '/etc/vx/kernel'
         target_dir = f"{top_dir}/veritas/vxvm"
 
         self.create_directory_if_needed(target_dir)
 
-        for module in self.vxvm_modules:
+        # Process allowed modules
+        for module in self.vxvm_allowed_modules:
             srcmod = self.find_best_module(module, kernel_version, kmod_dir, blacklist_subrevs)
             if srcmod:
                 target_file = f"{target_dir}/{module}.ko"
@@ -322,21 +327,51 @@ class VRTSLinker:
                     self.myecho(f"/bin/ln -sf {srcmod} {target_file}")
                     self.action += 1
 
+    def process_vxvm_blacklisted_modules(self, kernel_version: str, top_dir: str, blacklist_subrevs: set):
+        """Process VxVM blacklisted modules - REMOVE them if they exist"""
+        kmod_dir = '/etc/vx/kernel'
+        target_dir = f"{top_dir}/veritas/vxvm"
+
+        self.debug_print("Processing blacklisted VxVM modules (for removal)...")
+
+        # Process blacklisted modules - these should be REMOVED
+        for module in self.vxvm_blacklisted_modules:
+            srcmod = self.find_best_module(module, kernel_version, kmod_dir, blacklist_subrevs)
+            if srcmod:
+                target_file = f"{target_dir}/{module}.ko"
+
+                if self.force or (os.path.exists(target_file) and os.path.getsize(target_file) > 0):
+                    if os.path.exists(target_file):
+                        self.debug_print(f"Removing blacklisted module: {target_file}")
+                        self.myecho(f"/bin/rm -fv {target_file}")
+                        self.action += 1
+                    else:
+                        self.debug_print(f"Blacklisted module {target_file} already absent")
+
     def find_vcs_module(self, module_name: str, kernel_version: str,
                        local_kmod_dir: str, blacklist_subrevs: set) -> Optional[str]:
-        """Find VCS module with complex pattern matching"""
+        """Find VCS module with complex pattern matching (updated with RDMA support and /dev/null detection)"""
         krev = kernel_version.split('-')[0]
         ksubrev = '.'.join(kernel_version.split('.')[:3])
 
+        self.debug_print(f"  Looking for VCS module {module_name} in {local_kmod_dir}")
+
+        # Updated patterns with RDMA support (matching new shell script order)
         patterns = [
-            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*el[7-9]_[0-9]*.x86_64-nonrdma",
-            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*el[7-9]_[0-9]*.x86_64",
-            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*el[7-9].x86_64-nonrdma",
-            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*el[7-9].x86_64",
-            f"{local_kmod_dir}/{module_name}.ko.{krev}*el[7-9]_[0-9]*.x86_64-nonrdma",
-            f"{local_kmod_dir}/{module_name}.ko.{krev}*el[7-9]_[0-9]*.x86_64",
-            f"{local_kmod_dir}/{module_name}.ko.{krev}*el[7-9].x86_64-nonrdma",
-            f"{local_kmod_dir}/{module_name}.ko.{krev}*el[7-9].x86_64"
+            # KSUBREV patterns (prioritizing non-RDMA first, then RDMA)
+            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el[7-9]_[0-9]*.x86_64",
+            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el[7-9]_[0-9]*.x86_64-nonrdma",
+            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el[7-9]_[0-9]*.x86_64-rdma",
+            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el[7-9].x86_64",
+            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el[7-9].x86_64-nonrdma", 
+            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el[7-9].x86_64-rdma",
+            # KREV patterns
+            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el[7-9]_[0-9]*.x86_64",
+            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el[7-9]_[0-9]*.x86_64-nonrdma",
+            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el[7-9]_[0-9]*.x86_64-rdma",
+            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el[7-9].x86_64",
+            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el[7-9].x86_64-nonrdma",
+            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el[7-9].x86_64-rdma"
         ]
 
         def extract_vcs_subrev(filename):
@@ -355,24 +390,44 @@ class VRTSLinker:
                             return 0
             return 0
 
-        for pattern in patterns:
+        for i, pattern in enumerate(patterns):
+            self.debug_print(f"    Trying VCS pattern {i+1}/{len(patterns)}: {pattern}")
             files = glob.glob(pattern)
             if files:
+                self.debug_print(f"      Found {len(files)} matching files")
                 # Sort by version
                 files.sort(key=extract_vcs_subrev)
 
-                # Filter out blacklisted versions - clean approach
+                # Filter out blacklisted versions
                 if blacklist_subrevs:
                     filtered_files = []
                     for f in files:
                         file_subrev = extract_vcs_subrev(f)
                         if file_subrev not in blacklist_subrevs:
                             filtered_files.append(f)
+                        else:
+                            self.debug_print(f"        FILTERED OUT: {f} (subrev {file_subrev} is blacklisted)")
                     files = filtered_files
+                    self.debug_print(f"      After blacklist filtering: {len(files)} files remaining")
 
                 if files:
-                    return files[-1]
+                    selected = files[-1]
 
+                    # NEW: Check if symlink points to /dev/null (disabled module)
+                    try:
+                        real_path = os.path.realpath(selected)
+                        if real_path == '/dev/null':
+                            self.debug_print(f"      SKIPPED: {selected} -> /dev/null (disabled module)")
+                            continue
+                        else:
+                            self.debug_print(f"      SELECTED VCS module: {selected}")
+                            return selected
+                    except OSError:
+                        # If readlink fails, assume it's a regular file
+                        self.debug_print(f"      SELECTED VCS module: {selected}")
+                        return selected
+
+        self.debug_print(f"  No suitable VCS module found for {module_name}")
         return None
 
     def process_vcs_modules(self, kernel_version: str, top_dir: str, blacklist_subrevs: set):
@@ -489,8 +544,10 @@ class VRTSLinker:
             self.process_generic_modules(kernel_version, top_dir, blacklist_subrevs)
             self.debug_print("Processing VxFS modules...")
             self.process_vxfs_modules(kernel_version, top_dir, blacklist_subrevs)
-            self.debug_print("Processing VxVM modules...")
+            self.debug_print("Processing VxVM allowed modules...")
             self.process_vxvm_modules(kernel_version, top_dir, blacklist_subrevs)
+            self.debug_print("Processing VxVM blacklisted modules...")
+            self.process_vxvm_blacklisted_modules(kernel_version, top_dir, blacklist_subrevs)
             self.debug_print("Processing VCS modules...")
             self.process_vcs_modules(kernel_version, top_dir, blacklist_subrevs)
             self.debug_print("Processing VCSmm modules...")
