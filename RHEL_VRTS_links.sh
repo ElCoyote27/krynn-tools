@@ -1,0 +1,315 @@
+#!/bin/bash
+# $Id: RHEL_VRTS_links.sh,v 1.22 2019/03/06 21:55:47 root Exp $
+
+# history:
+# 20180524: commented out amf as it is not needed under /lib/modules (trying to solve thor's crashes).
+
+# Step 0
+[ "$BASH" ] && function whence
+{
+	type -p "$@"
+}
+#
+PATH_SCRIPT="$(cd $(/usr/bin/dirname $(whence -- $0 || echo $0));pwd)"
+export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/local/sbin:/usr/local/bin:${PATH_SCRIPT}
+
+# Step 1
+[ "root" != "$USER" ] && exec sudo "$0" "$@"
+
+#
+EXEC_FILE=/root/RHEL_VRTS.sh
+#
+force=0
+silent=0
+run_exec=0
+
+# Check for vxiod
+if [[ ! -x /sbin/vxiod ]]; then
+	echo "/sbin/vxiod missing!"
+	exit 0
+fi
+
+#
+rhelvers="$(lsb_release -r|cut -d: -f2|cut -d. -f1)"
+export rhelvers
+
+# Arg checking
+case ${1} in
+	'--force')
+		export force=1
+		;;
+	'--silent')
+		export silent=1
+		;;
+	'--exec')
+		export run_exec=1
+		export silent=1
+		;;
+esac
+
+# myecho function
+myecho() {
+	# if --exec not specified, then print to screen
+	if [[ $run_exec -eq 0 ]]; then
+		echo "$*"
+	else
+		bash -c "$*"
+	fi
+}
+
+# Banner
+if [[ $silent -eq 0 ]]; then
+	echo "#######################################################################################"
+	echo "###@@### Syntax: $0 [--force|--silent|--exec]"
+	echo "#######################################################################################"
+	echo ""
+fi
+#### COMMENTED OUT 20190926 ##### exec > >(tee ${EXEC_FILE})
+
+for myker in $(rpm -q kernel|grep kernel|cut -c8-)
+do
+	# Header/Init
+	TOP_DIR="$( echo /lib/modules/${myker})"
+	KMOD_DIR="/etc/vx/kernel"
+	KREV="$(echo ${myker}|cut -d'-' -f1)"
+	KSUBREV="$(echo ${myker}|cut -d'.' -f1-3)"
+	KMOD_BLACKLIST=""
+	KMOD_BLACKLIST_PATTERN=""
+	action=0
+	#
+	cd ${TOP_DIR} || exit 127
+	if [[ ! -d ${TOP_DIR}/veritas ]]; then
+		test -d ${TOP_DIR}/veritas || myecho "/bin/mkdir -p ${TOP_DIR}/veritas"
+	fi
+
+	# Populate KMOD_BLACKLIST (Import if we're running EUS and VRTS has more recent kmods)
+	allsubrevs="$(ls -1  /etc/vx/kernel/*.ko.*|sed -e 's/^.*\.ko\.//'|sort -u |cut -d- -f2|sort -V|cut -d. -f1|xargs)"
+	mysubrev="$(echo ${myker}|cut -d'.' -f1-3|cut -d- -f2)"
+	for i in ${allsubrevs}
+	do
+		if [[ ${i} -gt ${mysubrev} ]]; then
+			KMOD_BLACKLIST="$(echo $i ${KMOD_BLACKLIST}|xargs)"
+		fi
+	done
+	# Build the KMOD_BLACKLIST_PATTERN pattern..
+	for j in ${KMOD_BLACKLIST}
+	do
+		if [[ "$j" != "" ]]; then
+			KMOD_BLACKLIST_PATTERN="($(echo ${KMOD_BLACKLIST}|sed -e 's@ @|@g')"
+		fi
+	done
+	if [[ "${KMOD_BLACKLIST_PATTERN}" != "" ]]; then
+		KMOD_BLACKLIST_PATTERN="${KMOD_BLACKLIST_PATTERN})"
+	else
+		KMOD_BLACKLIST_PATTERN="(FAKE_CONDITION)"
+	fi
+
+	# Generic modules
+	for ksub in veki vxglm vxgms vxodm storageapi
+	do
+		# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
+		srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+		if [[ "x${srcmod}" = "x" ]]; then
+			srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KREV}-* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+		fi
+		if [[ "x${srcmod}" != "x" ]]; then
+			if [[ ! -d ${TOP_DIR}/veritas/${ksub} ]]; then
+				test -d ${TOP_DIR}/veritas/${ksub} || myecho "/bin/mkdir -p ${TOP_DIR}/veritas/${ksub}"
+			fi
+			if [[ ${force} -eq 1 || ! -s ${TOP_DIR}/veritas/${ksub}/${ksub}.ko ]]; then
+				myecho "/bin/ln -sf ${srcmod} ${TOP_DIR}/veritas/${ksub}/${ksub}.ko"
+				action=$(( action + 1))
+			fi
+		fi
+	done
+
+	# VxFS
+	if [[ ! -d ${TOP_DIR}/veritas/vxfs ]]; then
+		test -d ${TOP_DIR}/veritas/vxfs || myecho "/bin/mkdir -p ${TOP_DIR}/veritas/vxfs"
+	fi
+	for ksub in vxfs fdd vxportal vxcafs
+	do
+		# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
+		srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+		if [[ "x${srcmod}" = "x" ]]; then
+			srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KREV}-* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+		fi
+		if [[ "x${srcmod}" != "x" ]]; then
+			if [[ ${force} -eq 1 || ! -s ${TOP_DIR}/veritas/vxfs/${ksub}.ko ]]; then
+				myecho "/bin/ln -sf ${srcmod} ${TOP_DIR}/veritas/vxfs/${ksub}.ko"
+				action=$(( action + 1))
+			fi
+		fi
+	done
+
+	# VxVM
+	if [[ ! -d ${TOP_DIR}/veritas/vxvm ]]; then
+		test -d ${TOP_DIR}/veritas/vxvm || myecho "/bin/mkdir -p ${TOP_DIR}/veritas/vxvm"
+	fi
+
+	# Allowed modules
+	for ksub in vxdmp vxio vxspec \
+		dmpaaa dmpaa dmpalua dmpapf dmpapg dmpap \
+		dmpCLARiiON dmpEngenio dmphuawei dmpvmax \
+		dmpinv dmpjbod dmpnalsi dmpnvme dmpsun7x10alua dmpsvc
+	do
+		# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
+		srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+		if [[ "x${srcmod}" = "x" ]]; then
+			srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KREV}-* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+		fi
+		if [[ "x${srcmod}" != "x" ]]; then
+			if [[ ${force} -eq 1 || ! -s ${TOP_DIR}/veritas/vxvm/${ksub}.ko ]]; then
+				myecho "/bin/ln -sf ${srcmod} ${TOP_DIR}/veritas/vxvm/${ksub}.ko"
+				action=$(( action + 1))
+			fi
+		fi
+	done
+
+	# Blacklisted modules
+	# we exclude dmpkove due to: dmpkove.ko needs unknown symbol kdsa_ext_ioctl
+	for ksub in dmpkove
+	do
+		# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
+		srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KSUBREV}.* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+		if [[ "x${srcmod}" = "x" ]]; then
+			srcmod=$( ls -1 ${KMOD_DIR}/${ksub}.ko.${KREV}-* 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+		fi
+		if [[ "x${srcmod}" != "x" ]]; then
+			if [[ ${force} -eq 1 || ! -s ${TOP_DIR}/veritas/vxvm/${ksub}.ko ]]; then
+				if [[ -f ${TOP_DIR}/veritas/vxvm/${ksub}.ko ]]; then
+					myecho "/bin/rm -fv ${TOP_DIR}/veritas/vxvm/${ksub}.ko"
+					action=$(( action + 1))
+				fi
+			fi
+		fi
+	done
+
+	# VCS (gab llt vxfen amf)
+	for ksub in gab llt vxfen amf
+	do
+		LOCAL_KMOD_DIR="/opt/VRTS${ksub}/modules"
+		if [[ -d ${LOCAL_KMOD_DIR} ]]; then
+			# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
+			for kmod_pattern in \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9]_[0-9]*.x86_64" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9]_[0-9]*.x86_64-nonrdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9]_[0-9]*.x86_64-rdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9].x86_64" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9].x86_64-nonrdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9].x86_64-rdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9]_[0-9]*.x86_64" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9]_[0-9]*.x86_64-nonrdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9]_[0-9]*.x86_64-rdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9].x86_64" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9].x86_64-nonrdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9].x86_64-rdma"
+			do
+				srcmod=$( ls -1 $(echo ${kmod_pattern}) 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+				if [[ "x${srcmod}" != "x" ]]; then
+					if [[ "$(readlink -f ${srcmod})" != "/dev/null" ]]; then
+						export srcmod
+						break
+					else
+						# if readlink for the module points to /dev/null, skip item and continue
+						export srcmod=""
+						continue
+					fi
+				fi
+			done
+			if [[ "x${srcmod}" != "x" ]]; then
+				if [[ ! -d ${TOP_DIR}/veritas/vcs ]]; then
+					test -d ${TOP_DIR}/veritas/vcs || myecho "/bin/mkdir -p ${TOP_DIR}/veritas/vcs"
+				fi
+				if [[ ${force} -eq 1 || ! -f ${TOP_DIR}/veritas/vcs/${ksub}.ko ]]; then
+					myecho "/bin/cp -aLf ${srcmod} ${TOP_DIR}/veritas/vcs/${ksub}.ko"
+					myecho "/bin/chmod 0755 ${srcmod} ${TOP_DIR}/veritas/vcs/${ksub}.ko"
+					action=$(( action + 1))
+				fi
+			fi
+		fi
+	done
+
+	# VCSmm (vcsmm)
+	for ksub in vcsmm
+	do
+		LOCAL_KMOD_DIR="/opt/VRTSvcs/rac/modules"
+		if [[ -d ${LOCAL_KMOD_DIR} ]]; then
+			# Try with kernel-x.yy.z-abc.* first. If empty, then try kernel-x.yy.z.* next.
+			for kmod_pattern in \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9]_[0-9]*.x86_64" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9]_[0-9]*.x86_64-nonrdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9]_[0-9]*.x86_64-rdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9].x86_64" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9].x86_64-nonrdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KSUBREV}*.el[7-9].x86_64-rdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9]_[0-9]*.x86_64" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9]_[0-9]*.x86_64-nonrdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9]_[0-9]*.x86_64-rdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9].x86_64" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9].x86_64-nonrdma" \
+				"${LOCAL_KMOD_DIR}/${ksub}.ko.${KREV}*.el[7-9].x86_64-rdma"
+			do
+				srcmod=$( ls -1 $(echo ${kmod_pattern}) 2>/dev/null|sort -V -k 2 -t '-'|egrep -vw ${KMOD_BLACKLIST_PATTERN}|tail -1)
+				if [[ "x${srcmod}" != "x" ]]; then
+					if [[ "$(readlink -f ${srcmod})" != "/dev/null" ]]; then
+						export srcmod
+						break
+					else
+						# if readlink for the module points to /dev/null, skip item and continue
+						export srcmod=""
+						continue
+					fi
+				fi
+			done
+			if [[ "x${srcmod}" != "x" ]]; then
+				if [[ ! -d ${TOP_DIR}/veritas/vcs ]]; then
+					test -d ${TOP_DIR}/veritas/vcs || myecho "/bin/mkdir -p ${TOP_DIR}/veritas/vcs"
+				fi
+				if [[ ${force} -eq 1 || ! -f ${TOP_DIR}/veritas/vcs/${ksub}.ko ]]; then
+					myecho "/bin/cp -aLf ${srcmod} ${TOP_DIR}/veritas/vcs/${ksub}.ko"
+					myecho "/bin/chmod 0755 ${srcmod} ${TOP_DIR}/veritas/vcs/${ksub}.ko"
+					action=$(( action + 1))
+				fi
+			fi
+		fi
+	done
+
+	if [[ ${action} -ne 0 ]]; then
+		myecho "/sbin/depmod -a ${myker}"
+	fi
+done
+
+# Last one (in case something was missed):
+if [[ ${action} -ne 0 ]]; then
+	myecho "/usr/bin/dracut --regenerate-all -o zfs -a lvm -a dm"
+fi
+
+# sync
+if [[ ${action} -ne 0 ]]; then
+	myecho "/usr/bin/sync -f /lib/modules"
+	myecho "/usr/bin/sync -f /boot"
+fi
+
+# label for loading kmods, copy from /lib/modules
+for vx_mod_dir in /etc/vx/kernel /opt/VRTSamf/modules /opt/VRTSgab/modules /opt/VRTSllt/modules /opt/VRTSvxfen/modules /opt/VRTSvcs/rac/modules
+do
+	if [[ -d ${vx_mod_dir} ]]; then
+		semanage fcontext -C -l|grep -q "^${vx_mod_dir} = /lib/modules"
+		if [[ $? -ne 0 ]]; then
+			myecho "semanage fcontext -a -e /lib/modules ${vx_mod_dir}"
+			myecho "/sbin/restorecon -rFv ${vx_mod_dir}"
+		fi
+	fi
+done
+
+# Immediately load modules
+for mymod in vxspec vxio fdd vxportal vxdmp
+do
+	if [[ ${action} -ne 0 ]]; then
+		myecho "/usr/sbin/modprobe ${mymod}"
+	fi
+done
+
+# override exit code
+exit 0
