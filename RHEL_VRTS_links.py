@@ -18,6 +18,7 @@ class VRTSLinker:
         self.force = False
         self.silent = False
         self.run_exec = False
+        self.debug = False
         self.action = 0
         self.rhel_version = None
 
@@ -46,6 +47,11 @@ class VRTSLinker:
 
         # Modules to load automatically
         self.auto_load_modules = ['vxspec', 'vxio', 'fdd', 'vxportal', 'vxdmp']
+
+    def debug_print(self, message: str):
+        """Print debug message prefixed with '#' for shell parseability"""
+        if self.debug:
+            print(f"# DEBUG: {message}")
 
     def myecho(self, command: str):
         """Execute command or print it based on run_exec flag"""
@@ -78,9 +84,12 @@ class VRTSLinker:
             # Extract version number (e.g., "Release: 8.5" -> "8")
             version_line = result.stdout.strip()
             version = version_line.split(':')[1].strip().split('.')[0]
-            return int(version)
+            rhel_version = int(version)
+            self.debug_print(f"Detected RHEL version: {rhel_version}")
+            return rhel_version
         except (subprocess.CalledProcessError, ValueError, IndexError):
             print("Warning: Could not determine RHEL version")
+            self.debug_print("Failed to detect RHEL version, defaulting to 8")
             return 8  # Default to 8
 
     def get_installed_kernels(self) -> List[str]:
@@ -94,9 +103,14 @@ class VRTSLinker:
                     # Extract version from "kernel-4.18.0-348.el8.x86_64"
                     kernel_version = line[7:]  # Remove "kernel-" prefix
                     kernels.append(kernel_version)
+
+            self.debug_print(f"Found {len(kernels)} installed kernels:")
+            for kernel in kernels:
+                self.debug_print(f"  - {kernel}")
             return kernels
         except subprocess.CalledProcessError:
             print("Error: Could not query installed kernels")
+            self.debug_print("Failed to query RPM for installed kernels")
             return []
 
     def get_blacklist_subrevs(self, kernel_version: str) -> set:
@@ -104,14 +118,17 @@ class VRTSLinker:
 
         This replicates the bash logic but returns a clean set instead of a regex pattern
         """
+        self.debug_print(f"Analyzing blacklist logic for kernel: {kernel_version}")
         try:
             # Get all available subrevisions from /etc/vx/kernel
             kmod_dir = Path('/etc/vx/kernel')
             if not kmod_dir.exists():
+                self.debug_print("/etc/vx/kernel directory not found, no blacklisting")
                 return set()
 
             ko_files = list(kmod_dir.glob('*.ko.*'))
             all_subrevs = set()
+            self.debug_print(f"Found {len(ko_files)} .ko files in /etc/vx/kernel")
 
             for ko_file in ko_files:
                 # Extract version part after .ko.
@@ -144,19 +161,33 @@ class VRTSLinker:
                     if len(dash_parts) >= 2:
                         try:
                             my_subrev = int(dash_parts[1])  # e.g., 284
+                            self.debug_print(f"Current kernel subrevision: {my_subrev}")
                         except ValueError:
+                            self.debug_print("Could not parse current kernel subrevision")
                             return set()
                     else:
+                        self.debug_print("No subrevision found in current kernel version")
                         return set()
                 else:
+                    self.debug_print("No dash found in current kernel version")
                     return set()
             else:
+                self.debug_print("Invalid kernel version format")
                 return set()
 
-            # Return subrevisions greater than current (these should be blacklisted)
-            return {subrev for subrev in all_subrevs if subrev > my_subrev}
+            # Find all available subrevisions
+            self.debug_print(f"All available subrevisions: {sorted(all_subrevs)}")
 
-        except Exception:
+            # Return subrevisions greater than current (these should be blacklisted)
+            blacklist = {subrev for subrev in all_subrevs if subrev > my_subrev}
+            if blacklist:
+                self.debug_print(f"Blacklisted subrevisions (newer than {my_subrev}): {sorted(blacklist)}")
+            else:
+                self.debug_print("No subrevisions to blacklist (none newer than current)")
+            return blacklist
+
+        except Exception as e:
+            self.debug_print(f"Exception in blacklist analysis: {e}")
             return set()
 
     def find_best_module(self, module_name: str, kernel_version: str,
@@ -165,8 +196,10 @@ class VRTSLinker:
 
         This replicates the bash logic but uses a clean set-based blacklist approach
         """
+        self.debug_print(f"Finding best module for {module_name} with kernel {kernel_version}")
         krev = kernel_version.split('-')[0]  # e.g., "5.14.0"
         ksubrev = '.'.join(kernel_version.split('.')[:3])  # e.g., "5.14.0"
+        self.debug_print(f"  KREV (base): {krev}, KSUBREV (full): {ksubrev}")
 
         # Try with full subrevision first (KSUBREV), then with base revision (KREV)
         patterns = [
@@ -174,8 +207,12 @@ class VRTSLinker:
             f"{kmod_dir}/{module_name}.ko.{krev}-*"
         ]
 
-        for pattern in patterns:
+        for i, pattern in enumerate(patterns):
+            pattern_type = "KSUBREV" if i == 0 else "KREV"
+            self.debug_print(f"  Trying pattern {i+1}/2 ({pattern_type}): {pattern}")
             files = glob.glob(pattern)
+            self.debug_print(f"    Found {len(files)} matching files")
+
             if files:
                 # Sort by version using a version-aware sort (similar to sort -V)
                 def version_key(filename):
@@ -196,19 +233,33 @@ class VRTSLinker:
                     return 0
 
                 files.sort(key=version_key)
+                if self.debug:
+                    self.debug_print(f"    Files sorted by version:")
+                    for f in files:
+                        subrev = version_key(f)
+                        self.debug_print(f"      {f} (subrev: {subrev})")
 
                 # Filter out blacklisted versions - much cleaner than regex matching
+                original_count = len(files)
                 if blacklist_subrevs:
                     filtered_files = []
                     for f in files:
                         file_subrev = version_key(f)  # Extract subrev from filename
                         if file_subrev not in blacklist_subrevs:
                             filtered_files.append(f)
+                        else:
+                            self.debug_print(f"      FILTERED OUT: {f} (subrev {file_subrev} is blacklisted)")
                     files = filtered_files
+                    self.debug_print(f"    After blacklist filtering: {len(files)}/{original_count} files remaining")
 
                 if files:
-                    return files[-1]  # Return the latest version (tail -1 equivalent)
+                    selected = files[-1]  # Return the latest version (tail -1 equivalent)
+                    self.debug_print(f"    SELECTED: {selected}")
+                    return selected
+                else:
+                    self.debug_print(f"    No files remaining after filtering")
 
+        self.debug_print(f"  No suitable module found for {module_name}")
         return None
 
     def create_directory_if_needed(self, directory: str):
@@ -406,13 +457,17 @@ class VRTSLinker:
 
         # Process each kernel
         total_actions = 0
+        self.debug_print(f"Processing {len(kernels)} kernels")
         for kernel_version in kernels:
+            self.debug_print(f"=== Processing kernel: {kernel_version} ===")
             self.action = 0
             top_dir = f"/lib/modules/{kernel_version}"
 
             if not os.path.exists(top_dir):
+                self.debug_print(f"Skipping {kernel_version}: {top_dir} does not exist")
                 continue
 
+            self.debug_print(f"Working directory: {top_dir}")
             os.chdir(top_dir)
 
             # Create base veritas directory
@@ -423,29 +478,44 @@ class VRTSLinker:
             blacklist_subrevs = self.get_blacklist_subrevs(kernel_version)
 
             # Process different module types
+            self.debug_print("Processing generic modules...")
             self.process_generic_modules(kernel_version, top_dir, blacklist_subrevs)
+            self.debug_print("Processing VxFS modules...")
             self.process_vxfs_modules(kernel_version, top_dir, blacklist_subrevs)
+            self.debug_print("Processing VxVM modules...")
             self.process_vxvm_modules(kernel_version, top_dir, blacklist_subrevs)
+            self.debug_print("Processing VCS modules...")
             self.process_vcs_modules(kernel_version, top_dir, blacklist_subrevs)
+            self.debug_print("Processing VCSmm modules...")
             self.process_vcsmm_modules(kernel_version, top_dir, blacklist_subrevs)
 
             # Run depmod if we made changes
             if self.action > 0:
+                self.debug_print(f"Made {self.action} changes for kernel {kernel_version}, running depmod")
                 self.myecho(f"/sbin/depmod -a {kernel_version}")
                 total_actions += self.action
+            else:
+                self.debug_print(f"No changes needed for kernel {kernel_version}")
 
         # Final operations if any changes were made
         if total_actions > 0:
+            self.debug_print(f"Total actions across all kernels: {total_actions}")
+            self.debug_print("Running final system operations...")
             self.myecho("/usr/bin/dracut --regenerate-all -o zfs -a lvm -a dm")
             self.myecho("/usr/bin/sync -f /lib/modules")
             self.myecho("/usr/bin/sync -f /boot")
+        else:
+            self.debug_print("No changes made, skipping final operations")
 
         # Set up SELinux contexts
+        self.debug_print("Setting up SELinux contexts...")
         self.setup_selinux_contexts()
 
         # Load modules
+        self.debug_print("Loading kernel modules...")
         self.load_modules()
 
+        self.debug_print("Script completed successfully")
         sys.exit(0)
 
 def main():
@@ -467,6 +537,8 @@ Examples:
                        help='Run in silent mode')
     parser.add_argument('--exec', action='store_true',
                        help='Execute commands instead of just displaying them')
+    parser.add_argument('--debug', action='store_true',
+                       help='Enable debug output showing matching logic (prefixed with #)')
 
     args = parser.parse_args()
 
@@ -475,6 +547,7 @@ Examples:
     linker.force = args.force
     linker.silent = args.silent
     linker.run_exec = args.exec
+    linker.debug = args.debug
 
     # If --exec is specified, also set silent mode
     if args.exec:
@@ -483,7 +556,7 @@ Examples:
     # Print banner unless silent
     if not linker.silent:
         print("#" * 87)
-        print(f"###@@### Syntax: {sys.argv[0]} [--force|--silent|--exec]")
+        print(f"###@@### Syntax: {sys.argv[0]} [--force|--silent|--exec|--debug]")
         print("#" * 87)
         print()
 
