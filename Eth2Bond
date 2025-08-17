@@ -1,5 +1,5 @@
 #!/bin/bash
-# $Id: Eth2Bond,v 1.7 2015/05/12 20:14:36 root Exp $
+# $Id: Eth2Bond,v 1.8 2018/02/09 21:00:38 root Exp $
 # This tool will convert ethX interfaces to bondX interfaces.
 SYSCFG_DIR=/etc/sysconfig/network-scripts
 TMPCFG_DIR=/var/tmp/eth2bond
@@ -8,38 +8,56 @@ DEF_BONDING_OPTS="mode=active-backup miimon=200"
 
 [ -d ${TMPCFG_DIR} ] || mkdir -pv ${TMPCFG_DIR}
 
-for	myeth in ${SYSCFG_DIR}/ifcfg-eth[0-9]*
+j=0
+
+# explore nets..
+mynets=$(ls -1 \
+		${SYSCFG_DIR}/ifcfg-eth[0-9]* \
+		${SYSCFG_DIR}/ifcfg-em[0-9]* \
+		${SYSCFG_DIR}/ifcfg-ens[0-9]* \
+		${SYSCFG_DIR}/ifcfg-ib[0-9]* \
+		${SYSCFG_DIR}/ifcfg-enp[0-9]*  2>/dev/null|grep -v '\.bak$')
+
+# Main loop
+for	pattern in ${mynets}
 do
-	/bin/echo "(II) Processing ${myeth}..."
-	i="$(basename ${myeth}|sed -e 's/ifcfg.eth//')"
-	TGT_ETH="${TMPCFG_DIR}/ifcfg-eth${i}"
-	TGT_BOND="${TMPCFG_DIR}/ifcfg-bond${i}"
+	for myeth in $(echo ${pattern}|grep -v '\.bak$')
+	do
+		i="$(echo ${myeth}|sed -e 's@/etc/sysconfig/network-scripts/ifcfg-@@')"
+		TGT_ETH="${TMPCFG_DIR}/ifcfg-${i}"
+		TGT_BOND="${TMPCFG_DIR}/ifcfg-bond${j}"
+		/bin/echo "(II) Processing ${i} ( bond${j} )..."
 
-	SAV_DIR="${TMPCFG_DIR}/eth${i}"
-	[ -d ${SAV_DIR} ] || mkdir -pv ${SAV_DIR}
+		SAV_DIR="${TMPCFG_DIR}/${i}"
+		[ -d ${SAV_DIR} ] || mkdir -pv ${SAV_DIR}
 
-	/bin/echo "(II) Saved copy of ${myeth} to ${TGT_ETH}_orig"
-	/bin/cp -pf ${myeth} ${SAV_DIR}/ifcfg-eth${i}.orig
+		###/bin/echo "(II) Saved copy of ${myeth} to ${TGT_ETH}.orig"
+		/bin/cp -pf ${myeth} ${SAV_DIR}/ifcfg-${i}.orig
 
-	if [ -f ${SYSCFG_DIR}/ifcfg-bond${i} ]; then
-		echo "(II) ${SYSCFG_DIR}/ifcfg-bond${i} already exists..."
-	else
-		/bin/echo "(II) Building ${TGT_ETH} from ${myeth}..."
-		/bin/egrep '^#' ${myeth} > ${TGT_ETH}
-		/bin/echo -e "DEVICE=eth${i}\nSLAVE=yes\nMASTER=bond${i}\nTYPE=Ethernet\nNM_CONTROLLED=no\nBOOTPROTO=none" >> ${TGT_ETH}
-		/bin/egrep "^(NAME|UUID|ARP|ONBOOT|HWADDR|LINKDELAY|ETHTOOL_OPTS|USERCTL)" ${myeth} >> ${TGT_ETH}
+		if [ -f ${SYSCFG_DIR}/ifcfg-bond${j} ]; then
+			echo "(II) ${SYSCFG_DIR}/ifcfg-bond${j} already exists..."
+		else
+			/bin/echo "(II) Building ${TGT_ETH} from ${myeth}..."
+			/bin/egrep '^#' ${myeth} > ${TGT_ETH}
+			/bin/echo -e "DEVICE=${i}\nSLAVE=yes\nMASTER=bond${j}\nTYPE=Ethernet\nNM_CONTROLLED=no\nBOOTPROTO=none" >> ${TGT_ETH}
+			/bin/egrep "^(NAME|UUID|ARP|ONBOOT|HWADDR|LINKDELAY|ETHTOOL_OPTS|USERCTL)" ${myeth} >> ${TGT_ETH}
 
-		/bin/echo "(II) Building ${TGT_BOND} from ${myeth}..."
-		/bin/echo -e "DEVICE=bond${i}\nTYPE=Bond\nNM_CONTROLLED=no" > ${TGT_BOND}
-		/bin/egrep "^(MTU|PERSISTENT_DHCLIENT|ONBOOT|IPADDR|NETMASK|NETWORK|GATEWAY|BROADCAST|DNS|PREFIX|DEFROUTE|IPV[46]|DOMAIN|USERCTL|PEERDNS|BOOTPROTO|IPV4_FAILURE_FATAL)" ${myeth} >> ${TGT_BOND}
-		/bin/echo "BONDING_OPTS=\"${DEF_BONDING_OPTS}\"" >> ${TGT_BOND}
+			/bin/echo "(II) Building ${TGT_BOND} from ${myeth}..."
+			/bin/echo -e "DEVICE=bond${j}\nTYPE=Bond\nNM_CONTROLLED=no" > ${TGT_BOND}
+			/bin/egrep "^(MTU|PERSISTENT_DHCLIENT|ONBOOT|IPADDR|NETMASK|NETWORK|GATEWAY|BROADCAST|DNS|PREFIX|DEFROUTE|IPV[46]|DOMAIN|USERCTL|PEERDNS|BOOTPROTO|IPV4_FAILURE_FATAL)" ${myeth} >> ${TGT_BOND}
+			/bin/echo "BONDING_OPTS=\"${DEF_BONDING_OPTS}\"" >> ${TGT_BOND}
 
-		/bin/cat ${TGT_ETH} ${TGT_BOND}|sort -u > ${SAV_DIR}/ifcfg-eth${i}.v1
-		/bin/cat ${myeth} |sort -u > ${SAV_DIR}/ifcfg-eth${i}.v2
-		/usr/bin/diff ${SAV_DIR}/ifcfg-eth${i}.v1 ${SAV_DIR}/ifcfg-eth${i}.v2 > ${SAV_DIR}/ifcfg-eth${i}.diff
-		/bin/cat ${SAV_DIR}/ifcfg-eth${i}.diff
+			/bin/cat ${TGT_ETH} ${TGT_BOND}|sort -u > ${SAV_DIR}/ifcfg-${i}.v1
+			/bin/cat ${myeth} |sort -u > ${SAV_DIR}/ifcfg-${i}.v2
+			/usr/bin/diff ${SAV_DIR}/ifcfg-${i}.v1 ${SAV_DIR}/ifcfg-${i}.v2 > ${SAV_DIR}/ifcfg-${i}.diff
+			#### /bin/cat ${SAV_DIR}/ifcfg-${i}.diff
 
-		/bin/echo "(II) now run: /bin/mv -fv ${TMPCFG_DIR}/ifcfg* ${SYSCFG_DIR}"
-	fi
+		fi
+	done
+	j=$((j+1))
+
 done
+
+#
+/bin/echo "(II) now run: /bin/mv -fv ${TMPCFG_DIR}/ifcfg* ${SYSCFG_DIR}"
 

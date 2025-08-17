@@ -1,7 +1,7 @@
 #!/bin/bash
 set -ex
 
-QCOW2_OPTIONS="preallocation=metadata,cluster_size=512k,lazy_refcounts=on"
+QCOW2_OPTIONS="preallocation=metadata,cluster_size=64k,lazy_refcounts=on"
 
 if [[ -z "$1" ]]; then
 	echo "Usage: $0 vm1-*.qcow2"
