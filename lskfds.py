@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# $Id: lsdel.py,v 1.0 2024/01/01 00:00:00 converted from bash Exp $
+# $Id: lskfds.py,v 1.0 2024/01/01 00:00:00 converted from bash Exp $
 
-# Python rewrite of Find_Deleted_Inodes.sh - finds processes holding deleted file descriptors
-# Renamed to 'lsdel' for brevity and consistency with other ls* tools
+# Python rewrite of Find_Deleted_Inodes.sh - finds processes holding killed file descriptors  
+# Renamed to 'lskfds' (list killed file descriptors) for technical accuracy and consistency
 
 import os
 import sys
@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from collections import defaultdict
 
-class DeletedFilesAnalyzer:
+class KilledFileDescriptorsAnalyzer:
     def __init__(self):
         self.debug = False
         self.show_size = False
@@ -82,10 +82,10 @@ class DeletedFilesAnalyzer:
         else:
             return f"{size_bytes}B"
 
-    def scan_deleted_files(self) -> List[Tuple[str, str, str, str, str, int]]:
-        """Scan all processes for deleted file descriptors"""
-        self.debug_print("Starting deleted file descriptor scan")
-        deleted_files = []
+    def scan_killed_file_descriptors(self) -> List[Tuple[str, str, str, str, str, int]]:
+        """Scan all processes for killed file descriptors"""
+        self.debug_print("Starting killed file descriptor scan")
+        killed_fds = []
 
         # Get all numeric PID directories
         try:
@@ -114,7 +114,7 @@ class DeletedFilesAnalyzer:
                         # Resolve the symlink
                         link_target = os.readlink(fd_path)
 
-                        # Check if this is a deleted file
+                        # Check if this is a killed file descriptor (deleted file)
                         if '(deleted)' in link_target:
                             # Get process information
                             comm, cmdline = self.get_process_info(pid)
@@ -130,11 +130,11 @@ class DeletedFilesAnalyzer:
                                 if self.min_size_mb > 0 and file_size < (self.min_size_mb * 1024 * 1024):
                                     continue
 
-                            # Clean up the deleted file path
+                            # Clean up the killed file path
                             clean_path = link_target.replace(' (deleted)', '')
 
-                            deleted_files.append((pid, fd_name, comm, cmdline, clean_path, file_size))
-                            self.debug_print(f"Found deleted FD: PID {pid}, FD {fd_name}, CMD {comm}, FILE {clean_path}")
+                            killed_fds.append((pid, fd_name, comm, cmdline, clean_path, file_size))
+                            self.debug_print(f"Found killed FD: PID {pid}, FD {fd_name}, CMD {comm}, FILE {clean_path}")
 
                     except (OSError, IOError):
                         # File descriptor may have disappeared or be inaccessible
@@ -144,71 +144,71 @@ class DeletedFilesAnalyzer:
                 # Process may have disappeared or fd directory inaccessible
                 continue
 
-        self.debug_print(f"Found {len(deleted_files)} deleted file descriptors")
-        return deleted_files
+        self.debug_print(f"Found {len(killed_fds)} killed file descriptors")
+        return killed_fds
 
-    def display_results(self, deleted_files: List[Tuple[str, str, str, str, str, int]]):
+    def display_results(self, killed_fds: List[Tuple[str, str, str, str, str, int]]):
         """Display the results in a formatted table"""
-        if not deleted_files:
-            print("No deleted file descriptors found.")
+        if not killed_fds:
+            print("No killed file descriptors found.")
             return
 
         # Sort results
         if self.sort_by_size and self.show_size:
-            deleted_files.sort(key=lambda x: x[5], reverse=True)  # Sort by size descending
+            killed_fds.sort(key=lambda x: x[5], reverse=True)  # Sort by size descending
         else:
-            deleted_files.sort(key=lambda x: (int(x[0]), int(x[1])))  # Sort by PID, then FD
+            killed_fds.sort(key=lambda x: (int(x[0]), int(x[1])))  # Sort by PID, then FD
 
         # Print header
         if self.show_size:
-            print(self.header_format.format("PID", "FD", "CMD", "SIZE", "DELETED FILE"))
+            print(self.header_format.format("PID", "FD", "CMD", "SIZE", "KILLED FILE"))
             print("-" * 80)
         else:
-            print("{:<8} {:<8} {:<22} {}".format("PID", "FD", "CMD", "DELETED FILE"))
+            print("{:<8} {:<8} {:<22} {}".format("PID", "FD", "CMD", "KILLED FILE"))
             print("-" * 60)
 
         # Print results
         total_size = 0
-        for pid, fd, comm, cmdline, deleted_path, file_size in deleted_files:
+        for pid, fd, comm, cmdline, killed_path, file_size in killed_fds:
             if self.show_size:
                 size_str = self.format_size(file_size)
-                print(self.row_format.format(pid, fd, comm, size_str, deleted_path))
+                print(self.row_format.format(pid, fd, comm, size_str, killed_path))
                 total_size += file_size
             else:
-                print("{:<8} {:<8} {:<22} {}".format(pid, fd, comm, deleted_path))
+                print("{:<8} {:<8} {:<22} {}".format(pid, fd, comm, killed_path))
 
         # Show summary
         print("-" * (80 if self.show_size else 60))
         if self.show_size:
-            print(f"Total: {len(deleted_files)} deleted files, {self.format_size(total_size)} wasted space")
+            print(f"Total: {len(killed_fds)} killed files, {self.format_size(total_size)} wasted space")
         else:
-            print(f"Total: {len(deleted_files)} deleted file descriptors found")
+            print(f"Total: {len(killed_fds)} killed file descriptors found")
 
     def run(self):
         """Main execution function"""
-        self.debug_print("Starting deleted file descriptor analysis")
+        self.debug_print("Starting killed file descriptor analysis")
 
-        # Scan for deleted files
-        deleted_files = self.scan_deleted_files()
+        # Scan for killed file descriptors
+        killed_fds = self.scan_killed_file_descriptors()
 
         # Display results
-        self.display_results(deleted_files)
+        self.display_results(killed_fds)
 
-        self.debug_print("Deleted file descriptor analysis completed")
+        self.debug_print("Killed file descriptor analysis completed")
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Find processes holding file descriptors to deleted files",
+        description="Find processes holding file descriptors to killed (deleted) files",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s                    # Show all deleted file descriptors
+  %(prog)s                    # Show all killed file descriptors
   %(prog)s --size             # Show with file sizes
   %(prog)s --size --sort      # Show with sizes, sorted by size
   %(prog)s --min-size 10      # Only show files >= 10MB
   %(prog)s --debug            # Show debug information
 
-Note: This tool helps identify processes holding onto deleted files,
+Note: This tool helps identify processes holding onto killed (deleted) files,
 which can prevent disk space from being freed until the process is restarted.
         """
     )
@@ -228,7 +228,7 @@ which can prevent disk space from being freed until the process is restarted.
     args = parser.parse_args()
 
     # Create and configure analyzer
-    analyzer = DeletedFilesAnalyzer()
+    analyzer = KilledFileDescriptorsAnalyzer()
     analyzer.debug = args.debug
     analyzer.show_size = args.size or args.min_size > 0
     analyzer.sort_by_size = args.sort
