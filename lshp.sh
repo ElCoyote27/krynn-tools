@@ -1,0 +1,67 @@
+#!/bin/bash
+# $Id: lsthp,v 1.5 2019/04/03 21:17:33 root Exp $
+#
+PRINT_PATTERN="%-38s %-10s : %s %s\n"
+typeset -i index=0
+
+if [[ $UID -ne 0 ]]; then
+	echo "Run $0 as root!" ; exit 127
+fi
+
+# Loop
+
+# find smaps for procs with 2Mb hugepages.
+huge_pid_list=$(/bin/egrep -H -s 'KernelPageSize:[[:space:]]+2048 kB' /proc/*/smaps|cut -d: -f1|xargs)
+if [[ -z ${huge_pid_list} ]]; then
+	printf "#### No 2Mb HugePages found!\n"
+else
+	if [[ $index -eq 0 ]]; then
+		# Header
+		printf "${PRINT_PATTERN}" "# [procname] (2Mb HugePages)" "PID" "Size" "unit"
+	fi
+	(/bin/egrep -H -B11 -s 'KernelPageSize:[[:space:]]+2048 kB' ${huge_pid_list}| grep 'smaps.Size:[[:space:]]'| \
+		sed -e 's@/proc/@@' -e 's@smaps.@@' -e 's@/Size:@@' | \
+		awk '{ print $2,$3,$1}'| \
+		while read size unit pid
+	do
+		#echo $pid
+		if [[ -f /proc/${pid}/status ]]; then
+			pidname=$(egrep -s 'Name:' /proc/${pid}/status|awk '{ print $2}')
+			if [[  "$pidname" = "qemu-kvm" || "$pidname" = "qemu-system-x86" ]]; then
+				guestname="$(strings -a /proc/${pid}/cmdline |egrep -A1 -i '^-name'|sed -e 's@,debug.*@@' -e 's@guest=@@'|tail -1)"
+			else
+				guestname=""
+			fi
+			printf "${PRINT_PATTERN}" "${pidname} [ ${guestname} ]" "(${pid})" "${size}" "${unit}"
+		fi
+		index=1
+	done)|sort -u
+fi
+
+# find smaps for procs with 1Gb hugepages.
+huge_pid_list=$(/bin/egrep -s 'KernelPageSize:[[:space:]]+1048576 kB' /proc/*/smaps|cut -d: -f1|xargs)
+if [[ -z ${huge_pid_list} ]]; then
+	printf "#### No 1Gb HugePages found!\n"
+else
+	if [[ $index -eq 0 ]]; then
+		# Header
+		printf "${PRINT_PATTERN}" "# [procname] (1Gb HugePages)" "PID" "Size" "unit"
+	fi
+
+	(/bin/egrep -B11 -s 'KernelPageSize:[[:space:]]+1048576 kB' ${huge_pid_list}| grep '/smaps.Size:'| \
+		sed -e 's@/proc/@@' -e 's@/smaps.Size:@@' | \
+		awk '{ print $2,$3,$1}'| \
+		while read size unit pid
+	do
+		if [[ -f /proc/${pid}/status ]]; then
+			pidname=$(egrep -s 'Name:' /proc/${pid}/status|awk '{ print $2}')
+			if [[  "$pidname" = "qemu-kvm" || "$pidname" = "qemu-system-x86" ]]; then
+				guestname="$(strings -a /proc/${pid}/cmdline |egrep -A1 -i '^-name'|sed -e 's@,debug.*@@' -e 's@guest=@@'|tail -1)"
+			else
+				guestname=""
+			fi
+			printf "${PRINT_PATTERN}" "${pidname} [ ${guestname} ]" "(${pid})" "${size}" "${unit}"
+		fi
+		index=1
+	done)|sort -u
+fi

@@ -1,0 +1,331 @@
+#!/bin/bash
+#
+# $Id: lseth,v 1.33 2024/11/14 03:54:46 root Exp $
+#
+# TODO: rx/tx buffers, MTU, firmware version?
+
+# Sanity Check
+if [ "x$(uname -s)" != "xLinux" ]; then
+	echo "Not supported on $(uname -s)! Exit!"
+	exit 125
+fi
+#defines
+WHICH_CMD=/usr/bin/which
+
+# Check for binaries
+export PATH=/sbin:/usr/sbin:/bin:/usr/bin:${PATH}
+for myexec in awk sed grep cut ip ethtool stty cat head xargs lspci lsusb sort cksum
+do
+	val="$(echo ${myexec}|/usr/bin/tr '[:lower:]' '[:upper:]')_CMD"
+	tmp_exec="$(which ${myexec} 2> /dev/null)"
+
+	# Sanity checks
+	if [ "x${tmp_exec}" = "x" ]; then
+		case ${myexec} in
+			lsusb)
+				;;
+			*)
+				echo "Unable to find '${myexec}' in PATH! Aborting.."; exit 126
+				;;
+		esac
+	else
+		if [ ! -x ${tmp_exec} ]; then
+			echo "${tmp_exec} not executable! Aborting..."; exit 127
+		fi
+	fi
+
+	case ${myexec} in
+		sort)
+			# Check for sort version
+			SORT_VER=$(${tmp_exec} --version|${AWK_CMD} '{ if (($1 == "sort" ) && ($2 ~ /GNU/)) { ver=$4 } } END { if (ver != "") print ver ; else print 0 } '|${CUT_CMD} -d. -f1)
+
+			if [ $SORT_VER -ge 8 ]; then
+				mybinexec="${tmp_exec} -V"
+			else
+				mybinexec="${tmp_exec}"
+			fi
+			;;
+		awk)
+			mybinexec="${tmp_exec}"
+			;;
+		*)
+			mybinexec="${tmp_exec}"
+			;;
+	esac
+	export ${val}="${mybinexec}"
+done
+
+# Examine terminal..
+MAX_COL=$(${STTY_CMD} size|${AWK_CMD} '{ print $2}')
+if [ "x${MAX_COL}" = "x" ]; then
+	OFILTER="$CAT_CMD"
+else
+	OFILTER="$CUT_CMD -c-${MAX_COL}"
+fi
+
+# Header state
+hstate=0
+pmaxlen=0
+
+#all_if=$(${AWK_CMD} '{ if ( $1 ~ ":" ) print substr($1, 0, length($1)-1) }' /proc/net/dev)
+pmaxlen=$(cd /sys/class/net; /bin/ls -1d {eth,ib,wl,ww,en,sl,em,o,t,p[0-9],q,w}* 2>/dev/null|${AWK_CMD} 'BEGIN { l=0 } { if ( length($1) > l ) { l=length($1) } } END { print l }' )
+PHYS_PRINT_PATTERN="%-$((${pmaxlen}+1))s%7s%7s%6s %-16s%-24s%-19s%-18s%s\n"
+
+# Physical interfaces
+for mydev in $(/bin/ls -1d /sys/class/net/* 2> /dev/null|${SORT_CMD})
+do
+	if [ ! -f /sys/class/net/${mydev}/device ]; then
+	if [ "x${mydev}" != "x" ]; then
+		HWPATH="${mydev}/device"
+		SPEED="N/A"
+		STATE=""
+		MTU=0
+		SWDRIVER=""
+		PCIPATH=""
+		MCADDR=""
+		IPADDR=""
+		DESC=""
+		if [ -d ${HWPATH} ]; then
+			if [ $hstate -eq 0 ]; then
+				printf "\n${PHYS_PRINT_PATTERN}" "#PHYS" "STATE" "SPEED" "MTU" "DRIVER" "HW_Path" "MAC_Addr" "IP_Addr" "Description"
+				hstate+=1
+			fi
+			DEVI=$(basename ${mydev})
+			# First attempt to detect state
+			STATE=$(${IP_CMD} -o l sh ${DEVI}|${AWK_CMD} \
+			'{
+				if ( $3 ~ /[!<,]UP[!>,]/ ) { print "up" } else { print "(down)" }
+			}')
+			if [ "x${STATE}" = "x" ]; then
+				if [ -f ${mydev}/operstate ]; then
+					STATE=$(cat ${mydev}/operstate)
+				fi
+			fi
+			if [ -f ${mydev}/speed -a "x${STATE}" = "xup" -a "x$(echo ${DEVI}|${CUT_CMD} -c-2)" != "xib" ]; then
+				tmp_speed=$(cat ${mydev}/speed 2>/dev/null)
+			else
+				tmp_speed=$(${ETHTOOL_CMD} ${DEVI} 2>/dev/null|${AWK_CMD} '{ if (( $1 == "Speed:" ) && ( $2 ~ /Mb.s/ )) { sub(/Mb.s/,"",$2) ; print $2}}' )
+			fi
+			# Did we obtain a value?
+			if [ "x${tmp_speed}" != "x" -a "x${tmp_speed}" != "xN/A" ]; then
+				# Sometimes ${mydev}/speed will report speed as 4294967295, skip it
+				re='^[0-9]+$'
+				if [[ ${tmp_speed} =~ $re  ]]; then
+				if [ ${tmp_speed} -lt 2000000000 ]; then
+					SPEED=${tmp_speed}
+				fi
+				fi
+			fi
+			MTU=$(${IP_CMD} -o l sh ${DEVI}|${AWK_CMD} '{ if ( $4 ~ /mtu/ ) { print $5 ; exit } }')
+			case ${DEVI} in
+				eth*|wl*|wl*|ww*|en*|sl*|em*|o*|t*|p[0-9]*|q*|w*)
+					SWDRIVER=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "driver:" ) { print $2}}' )
+					PCIPATH=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "bus-info:" ) { print $2}}' )
+					if [ -f ${mydev}/address ]; then
+						MCADDR=$(cat ${mydev}/address)
+					else
+						MCADDR=$(${IP_CMD} l sh ${DEVI}|${AWK_CMD} '{ if ( ( $1 ~ /link.ether/ ) || ( $1 ~ /link.loopback/ )) print $2 }')
+					fi
+					# Now look for the real MAC if that devi is enslaved and inactive..
+					enslvd=$(${GREP_CMD} -H "Slave Interface: ${DEVI}\$" /proc/net/bonding/bond* 2> /dev/null)
+					if [ $? -eq 0 ]; then
+						BMCADDR=$(${GREP_CMD} -A5 "Slave Interface: ${DEVI}\$" /proc/net/bonding/bond*|${AWK_CMD} '{ if ( $2 ~ /HW/ ) print $4 }')
+						if [ "x${BMCADDR}" != "x${MCADDR}" -a "x${BMCADDR}" != "x" ]; then
+							MCADDR="(${BMCADDR})"
+						fi
+					fi
+					;;
+				ib*)
+					SWDRIVER=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "driver:" ) { print $2}}' )
+					PCIPATH=$(/bin/ls -l ${HWPATH}|${SED_CMD} -e 's@.*/@@')
+					if [ -f ${mydev}/address ]; then
+						MCADDR=$(cat ${mydev}/address |${SED_CMD} -e 's/\(.*00:00:00:00:\)\(.*$\)/\2/')
+					else
+						MCADDR="N/A"
+					fi
+					;;
+				*)
+					;;
+			esac
+			# Catchall Software fallbacks
+			if [ "x${SWDRIVER}" = "x" ]; then
+				# This most likely means we're not root
+				SWDRIVER=$(/bin/ls -l ${mydev}/device/driver/module 2>/dev/null|${SED_CMD} -e 's@.*/@@')
+			fi
+			if [ "x${PCIPATH}" = "x" ]; then
+				# This most likely means we're not root
+				PCIPATH=$(/bin/ls -l ${HWPATH}|${SED_CMD} -e 's@.*/@@')
+			fi
+
+			case ${SWDRIVER} in
+				# For some drivers, there is often much info in the Subsystem field..
+				ixgbe|sfc|e1000e|igb)
+					MIN_DESCLEN=16
+					DEV_VEND=$(${LSPCI_CMD} -vmm -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ FS=":"; OFS=" " ; if ( $1 == "SVendor" ) { sub(/\t/,"",$2) ;print $2 } }'|${XARGS_CMD})
+					DEV_DESC=$(${LSPCI_CMD} -vmm -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ FS=":"; OFS=" " ; if ( $1 == "SDevice" ) { sub(/\t/,"",$2) ;print $2 } }'|${XARGS_CMD})
+					if [ $(echo ${DEV_DESC}|wc -c) -ge ${MIN_DESCLEN} ]; then
+						# Desc is long enough, let's try it
+						DESC="${DEV_VEND} ${DEV_DESC}"
+					else
+						# Desc is too short, fall back
+						DESC=$(${LSPCI_CMD} -D -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ sub(/.*: /,""); print $0}')
+					fi
+					;;
+				# known USB drivers
+				aqc111|asix|ax88179_178a|catc|cdc_eem|cdc_ether|cdc_mbim|cdc_ncm|cdc_subset|ch9200|cx82310_eth|dm9601|gl620a|hso|huawei_cdc_ncm|int51x1|ipheth|kalmia|kaweth|lan78xx|lg-vl600|mcs7830|net1080|pegasus|plusb|qmi_wwan|r8152|r8153_ecm|rndis_host|rtl8150|sierra_net|smsc75xx|smsc95xx|sr9700|usbnet|zaurus)
+					USBPATH=$(/bin/ls -1ld ${mydev} |${AWK_CMD} '{ if ( $11 ~ /usb/ ) {
+						sub(/.*usb[0-9]*\//,"")
+						sub(/\/.*/,"")
+						print $0
+						exit }
+					}')
+					if [ "x${USBPATH}" != "x" -a "x${LSUSB_CMD}" != "x" ]; then
+						VID=$(udevadm info ${mydev} -x|egrep -w '(ID_USB_VENDOR_ID|ID_USB_VENDOR_ID)'|cut -d= -f2|head -1)
+						PID=$(udevadm info ${mydev} -x|egrep -w '(ID_USB_MODEL_ID|ID_MODEL_ID)'|cut -d= -f2|head -1)
+						DESC=$(${LSUSB_CMD} -d ${VID}:${PID}|sed -e "s@.*${VID}:${PID} @@")
+					else
+						DESC="N/A"
+					fi
+					;;
+				*)
+					DESC=$(${LSPCI_CMD} -D -s ${PCIPATH} 2> /dev/null|${AWK_CMD} '{ sub(/.*: /,""); print $0}')
+					;;
+			esac
+
+			IPADDR=$(${IP_CMD} -o -4 a s ${DEVI}|${AWK_CMD} '{ if (( $3 == "inet" ) && ( $8 == "global" ) && ( $9 != "secondary")) { print $4; exit }}')
+			if [ "x${IPADDR}" = "x" ]; then
+				IPADDR="N/A"
+			fi
+
+			# Printout
+			printf "${PHYS_PRINT_PATTERN}" "${DEVI}" "${STATE}" "${SPEED}" "${MTU}" "${SWDRIVER}" "${PCIPATH}" "${MCADDR}" "${IPADDR}" "${DESC}"
+		fi
+	fi
+	fi
+done|${OFILTER}
+
+# Header state
+hstate=0
+vmaxlen=0
+declare -a alldrvs
+
+KREV=$(uname -r|${CUT_CMD} -d- -f1)
+case $KREV in
+	2.6.18)
+		VGLOB=/sys/class/net/bond
+		;;
+	2.6.32)
+		VGLOB=/sys/devices/virtual/net/
+		;;
+	*)
+		VGLOB=/sys/devices/virtual/net/
+		;;
+esac
+
+# 34 = 7 + 7 + 6 + 14 (cf PHYS_PRINT_PATTERN above)
+vmaxlen=$(${AWK_CMD} 'BEGIN { l=0 } { if ( $1 ~ ":" ) { if ( length($1) > l ) { l=length($1) } } } END { print l }' /proc/net/dev )
+VIRT_PRINT_PATTERN="%-$((${vmaxlen}+2))s%6s%6s %-$((${pmaxlen}+36+1-${vmaxlen}))s%-24s%-21s%s\n"
+
+# Virtual interfaces
+for mydev in $(ls -1d ${VGLOB}* 2> /dev/null|${SORT_CMD})
+do
+	if [ "x${mydev}" != "x" ]; then
+		HWTYPE="${mydev}/type"
+		DEVI=$(basename ${mydev})
+		STATE=""
+		MTU=0
+		SWDRIVER=""
+		PCIPATH=""
+		MCADDR=""
+		IPADDR=""
+		DESC=""
+		if [ -f ${HWTYPE} ]; then
+			if [ "x$(cat ${HWTYPE})" != "x" ]; then
+				if [ $hstate -eq 0 ]; then
+					printf "\n${VIRT_PRINT_PATTERN}" "#VIRT" "STATE" "MTU" "DRIVER" "Active MAC" "IP_Addr" "Description"
+					hstate+=1
+				fi
+				# First attempt to detect state
+				STATE=$(${IP_CMD} -o l sh ${DEVI}|${AWK_CMD} \
+				'{
+					if ( $3 ~ /[!<,]UP[!>,]/ ) { print "up" } else { print "(down)" }
+				}')
+				if [ "x${STATE}" = "x" ]; then
+					if [ -f ${mydev}/operstate ]; then
+						STATE=$(cat ${mydev}/operstate)
+					fi
+				fi
+				MTU=$(${IP_CMD} l sh ${DEVI}|${AWK_CMD} '{ if ( $4 ~ /mtu/ ) print $5 }')
+				if [ -f ${mydev}/bonding/slaves ]; then
+					SLAVES=$(cat ${mydev}/bonding/slaves)
+					actv=$(${GREP_CMD} "Currently Active Slave:" /proc/net/bonding/${DEVI}|${CUT_CMD} -f2 -d:|${XARGS_CMD})
+					ESLAVES=""
+					for ifs in ${SLAVES}
+					do
+						if [ "x${ifs}" = "x${actv}" ]; then
+							ESLAVES=$(echo "${ESLAVES} ${ifs}"|${XARGS_CMD})
+						else
+							ESLAVES=$(echo "${ESLAVES} (${ifs})"|${XARGS_CMD})
+						fi
+					done
+					DESC="[ ${ESLAVES} ]"
+				elif [ -d ${mydev}/brif ]; then
+					SLAVES=$(cd ${mydev}/brif ; ls 2>/dev/null|xargs )
+					if [ "x${SLAVES}" = "x" ]; then
+						DESC="N/A"
+					else
+						DESC="[ ${SLAVES} ]"
+					fi
+				else
+					DESC="N/A"
+				fi
+
+				if [ "x${DEVI}" = "xlo" ]; then
+					IPADDR=$(${IP_CMD} -o -4 a s ${DEVI}|${AWK_CMD} '{ if (( $3 == "inet" ) && ( $6 == "host" )) { print $4; exit }}')
+				else
+					IPADDR=$(${IP_CMD} -o -4 a s ${DEVI}|${AWK_CMD} '{ if (( $3 == "inet" ) && (( $8 == "global" ) || ( $6 == "global" )) && ( $9 != "secondary")) { print $4; exit }}')
+				fi
+				if [ "x${IPADDR}" = "x" ]; then
+					IPADDR="N/A"
+				fi
+				MCADDR=$(${IP_CMD} a l ${DEVI}|${AWK_CMD} '{ if (( $1 ~ /link.ether/ ) || ( $1 ~ /link.loopback/ )) { print $2 ; exit }}')
+				if [ "x${MCADDR}" = "x" ]; then
+					MCADDR="N/A"
+				fi
+				tmp_drv=$(${ETHTOOL_CMD} -i ${DEVI} 2>/dev/null|${AWK_CMD} '{ if ( $1 == "driver:" ) print $2 }')
+				if [ "x${tmp_drv}" = "x" ]; then
+					tmp_drv="$(echo ${DEVI}|${SED_CMD} -e 's@[0-9]\{1,\}@@')"
+				fi
+
+				# We emulate BASH4 hashed arrays, our index is based on the cksum of the driver's name.
+				myihash=$(echo ${tmp_drv}| ${CKSUM_CMD}|${AWK_CMD} '{ print $1}')
+				# Test if result not already in cache..
+				drvver=""
+				if [ "x${alldrvs[${myihash}]}" = "x" ]; then
+					#### echo "NOT a cached value: ${tmp_drv}: ${alldrvs[${myihash}]}"
+					drvver=$(/sbin/modinfo -F version ${tmp_drv} 2> /dev/null)
+					if [ "x${drvver}" = "x" ]; then
+						drvver=$(uname -r|${SED_CMD} -e 's@\.el.*@@')
+					fi
+					alldrvs["${myihash}"]="${drvver}"
+				else
+					#### echo "Got a cached value: ${tmp_drv}: ${alldrvs[${myihash}]}"
+					drvver="${alldrvs[${myihash}]}"
+				fi
+				drvdesc="${tmp_drv} (${drvver})"
+
+				# Cut-off for driver desc is at 26-4...
+				P1=$(echo ${drvdesc}|${CUT_CMD} -c-23)
+				P2=$(echo ${drvdesc}|${CUT_CMD} -c23-)
+				if [ "x$P2" = "x" ]; then
+					SWDRIVER=$P1
+				else
+					SWDRIVER="$(echo "${tmp_drv} (${drvver})"|${CUT_CMD} -c-22)..)"
+				fi
+
+				# Printout
+				printf "${VIRT_PRINT_PATTERN}" "${DEVI}" "${STATE}" "${MTU}" "${SWDRIVER}" "${MCADDR}" "${IPADDR}" "${DESC}"
+			fi
+		fi
+	fi
+done|${OFILTER}
