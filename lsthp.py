@@ -74,10 +74,18 @@ class TransparentHugePagesAnalyzer:
             return f"{size_kb}KB"
 
     def check_root_privileges(self):
-        """Check if running as root"""
+        """Check if running as root, elevate privileges if needed"""
         if os.getuid() != 0:
-            print(f"Run {sys.argv[0]} as root!")
-            sys.exit(127)
+            self.debug_print("Not running as root, attempting to elevate privileges with sudo")
+            try:
+                # Re-execute with sudo
+                sudo_args = ['sudo'] + sys.argv
+                self.debug_print(f"Executing: {' '.join(sudo_args)}")
+                os.execvp('sudo', sudo_args)
+            except (OSError, FileNotFoundError) as e:
+                print(f"Error: Could not elevate privileges with sudo: {e}")
+                print(f"Please run {sys.argv[0]} as root!")
+                sys.exit(127)
 
     def find_transparent_hugepage_processes(self) -> List[str]:
         """Find processes using transparent hugepages"""

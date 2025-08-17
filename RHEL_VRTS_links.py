@@ -508,6 +508,13 @@ class VRTSLinker:
         # Check root privileges
         self.check_root_privileges()
 
+        # Print banner after privilege escalation (unless silent)
+        if not self.silent:
+            print("#" * 87)
+            print(f"###@@### Syntax: {sys.argv[0]} [--force|--silent|--exec|--debug]")
+            print("#" * 87)
+            print()
+
         # Get RHEL version
         self.rhel_version = self.get_rhel_version()
 
@@ -617,14 +624,7 @@ Examples:
     if args.exec:
         linker.silent = True
 
-    # Print banner unless silent
-    if not linker.silent:
-        print("#" * 87)
-        print(f"###@@### Syntax: {sys.argv[0]} [--force|--silent|--exec|--debug]")
-        print("#" * 87)
-        print()
-
-    # Run the main functionality
+    # Run the main functionality (banner will be printed after privilege check)
     linker.run()
 
 if __name__ == "__main__":
