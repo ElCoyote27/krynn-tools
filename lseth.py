@@ -172,6 +172,59 @@ class NetworkInterfaceAnalyzer:
 
         return 'N/A'
 
+    def get_interface_buffers(self, interface: str) -> str:
+        """Get TX/RX buffer sizes using ethtool -g, showing current/max"""
+        if interface == 'lo' or interface.startswith('ib'):
+            return 'N/A'
+
+        try:
+            result = subprocess.run([self.tools['ethtool'], '-g', interface], 
+                                  capture_output=True, text=True, timeout=5)
+
+            if result.returncode == 0:
+                lines = result.stdout.splitlines()
+
+                # Parse both maximums and current values
+                max_rx = max_tx = curr_rx = curr_tx = None
+                in_max_section = False
+                in_current_section = False
+
+                for line in lines:
+                    line = line.strip()
+
+                    if 'Pre-set maximums:' in line:
+                        in_max_section = True
+                        in_current_section = False
+                        continue
+                    elif 'Current hardware settings:' in line:
+                        in_max_section = False
+                        in_current_section = True
+                        continue
+
+                    if in_max_section:
+                        if line.startswith('RX:') and 'n/a' not in line.lower():
+                            max_rx = line.split(':')[1].strip()
+                        elif line.startswith('TX:') and 'n/a' not in line.lower():
+                            max_tx = line.split(':')[1].strip()
+                    elif in_current_section:
+                        if line.startswith('RX:') and 'n/a' not in line.lower():
+                            curr_rx = line.split(':')[1].strip()
+                        elif line.startswith('TX:') and 'n/a' not in line.lower():
+                            curr_tx = line.split(':')[1].strip()
+
+                # Format as simple current values only
+                if curr_rx and curr_tx:
+                    return f"{curr_rx}/{curr_tx}"
+                elif curr_rx:
+                    return f"RX:{curr_rx}"
+                elif curr_tx:
+                    return f"TX:{curr_tx}"
+
+            return 'N/A'
+
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError):
+            return 'N/A'
+
     def get_interface_mtu(self, interface: str) -> int:
         """Get interface MTU"""
         try:
@@ -465,72 +518,109 @@ class NetworkInterfaceAnalyzer:
         return driver_desc
 
     def process_physical_interfaces(self):
-        """Process and display physical interfaces"""
+        """Process and display physical interfaces with dynamic column widths"""
         interfaces = self.get_interface_list('physical')
 
         if not interfaces:
             self.debug_print("No physical interfaces found")
             return
 
-        # Calculate maximum interface name length for formatting
-        max_len = max(len(os.path.basename(iface)) for iface in interfaces) if interfaces else 10
-        print_pattern = f"%-{max_len+1}s%7s%7s%6s %-16s%-24s%-19s%-18s%s"
-
-        # Print header
-        print(f"\n{print_pattern}" % ("#PHYS", "STATE", "SPEED", "MTU", "DRIVER", "HW_Path", "MAC_Addr", "IP_Addr", "Description"))
-
         self.debug_print(f"Processing {len(interfaces)} physical interfaces")
+
+        # First pass: collect all data and calculate column widths
+        interface_data = []
+        max_widths = {
+            'name': len("#PHYS"),
+            'state': len("STATE"), 
+            'speed': len("SPEED"),
+            'buffers': len("RX/TX"),
+            'mtu': len("MTU"),
+            'driver': len("DRIVER"),
+            'hw_path': len("HW_Path"),
+            'mac': len("MAC_Addr"),
+            'ip': len("IP_Addr")
+        }
 
         for interface_path in interfaces:
             interface = os.path.basename(interface_path)
-
             self.debug_print(f"Processing physical interface: {interface}")
 
             # Get interface information
             state = self.get_interface_state(interface)
-            speed = self.get_interface_speed(interface, state)
-            mtu = self.get_interface_mtu(interface)
+            speed = str(self.get_interface_speed(interface, state))
+            buffers = self.get_interface_buffers(interface)
+            mtu = str(self.get_interface_mtu(interface))
             driver, pci_path = self.get_driver_info(interface)
             mac_addr = self.get_mac_address(interface)
             ip_addr = self.get_ip_address(interface)
             description = self.get_device_description(driver, pci_path, interface)
 
-            # Format output  
-            output = print_pattern % (interface, state, speed, mtu, driver, pci_path, mac_addr, ip_addr, description)
+            # Store data
+            row_data = {
+                'name': interface,
+                'state': state,
+                'speed': speed,
+                'buffers': buffers,
+                'mtu': mtu,
+                'driver': driver,
+                'hw_path': pci_path,
+                'mac': mac_addr,
+                'ip': ip_addr,
+                'description': description
+            }
+            interface_data.append(row_data)
+
+            # Update maximum widths
+            for key in max_widths:
+                if key in row_data:
+                    max_widths[key] = max(max_widths[key], len(str(row_data[key])))
+
+        # Debug: show calculated column widths
+        self.debug_print(f"Physical interface column widths: {max_widths}")
+
+        # Create dynamic format pattern with proper spacing
+        print_pattern = (f"%-{max_widths['name']}s  "
+                        f"%-{max_widths['state']}s  "
+                        f"%-{max_widths['speed']}s  "
+                        f"%-{max_widths['buffers']}s  "
+                        f"%{max_widths['mtu']}s  "
+                        f"%-{max_widths['driver']}s  "
+                        f"%-{max_widths['hw_path']}s  "
+                        f"%-{max_widths['mac']}s  "
+                        f"%-{max_widths['ip']}s  "
+                        f"%s")
+
+        # Print header
+        print(f"\n{print_pattern}" % ("#PHYS", "STATE", "SPEED", "RX/TX", "MTU", "DRIVER", "HW_Path", "MAC_Addr", "IP_Addr", "Description"))
+
+        # Print data
+        for row in interface_data:
+            output = print_pattern % (row['name'], row['state'], row['speed'], row['buffers'], 
+                                    row['mtu'], row['driver'], row['hw_path'], row['mac'], 
+                                    row['ip'], row['description'])
             print(self.truncate_output(output))
 
     def process_virtual_interfaces(self):
-        """Process and display virtual interfaces"""
+        """Process and display virtual interfaces with dynamic column widths"""
         interfaces = self.get_interface_list('virtual')
 
         if not interfaces:
             self.debug_print("No virtual interfaces found")
             return
 
-        # Calculate formatting
-        max_virt_len = 0
-        try:
-            with open('/proc/net/dev', 'r') as f:
-                for line in f:
-                    if ':' in line:
-                        iface_name = line.split(':')[0].strip()
-                        max_virt_len = max(max_virt_len, len(iface_name))
-        except:
-            max_virt_len = 10
-
-        # Get physical interface max length for alignment (from previous section)
-        max_phys_len = 0
-        phys_interfaces = self.get_interface_list('physical')
-        if phys_interfaces:
-            max_phys_len = max(len(os.path.basename(iface)) for iface in phys_interfaces)
-
-        # Virtual interface print pattern (aligned with physical)
-        virt_pattern = f"%-{max_virt_len+2}s%6s%6s %-{max_phys_len+36+1-max_virt_len}s%-24s%-21s%s"
-
-        # Print header
-        print(f"\n{virt_pattern}" % ("#VIRT", "STATE", "MTU", "DRIVER", "Active MAC", "IP_Addr", "Description"))
-
         self.debug_print(f"Processing {len(interfaces)} virtual interfaces")
+
+        # First pass: collect all data and calculate column widths
+        interface_data = []
+        max_widths = {
+            'name': len("#VIRT"),
+            'state': len("STATE"),
+            'buffers': len("RX/TX"),
+            'mtu': len("MTU"),
+            'driver': len("DRIVER"),
+            'mac': len("Active MAC"),
+            'ip': len("IP_Addr")
+        }
 
         for interface_path in interfaces:
             interface = os.path.basename(interface_path)
@@ -547,7 +637,8 @@ class NetworkInterfaceAnalyzer:
 
             # Get interface information
             state = self.get_interface_state(interface)
-            mtu = self.get_interface_mtu(interface)
+            buffers = self.get_interface_buffers(interface)
+            mtu = str(self.get_interface_mtu(interface))
             driver = self.get_virtual_driver_info(interface)
             mac_addr = self.get_mac_address(interface)
             ip_addr = self.get_ip_address(interface, is_loopback=(interface == 'lo'))
@@ -556,8 +647,44 @@ class NetworkInterfaceAnalyzer:
             virt_info = self.get_virtual_interface_info(interface)
             description = virt_info['description']
 
-            # Format output
-            output = virt_pattern % (interface, state, mtu, driver, mac_addr, ip_addr, description)
+            # Store data
+            row_data = {
+                'name': interface,
+                'state': state,
+                'buffers': buffers,
+                'mtu': mtu,
+                'driver': driver,
+                'mac': mac_addr,
+                'ip': ip_addr,
+                'description': description
+            }
+            interface_data.append(row_data)
+
+            # Update maximum widths
+            for key in max_widths:
+                if key in row_data:
+                    max_widths[key] = max(max_widths[key], len(str(row_data[key])))
+
+        # Debug: show calculated column widths
+        self.debug_print(f"Virtual interface column widths: {max_widths}")
+
+        # Create dynamic format pattern with proper spacing
+        virt_pattern = (f"%-{max_widths['name']}s  "
+                       f"%-{max_widths['state']}s  "
+                       f"%-{max_widths['buffers']}s  "
+                       f"%{max_widths['mtu']}s  "
+                       f"%-{max_widths['driver']}s  "
+                       f"%-{max_widths['mac']}s  "
+                       f"%-{max_widths['ip']}s  "
+                       f"%s")
+
+        # Print header
+        print(f"\n{virt_pattern}" % ("#VIRT", "STATE", "RX/TX", "MTU", "DRIVER", "Active MAC", "IP_Addr", "Description"))
+
+        # Print data
+        for row in interface_data:
+            output = virt_pattern % (row['name'], row['state'], row['buffers'], row['mtu'], 
+                                   row['driver'], row['mac'], row['ip'], row['description'])
             print(self.truncate_output(output))
 
     def run(self):
