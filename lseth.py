@@ -110,7 +110,9 @@ class NetworkInterfaceAnalyzer:
             for pattern in self.physical_patterns:
                 matches = glob.glob(f'/sys/class/net/{pattern}')
                 interfaces.extend(matches)
-            return sorted([f for f in interfaces if os.path.exists(f + '/device')])
+            # Remove duplicates by converting to set, then back to list
+            unique_interfaces = list(set(interfaces))
+            return sorted([f for f in unique_interfaces if os.path.exists(f + '/device')])
 
         elif interface_type == 'virtual':
             # Check kernel version for virtual interface path
