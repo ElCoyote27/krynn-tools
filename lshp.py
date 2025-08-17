@@ -22,8 +22,8 @@ class HugePagesAnalyzer:
 
         # Hugepage sizes to analyze (size in KB, description)
         self.hugepage_sizes = [
-            (2048, "2Mb HugePages"),
-            (1048576, "1Gb HugePages")
+            (2048, "2Mb Static HugePages"),
+            (1048576, "1Gb Static HugePages")
         ]
 
         # KVM process names that should show guest names
@@ -212,7 +212,7 @@ class HugePagesAnalyzer:
         # Format hugepage size for header
         hugepage_size_display = self.format_hugepage_size(kernel_page_size)
 
-        print(self.print_pattern % (f"# [procname] ({hugepage_size_display} HugePages)", "PID", "Total HP", "Usage"))
+        print(self.print_pattern % (f"# [procname] ({description})", "PID", "Total HP", "Usage"))
 
         # Process and display results
         results = []
