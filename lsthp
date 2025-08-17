@@ -169,6 +169,9 @@ class TransparentHugePagesAnalyzer:
                 for i, part in enumerate(cmdline_parts):
                     if part == '-name' and i + 1 < len(cmdline_parts):
                         guest_name = cmdline_parts[i + 1]
+                        # Clean up guest name (remove debug options, guest= prefix)
+                        guest_name = re.sub(r',debug.*', '', guest_name)
+                        guest_name = re.sub(r'^guest=', '', guest_name)
                         return guest_name
 
         except (IOError, OSError):
@@ -225,8 +228,7 @@ class TransparentHugePagesAnalyzer:
             return
 
         # Print header with hugepage size information
-        print(f"# [procname] ({self.hugepage_size_display} Transparent HugePages)")
-        print(self.print_pattern % ("# Process", "PID", "Total THP", "Usage"))
+        print(self.print_pattern % (f"# [procname] ({self.hugepage_size_display} Transparent HugePages)", "PID", "Total THP", "Usage"))
 
         # Process and display results
         results = []
@@ -245,7 +247,7 @@ class TransparentHugePagesAnalyzer:
 
             # Calculate number of hugepages used by this process
             num_hugepages = total_kb // self.hugepage_size_kb
-            hugepage_display = f"{num_hugepages} pages"
+            hugepage_display = f"{num_hugepages} hugepages"
 
             result_line = self.print_pattern % (display_name, pid_display, formatted_size, hugepage_display)
             results.append((total_kb, result_line))  # Store with size for sorting
@@ -263,7 +265,7 @@ class TransparentHugePagesAnalyzer:
             print("-" * 60)
             grand_total_display = self.format_size_display(grand_total_kb)
             grand_total_pages = grand_total_kb // self.hugepage_size_kb
-            print(self.print_pattern % ("TOTAL", "", grand_total_display, f"{grand_total_pages} pages"))
+            print(self.print_pattern % ("TOTAL", "", grand_total_display, f"{grand_total_pages} hugepages"))
 
         self.debug_print(f"Transparent hugepage analysis completed: {len(results)} processes, {grand_total_display} total")
 

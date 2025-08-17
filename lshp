@@ -151,7 +151,7 @@ class HugePagesAnalyzer:
 
         # Calculate number of hugepages used by this process
         num_hugepages = total_kb // kernel_page_size
-        hugepage_display = f"{num_hugepages} pages"
+        hugepage_display = f"{num_hugepages} hugepages"
 
         return display_name, f"({pid})", formatted_size, hugepage_display
 
@@ -204,12 +204,7 @@ class HugePagesAnalyzer:
         # Format hugepage size for header
         hugepage_size_display = self.format_hugepage_size(kernel_page_size)
 
-        # Print header if this is the first hugepage type with results
-        if self.index == 0:
-            print()  # Add some spacing
-
-        print(f"# [procname] ({hugepage_size_display} HugePages)")
-        print(self.print_pattern % ("# Process", "PID", "Total HP", "Usage"))
+        print(self.print_pattern % (f"# [procname] ({hugepage_size_display} HugePages)", "PID", "Total HP", "Usage"))
 
         # Process and display results
         results = []
@@ -244,8 +239,7 @@ class HugePagesAnalyzer:
             section_total_display = self.format_size_display(section_total_kb)
             section_total_pages = section_total_kb // kernel_page_size
             print(self.print_pattern % (f"TOTAL ({hugepage_size_display})", "", 
-                                       section_total_display, f"{section_total_pages} pages"))
-            print()  # Add spacing after section
+                                       section_total_display, f"{section_total_pages} hugepages"))
             self.grand_total_kb += section_total_kb
             self.index = 1
             return section_total_kb  # Return section total for grand total calculation
@@ -265,13 +259,13 @@ class HugePagesAnalyzer:
             section_total = self.process_hugepage_size(kernel_page_size, description)
             if section_total and section_total > 0:
                 sections_with_data += 1
-        
+
         # Show grand total if we had multiple sections with data
         if sections_with_data > 1 and self.grand_total_kb > 0:
             print("=" * 60)
             grand_total_display = self.format_size_display(self.grand_total_kb)
             print(self.print_pattern % ("GRAND TOTAL (All HugePages)", "", grand_total_display, ""))
-        
+
         # Format total for debug output
         total_display = self.format_size_display(self.grand_total_kb) if self.grand_total_kb > 0 else '0 kB'
         self.debug_print(f"Hugepage analysis completed: {total_display} total")
