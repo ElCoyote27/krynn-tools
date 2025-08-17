@@ -11,7 +11,7 @@ A collection of system administration and diagnostic tools for Linux environment
 | **lshp** | List hugepages in use, showing processes and KVM guest names |
 | **lsthp** | List transparent hugepages usage by process |
 | **lskfds** | List killed (deleted) file descriptors preventing disk space recovery |
-| **lsnet** | LSI MegaRAID SAS controller status checker |
+| **megaclisas-status** | LSI MegaRAID SAS controller status checker |
 | **CPU_temp.sh** | CPU temperature analyzer with socket/core grouping |
 | **ps_mem.py** | Show memory usage per program (not per process) |
 
@@ -71,7 +71,7 @@ A collection of system administration and diagnostic tools for Linux environment
 
 # Storage management
 ./RHEL_VRTS_links --exec   # Execute Veritas module linking
-./lsnet                    # Check RAID controller status
+./megaclisas-status        # Check RAID controller status
 ```
 
 ## 📝 Notes
