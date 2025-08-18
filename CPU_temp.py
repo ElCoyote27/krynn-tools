@@ -39,7 +39,7 @@ class CPUTemperatureAnalyzer:
 
         # Tool paths
         self.sensors_cmd = '/usr/bin/sensors'
-        self.ipmitool_cmd = '/usr/bin/ipmitool'  
+        self.ipmitool_cmd = '/usr/bin/ipmitool'
         self.ipmi_sensors_cmd = '/usr/sbin/ipmi-sensors'
 
     def debug_print(self, message: str):
@@ -135,34 +135,190 @@ class CPUTemperatureAnalyzer:
         self.debug_print(f"Found {len(self.core_temps)} core temperatures across {len(self.socket_groups)} sockets")
 
     def get_ambient_temperature(self) -> Optional[str]:
-        """Get ambient temperature using IPMI if available"""
-        if not os.path.exists(self.ipmitool_cmd):
-            self.debug_print("ipmitool not found, skipping ambient temperature")
-            return None
+        """Get ambient temperature using IPMI if available, fallback to sensors output"""
 
-        try:
-            # Test if IPMI is available
-            result = subprocess.run([self.ipmitool_cmd, 'sdr', 'info'], 
-                                  capture_output=True, text=True)
-            if result.returncode != 0:
-                self.debug_print("IPMI not available")
-                return None
-
-            # Try to get ambient temperature using ipmi-sensors
-            if os.path.exists(self.ipmi_sensors_cmd):
-                result = subprocess.run([self.ipmi_sensors_cmd, '-s', '10', '--ignore-not-available-sensors'], 
+        # First try IPMI method (only when running as root)
+        if os.path.exists(self.ipmitool_cmd) and os.getuid() == 0:
+            try:
+                # Test if IPMI is available
+                result = subprocess.run([self.ipmitool_cmd, 'sdr', 'info'],
                                       capture_output=True, text=True)
                 if result.returncode == 0:
-                    for line in result.stdout.splitlines():
-                        if 'Ambient' in line:
-                            parts = line.split('|')
-                            if len(parts) >= 5 and parts[1].strip().find('Ambient') != -1:
-                                temp_info = f"{parts[3].strip()} {parts[4].strip()}"
-                                self.debug_print(f"Found ambient temperature: {temp_info}")
-                                return temp_info
+                    # Try to get ambient temperature using ipmi-sensors
+                    if os.path.exists(self.ipmi_sensors_cmd):
+                        result = subprocess.run([self.ipmi_sensors_cmd, '-s', '10', '--ignore-not-available-sensors'],
+                                              capture_output=True, text=True)
+                        if result.returncode == 0:
+                            for line in result.stdout.splitlines():
+                                if 'Ambient' in line:
+                                    parts = line.split('|')
+                                    if len(parts) >= 5 and parts[1].strip().find('Ambient') != -1:
+                                        temp_info = f"{parts[3].strip()} {parts[4].strip()}"
+                                        self.debug_print(f"Found IPMI ambient temperature: {temp_info}")
+                                        return temp_info
+                else:
+                    self.debug_print("IPMI not available")
+            except Exception as e:
+                self.debug_print(f"Error getting IPMI ambient temperature: {e}")
+        elif not os.path.exists(self.ipmitool_cmd):
+            self.debug_print("ipmitool not found")
+        else:
+            self.debug_print("IPMI requires root privileges, skipping (run with sudo for IPMI ambient temp)")
 
+        # Fallback: Try to find ambient temperature in sensors output
+        try:
+            sensors_output = self.get_sensors_data()
+            if sensors_output:
+                ambient_temp = self.parse_ambient_from_sensors(sensors_output)
+                if ambient_temp:
+                    self.debug_print(f"Found sensors ambient temperature: {ambient_temp}")
+                    return ambient_temp
         except Exception as e:
-            self.debug_print(f"Error getting ambient temperature: {e}")
+            self.debug_print(f"Error getting sensors ambient temperature: {e}")
+
+        self.debug_print("No ambient temperature found")
+        return None
+
+    def get_ambient_temperature_with_data(self, sensors_output: str) -> Optional[str]:
+        """Get ambient temperature using IPMI if available, fallback to provided sensors output"""
+
+        # First try IPMI method (only when running as root)
+        if os.path.exists(self.ipmitool_cmd) and os.getuid() == 0:
+            try:
+                # Test if IPMI is available
+                result = subprocess.run([self.ipmitool_cmd, 'sdr', 'info'],
+                                      capture_output=True, text=True)
+                if result.returncode == 0:
+
+                    # Try ipmitool sdr type temp for server ambient temperatures (Inlet, Ambient, etc.)
+                    try:
+                        result = subprocess.run([self.ipmitool_cmd, 'sdr', 'type', 'temp'],
+                                              capture_output=True, text=True)
+                        if result.returncode == 0:
+                            for line in result.stdout.splitlines():
+                                line = line.strip()
+                                # Look for inlet, ambient, system, or board temperatures
+                                if any(keyword in line.lower() for keyword in ['inlet temp', 'ambient temp', 'system temp', 'board temp']):
+                                    # Parse ipmitool sdr output: "Sensor Name | ID | Status | Entity | Reading"
+                                    if '|' in line:
+                                        parts = line.split('|')
+                                        if len(parts) >= 5:
+                                            sensor_name = parts[0].strip()
+                                            reading = parts[4].strip()
+                                            if 'degrees C' in reading:
+                                                # Extract temperature value
+                                                temp_match = re.search(r'(\d+(?:\.\d+)?)', reading)
+                                                if temp_match:
+                                                    temp_value = temp_match.group(1)
+                                                    temp_info = f"{temp_value}°C (IPMI {sensor_name})"
+                                                    self.debug_print(f"Found IPMI ambient temperature: {temp_info}")
+                                                    return temp_info
+                    except Exception as e:
+                        self.debug_print(f"Error with ipmitool sdr type temp: {e}")
+
+                    # Fallback: Try to get ambient temperature using ipmi-sensors
+                    if os.path.exists(self.ipmi_sensors_cmd):
+                        result = subprocess.run([self.ipmi_sensors_cmd, '-s', '10', '--ignore-not-available-sensors'],
+                                              capture_output=True, text=True)
+                        if result.returncode == 0:
+                            for line in result.stdout.splitlines():
+                                if 'Ambient' in line:
+                                    parts = line.split('|')
+                                    if len(parts) >= 5 and parts[1].strip().find('Ambient') != -1:
+                                        temp_info = f"{parts[3].strip()} {parts[4].strip()}"
+                                        self.debug_print(f"Found IPMI ambient temperature: {temp_info}")
+                                        return temp_info
+                else:
+                    self.debug_print("IPMI not available")
+            except Exception as e:
+                self.debug_print(f"Error getting IPMI ambient temperature: {e}")
+        elif not os.path.exists(self.ipmitool_cmd):
+            self.debug_print("ipmitool not found")
+        else:
+            self.debug_print("IPMI requires root privileges, skipping (run with sudo for IPMI ambient temp)")
+
+        # Fallback: Try to find ambient temperature in provided sensors output
+        try:
+            if sensors_output:
+                ambient_temp = self.parse_ambient_from_sensors(sensors_output)
+                if ambient_temp:
+                    self.debug_print(f"Found sensors ambient temperature: {ambient_temp}")
+                    return ambient_temp
+        except Exception as e:
+            self.debug_print(f"Error getting sensors ambient temperature: {e}")
+
+        self.debug_print("No ambient temperature found")
+        return None
+
+    def parse_ambient_from_sensors(self, sensors_output: str) -> Optional[str]:
+        """Parse ambient temperature from sensors output"""
+        lines = sensors_output.splitlines()
+        current_adapter = ""
+
+        # Look for potential ambient temperature sources in priority order
+        ambient_candidates = []
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Track current adapter/sensor section
+            if re.match(r'^[a-zA-Z][\w-]*-[a-zA-Z]+(-\d+)+$', line):
+                current_adapter = line
+                continue
+            elif line.startswith('Adapter:'):
+                continue
+
+            # Skip CPU core temperatures and Package temps (already handled)
+            if line.startswith('Core ') or line.startswith('Package id '):
+                continue
+
+            # Look for temperature readings
+            temp_match = re.match(r'([^:]+):\s*\+?(-?\d+(?:\.\d+)?)°C', line)
+            if temp_match:
+                temp_name = temp_match.group(1).strip()
+                temp_value = float(temp_match.group(2))
+                temp_str = f"{temp_value}°C"
+
+                # Prioritize certain adapters and temperature names for ambient
+                priority = 0
+
+                # Highest priority: ACPI thermal zones (often system ambient)
+                if 'acpitz' in current_adapter or 'acpi' in current_adapter:
+                    priority = 10
+                    temp_str += " (ACPI Thermal Zone)"
+
+                # High priority: Motherboard/chipset temperatures (but avoid PCH which runs hot)
+                elif any(keyword in current_adapter.lower() for keyword in ['thinkpad', 'asus', 'msi', 'gigabyte', 'asrock']):
+                    if temp_name.lower() in ['temp1', 'temp2', 'ambient', 'motherboard', 'system']:
+                        priority = 8
+                        temp_str += " (Motherboard)"
+
+                # Lower priority: Chipset/PCH temperatures (usually run hotter than actual ambient)
+                elif any(keyword in current_adapter.lower() for keyword in ['pch_', 'chipset', 'ich', 'fch']):
+                    priority = 2
+                    temp_str += " (Chipset)"
+
+                # Medium priority: WiFi/network device temps (can indicate ambient)
+                elif 'iwlwifi' in current_adapter or 'wifi' in current_adapter:
+                    if temp_name == 'temp1':
+                        priority = 5
+                        temp_str += " (WiFi Sensor)"
+
+                # Lower priority: Other generic temp sensors
+                elif temp_name.lower() in ['temp1', 'ambient']:
+                    priority = 3
+                    temp_str += f" ({current_adapter})"
+
+                if priority > 0 and 0 < temp_value < 80:  # Reasonable ambient temp range
+                    ambient_candidates.append((priority, temp_str, temp_value))
+                    self.debug_print(f"Found ambient candidate: {temp_str} (priority {priority})")
+
+        # Return the highest priority ambient temperature
+        if ambient_candidates:
+            ambient_candidates.sort(key=lambda x: x[0], reverse=True)
+            return ambient_candidates[0][1]
 
         return None
 
@@ -238,7 +394,7 @@ class CPUTemperatureAnalyzer:
 
         temp_groups = self.group_by_temperature()
 
-        # Sort temperatures (highest first to match original script behavior)  
+        # Sort temperatures (highest first to match original script behavior)
         sorted_temps = sorted(temp_groups.keys(), reverse=True)
 
         for temp in sorted_temps:
@@ -314,12 +470,12 @@ class CPUTemperatureAnalyzer:
             print("No CPU core temperatures found!")
             return 1
 
-        # Get ambient temperature if available
-        self.ambient_temp = self.get_ambient_temperature()
+        # Get ambient temperature if available (pass sensors_output to avoid re-parsing)
+        self.ambient_temp = self.get_ambient_temperature_with_data(sensors_output)
 
         # Display ambient temperature
         if self.ambient_temp:
-            print(f"Ambient Temp: {self.ambient_temp}")
+            print(f"=== Ambient Temp: {self.ambient_temp}")
 
         # Display results
         if self.sort_by_temp:
