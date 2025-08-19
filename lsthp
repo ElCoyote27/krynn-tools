@@ -273,7 +273,7 @@ class TransparentHugePagesAnalyzer:
             print("-" * 60)
             grand_total_display = self.format_size_display(grand_total_kb)
             grand_total_pages = grand_total_kb // self.hugepage_size_kb
-            print(self.print_pattern % ("TOTAL", "", grand_total_display, f"{grand_total_pages} hugepages"))
+            print(self.print_pattern % (f"TOTAL ({self.hugepage_size_display})", "", grand_total_display, f"{grand_total_pages} hugepages"))
 
         self.debug_print(f"Transparent hugepage analysis completed: {len(results)} processes, {grand_total_display} total")
 
