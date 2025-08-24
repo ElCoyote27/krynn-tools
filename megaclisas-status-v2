@@ -80,7 +80,7 @@ class RAIDStats:
     total_drives: int = 0
     total_configured_drives: int = 0
     total_unconfigured_drives: int = 0
-    
+
     @property
     def has_errors(self) -> bool:
         """Check if there are any errors in the system."""
@@ -142,7 +142,7 @@ class MegaCLIError(Exception):
 
 class RegexPatterns:
     """Compiled regex patterns for parsing."""
-    
+
     VIRTUAL_DRIVE: Pattern = re.compile(r"^(CacheCade )?Virtual Drive:.*(Target Id: ([0-9]+)).*$")
     RAID_LEVEL: Pattern = re.compile(r"^RAID Level.*?:.*$")
     ARRAY_SIZE: Pattern = re.compile(r"^Size.*?:.*$")
@@ -151,7 +151,7 @@ class RegexPatterns:
     SPAN_DEPTH: Pattern = re.compile(r"^Span Depth.*?:.*$")
     CACHE_POLICY: Pattern = re.compile(r"^Current Cache Policy.*?:.*$")
     DISK_CACHE_POLICY: Pattern = re.compile(r"^Disk Cache Policy.*?:.*$")
-    
+
     ENCLOSURE_ID: Pattern = re.compile(r"Enclosure Device ID: (.*)$")
     SLOT_NUMBER: Pattern = re.compile(r"Slot Number: (.*)$")
     DEVICE_ID: Pattern = re.compile(r"^Device Id: (.*)$")
@@ -161,7 +161,7 @@ class RegexPatterns:
     DEVICE_SPEED: Pattern = re.compile(r"Device Speed: (.*)$")
     DRIVE_TEMP: Pattern = re.compile(r"Drive Temperature :(.*)$")
     COERCED_SIZE: Pattern = re.compile(r"^Coerced Size: (.*)$")
-    
+
     CONTROLLER_COUNT: Pattern = re.compile(r"^Controller Count.*$")
     PRODUCT_NAME: Pattern = re.compile(r"^Product Name.*$")
     MEMORY_SIZE: Pattern = re.compile(r"^Memory Size.*$")
@@ -169,23 +169,23 @@ class RegexPatterns:
     ROC_TEMP: Pattern = re.compile(r"^ROC temperature :.*$")
     BBU_PRESENT: Pattern = re.compile(r"^BBU +:.*$")
     BBU_REPLACEMENT: Pattern = re.compile(r"^ *Battery Replacement required +:.*$")
-    
+
     PCI_BUS: Pattern = re.compile(r"^Bus Number.*:.*$")
     PCI_DEVICE: Pattern = re.compile(r"^Device Number.*:.*$")
     PCI_FUNCTION: Pattern = re.compile(r"^Function Number.*:.*$")
-    
+
     PD_INFORMATION: Pattern = re.compile(r"PD: ([0-9]+) Information.*$")
     DRIVES_POSITION: Pattern = re.compile(r"^Drive.s posi*tion: DiskGroup: [0-9]+,.*$")
 
 
 class MegaCLIInterface:
     """Interface to MegaCLI/perccli/storcli commands."""
-    
+
     def __init__(self, config: Config):
         self.config = config
         self.megacli_path = self._find_megacli_binary()
         self._command_cache: Dict[str, List[str]] = {}
-    
+
     def _find_megacli_binary(self) -> str:
         """Find MegaCLI binary in PATH."""
         if self.config.megacli_path:
@@ -194,7 +194,7 @@ class MegaCLIInterface:
             else:
                 # User explicitly specified a path, but it doesn't exist - fail immediately
                 raise MegaCLIError(f"Cannot find specified MegaCLI binary: {self.config.megacli_path}")
-        
+
         # Add common paths to search
         search_paths = [
             "/opt/MegaRAID/MegaCli",
@@ -203,17 +203,17 @@ class MegaCLIInterface:
             "/opt/MegaRAID/storcli",
             "/opt/lsi/storcli",
         ]
-        
+
         for path in search_paths:
             if self.config.debug:
                 self._debug_print(f"Looking in PATH {path}")
             os.environ["PATH"] += os.pathsep + path
-        
+
         binary_names = [
             "MegaCli64", "MegaCli", "megacli", "MegaCli.exe",
             "perccli64", "perccli", "storcli64", "storcli"
         ]
-        
+
         for binary in binary_names:
             if self.config.debug:
                 self._debug_print(f"Looking for {binary} in PATH...")
@@ -221,19 +221,19 @@ class MegaCLIInterface:
                 if self.config.debug:
                     self._debug_print(f"Will use this executable: {path}")
                 return path
-        
+
         raise MegaCLIError("Cannot find MegaCLI, perccli, or storcli binary in PATH")
-    
+
     def execute_command(self, cmd: str) -> List[str]:
         """Execute MegaCLI command with caching and error handling."""
         if cmd in self._command_cache:
             if self.config.debug:
                 self._debug_print(f"Got Cached value: {cmd}")
             return self._command_cache[cmd]
-        
+
         if self.config.debug:
             self._debug_print(f"Not a Cached value: {cmd}")
-            
+
         try:
             result = subprocess.run(
                 cmd.split(),
@@ -242,24 +242,24 @@ class MegaCLIInterface:
                 check=False,  # Don't raise on non-zero exit
                 timeout=30
             )
-            
+
             lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
             self._command_cache[cmd] = lines
-            
+
             if self.config.debug:
                 self._debug_print(f"Command executed: {cmd}")
                 self._debug_print(f"Command output ({len(lines)} lines):")
                 for line in lines:
                     sys.stderr.write(f"    {line}\n")
                 sys.stderr.write("\n")
-            
+
             return lines
-            
+
         except subprocess.TimeoutExpired:
             raise MegaCLIError(f"Command timed out: {cmd}")
         except Exception as e:
             raise MegaCLIError(f"Command execution failed: {cmd}\nError: {str(e)}")
-    
+
     def _debug_print(self, msg: str):
         """Print debug message to stderr like the original script."""
         if self.config.debug:
@@ -267,13 +267,13 @@ class MegaCLIInterface:
             frame = inspect.currentframe().f_back
             line_num = frame.f_lineno if frame else "?"
             sys.stderr.write(f"# DEBUG ({line_num}) : {msg}\n")
-    
+
     def get_controller_count(self) -> int:
         """Get the number of controllers."""
         # First try legacy MegaCLI-style command
         cmd = f"{self.megacli_path} -adpCount -NoLog"
         output = self.execute_command(cmd)
-        
+
         # Check if the legacy command was deprecated (newer perccli)
         legacy_deprecated = False
         for line in output:
@@ -282,13 +282,13 @@ class MegaCLIInterface:
                 if self.config.debug:
                     self._debug_print("Legacy command deprecated, trying native perccli syntax")
                 break
-        
+
         # If legacy command was deprecated, try native perccli syntax
         if legacy_deprecated:
             cmd_native = f"{self.megacli_path} show ctrlcount"
             try:
                 output = self.execute_command(cmd_native)
-                
+
                 # Parse native perccli output
                 for line in output:
                     line_stripped = line.strip()
@@ -298,22 +298,22 @@ class MegaCLIInterface:
                         r"Number of Controllers\s*=\s*(\d+)",     # "Number of Controllers = 1"
                         r"Controllers\s*=\s*(\d+)",               # "Controllers = 1"
                     ]
-                    
+
                     for pattern in native_patterns:
                         if match := re.search(pattern, line_stripped, re.IGNORECASE):
                             controller_count = int(match.group(1))
                             if self.config.debug:
                                 self._debug_print(f"Found controller count (native): {controller_count} using pattern: {pattern}")
                             return controller_count
-                            
+
             except Exception as e:
                 if self.config.debug:
                     self._debug_print(f"Native perccli command also failed: {str(e)}")
-        
+
         # Parse legacy command output if it worked
         for line in output:
             line_stripped = line.strip()
-            
+
             # Try multiple patterns to handle different perccli64/megacli versions
             patterns = [
                 r"Controller Count\s*:\s*(\d+)",          # "Controller Count: 1"
@@ -323,34 +323,34 @@ class MegaCLIInterface:
                 r"Controllers\s*:\s*(\d+)",               # "Controllers: 1"
                 r"Total Controllers\s*:\s*(\d+)",         # "Total Controllers: 1"
             ]
-            
+
             for pattern in patterns:
                 if match := re.search(pattern, line_stripped, re.IGNORECASE):
                     controller_count = int(match.group(1))
                     if self.config.debug:
                         self._debug_print(f"Found controller count (legacy): {controller_count} using pattern: {pattern}")
                     return controller_count
-            
+
             # Fallback: Try the original logic for backward compatibility
             if RegexPatterns.CONTROLLER_COUNT.match(line_stripped):
                 try:
                     return int(line_stripped.split(":")[1].strip().strip("."))
                 except (IndexError, ValueError):
                     continue
-        
+
         if self.config.debug:
             self._debug_print("No controller count pattern matched in output:")
             for line in output:
                 self._debug_print(f"  {line}")
-        
+
         return 0
-    
+
     def get_controller_info(self, controller_id: int) -> List[str]:
         """Get detailed controller information."""
         # First try legacy MegaCLI-style command
         cmd = f"{self.megacli_path} -AdpAllInfo -a{controller_id} -NoLog"
         output = self.execute_command(cmd)
-        
+
         # Check if the legacy command was deprecated (newer perccli)
         legacy_deprecated = False
         for line in output:
@@ -359,7 +359,7 @@ class MegaCLIInterface:
                 if self.config.debug:
                     self._debug_print("Legacy controller info command deprecated, trying native perccli syntax")
                 break
-        
+
         # If legacy command was deprecated, try native perccli syntax
         if legacy_deprecated:
             cmd_native = f"{self.megacli_path} /c{controller_id} show all"
@@ -372,15 +372,15 @@ class MegaCLIInterface:
                     self._debug_print(f"Native perccli controller info command also failed: {str(e)}")
                 # Fall back to original output
                 pass
-        
+
         return output
-    
+
     def get_array_info(self, controller_id: int, array_id: int) -> List[str]:
         """Get array information."""
         # First try legacy MegaCLI-style command
         cmd = f"{self.megacli_path} -LDInfo -l{array_id} -a{controller_id} -NoLog"
         output = self.execute_command(cmd)
-        
+
         # Check if the legacy command was deprecated (newer perccli)
         legacy_deprecated = False
         for line in output:
@@ -389,7 +389,7 @@ class MegaCLIInterface:
                 if self.config.debug:
                     self._debug_print("Legacy array info command deprecated, trying native perccli syntax")
                 break
-        
+
         # If legacy command was deprecated, try native perccli syntax
         if legacy_deprecated:
             cmd_native = f"{self.megacli_path} /c{controller_id}/v{array_id} show all"
@@ -400,15 +400,15 @@ class MegaCLIInterface:
             except Exception as e:
                 if self.config.debug:
                     self._debug_print(f"Native perccli array info command also failed: {str(e)}")
-        
+
         return output
-    
+
     def get_all_arrays_info(self, controller_id: int) -> List[str]:
         """Get information for all arrays on controller."""
         # First try legacy MegaCLI-style command
         cmd = f"{self.megacli_path} -LDInfo -lall -a{controller_id} -NoLog"
         output = self.execute_command(cmd)
-        
+
         # Check if the legacy command was deprecated (newer perccli)
         legacy_deprecated = False
         for line in output:
@@ -417,7 +417,7 @@ class MegaCLIInterface:
                 if self.config.debug:
                     self._debug_print("Legacy all arrays info command deprecated, trying native perccli syntax")
                 break
-        
+
         # If legacy command was deprecated, try native perccli syntax
         if legacy_deprecated:
             cmd_native = f"{self.megacli_path} /c{controller_id}/vall show all"
@@ -428,15 +428,15 @@ class MegaCLIInterface:
             except Exception as e:
                 if self.config.debug:
                     self._debug_print(f"Native perccli all arrays info command also failed: {str(e)}")
-        
+
         return output
-    
+
     def get_physical_drives_info(self, controller_id: int) -> List[str]:
         """Get physical drives information."""
         # First try legacy MegaCLI-style command
         cmd = f"{self.megacli_path} -LdPdInfo -a{controller_id} -NoLog"
         output = self.execute_command(cmd)
-        
+
         # Check if the legacy command was deprecated (newer perccli)
         legacy_deprecated = False
         for line in output:
@@ -445,7 +445,7 @@ class MegaCLIInterface:
                 if self.config.debug:
                     self._debug_print("Legacy physical drives info command deprecated, trying native perccli syntax")
                 break
-        
+
         # If legacy command was deprecated, try native perccli syntax
         if legacy_deprecated:
             cmd_native = f"{self.megacli_path} /c{controller_id}/eall/sall show all"
@@ -456,19 +456,19 @@ class MegaCLIInterface:
             except Exception as e:
                 if self.config.debug:
                     self._debug_print(f"Native perccli physical drives info command also failed: {str(e)}")
-        
+
         return output
-    
+
     def get_unconfigured_drives_info(self, controller_id: int) -> List[str]:
         """Get unconfigured drives information."""
         cmd = f"{self.megacli_path} -PDList -a{controller_id} -NoLog"
         return self.execute_command(cmd)
-    
+
     def get_pci_info(self, controller_id: int) -> List[str]:
         """Get PCI information for controller."""
         cmd = f"{self.megacli_path} -AdpGetPciInfo -a{controller_id} -NoLog"
         return self.execute_command(cmd)
-    
+
     def get_bbu_status(self, controller_id: int) -> List[str]:
         """Get BBU status information."""
         cmd = f"{self.megacli_path} -AdpBbuCmd -GetBbuStatus -a{controller_id} -NoLog"
@@ -477,7 +477,7 @@ class MegaCLIInterface:
 
 class RAIDParser:
     """Parser for MegaCLI output."""
-    
+
     @staticmethod
     def parse_controller_info(output: List[str], controller_id: int) -> ControllerInfo:
         """Parse controller information from MegaCLI or native perccli output."""
@@ -486,17 +486,17 @@ class RAIDParser:
         firmware = "Unknown"
         temperature = "N/A"
         bbu_status = "N/A"
-        
+
         # Detect if this is native perccli output (contains "=" instead of ":")
         is_native_perccli = False
         for line in output:
             if "Model =" in line or "Controller =" in line:
                 is_native_perccli = True
                 break
-        
+
         for line in output:
             line_stripped = line.strip()
-            
+
             if is_native_perccli:
                 # Native perccli format: "Field = Value"
                 if line_stripped.startswith("Model ="):
@@ -525,7 +525,7 @@ class RAIDParser:
                 elif match := RegexPatterns.BBU_PRESENT.match(line_stripped):
                     bbu_present = line_stripped.split(":")[1].strip()
                     bbu_status = "Present" if bbu_present == "Present" else "N/A"
-        
+
         return ControllerInfo(
             controller_id=controller_id,
             model=model,
@@ -534,7 +534,7 @@ class RAIDParser:
             bbu_status=bbu_status,
             firmware=firmware
         )
-    
+
     @staticmethod
     def parse_bbu_status(output: List[str]) -> str:
         """Parse BBU status from MegaCLI BBU output."""
@@ -547,14 +547,14 @@ class RAIDParser:
                 else:
                     return "Good"
         return "Good"
-    
+
     @staticmethod
     def parse_pci_info(output: List[str]) -> str:
         """Parse PCI path information."""
         bus_id = ""
         dev_id = ""
         func_id = ""
-        
+
         for line in output:
             if match := RegexPatterns.PCI_BUS.match(line.strip()):
                 bus_id = str(line.strip().split(":")[1].strip()).zfill(2)
@@ -562,19 +562,20 @@ class RAIDParser:
                 dev_id = str(line.strip().split(":")[1].strip()).zfill(2)
             elif match := RegexPatterns.PCI_FUNCTION.match(line.strip()):
                 func_id = str(line.strip().split(":")[1].strip()).zfill(1)
-        
+
         if bus_id:
             pci_path = f"0000:{bus_id}:{dev_id}.{func_id}"
             if hasattr(RAIDParser, '_megacli_ref') and RAIDParser._megacli_ref and RAIDParser._megacli_ref.config.debug:
                 RAIDParser._megacli_ref._debug_print(f"Array PCI path : {pci_path}")
             return pci_path
         return ""
-    
+
     @staticmethod
     def parse_array_info(output: List[str], controller_id: int, array_id: int) -> ArrayInfo:
         """Parse array information from MegaCLI or native perccli output."""
         target_id = ""
         raid_level = 0
+        raid_type = "Unknown"  # Initialize for native perccli format
         size = ""
         state = "N/A"
         strip_size = ""
@@ -583,28 +584,28 @@ class RAIDParser:
         span_depth = 0
         cache_cade_info = "None"
         in_progress = "None"
-        
+
         # Check if this is native perccli output (look for VD table format)
         is_native_perccli = False
         for line in output:
             if "DG/VD TYPE" in line and "State" in line:
                 is_native_perccli = True
                 break
-        
+
         if is_native_perccli:
             # Parse native perccli VD table format and extract OS path
             # Format: "0/0   RAID0 Optl  RW     Yes     RWBD  -   OFF  1.818 TB boot"
 
             in_vd_table = False
             os_path = "N/A"
-            
+
             for line in output:
                 line_stripped = line.strip()
-                
+
                 # Extract OS Drive Name if present  
                 if "OS Drive Name" in line_stripped and "=" in line_stripped:
                     os_path = line_stripped.split("=", 1)[1].strip()
-                
+
                 if "DG/VD TYPE" in line_stripped and "State" in line_stripped:
                     in_vd_table = True
                     continue
@@ -614,33 +615,36 @@ class RAIDParser:
                     # Look for our specific array_id in the table
                     parts = line_stripped.split()
                     if len(parts) >= 8:
-                        # Parse: "0/0   RAID0 Optl  RW     Yes     RWBD  -   OFF  1.818 TB boot"
-                        dg_vd = parts[0]  # "0/0" or "1/1"
-                        if dg_vd == f"{array_id}/{array_id}":
-                            raid_type = parts[1]  # "RAID0", "RAID6"  
-                            state = "Optimal" if parts[2] == "Optl" else parts[2]
-                            # Size parsing: look for pattern like "1.818 TB" in the line
-                            # Format can be: "...OFF  1.818 TB boot" or "...OFF 43.656 TB"
-                            size = "Unknown"
-                            for i in range(len(parts) - 1):
-                                if parts[i+1] == "TB" or parts[i+1] == "GB":
-                                    try:
-                                        # Verify the previous part is a number
-                                        float(parts[i])
-                                        size = f"{parts[i]} {parts[i+1]}"
-                                        break
-                                    except ValueError:
-                                        continue
-                            
-                            target_id = str(array_id)
-                            properties = "ADRA,WB"  # Default based on cache column
-                            disk_cache = "Enabled"   # Default assumption
-                            strip_size = "512KB"     # Default, not shown in table
-                            in_vd_table = False  # Continue processing to find OS Drive Name
+                        # Parse: "0/239 RAID0 Optl  RW     Yes     RWBD  -   ON  1.818 TB Virtual Disk0"
+                        dg_vd = parts[0]  # "0/239" format: DG/VD
+                        # Extract VD number (second part after "/")
+                        if "/" in dg_vd:
+                            vd_number = int(dg_vd.split("/")[1])
+                            if vd_number == array_id:
+                                raid_type = parts[1]  # "RAID0", "RAID6"  
+                                state = "Optimal" if parts[2] == "Optl" else parts[2]
+                                # Size parsing: look for pattern like "1.818 TB" in the line
+                                # Format can be: "...OFF  1.818 TB boot" or "...OFF 43.656 TB"
+                                size = "Unknown"
+                                for i in range(len(parts) - 1):
+                                    if parts[i+1] == "TB" or parts[i+1] == "GB":
+                                        try:
+                                            # Verify the previous part is a number
+                                            float(parts[i])
+                                            size = f"{parts[i]} {parts[i+1]}"
+                                            break
+                                        except ValueError:
+                                            continue
+
+                                target_id = str(array_id)
+                                properties = "ADRA,WB"  # Default based on cache column
+                                disk_cache = "Enabled"   # Default assumption
+                                strip_size = "512KB"     # Default, not shown in table
+                                in_vd_table = False  # Continue processing to find OS Drive Name
                     elif line_stripped and not line_stripped.startswith("VD="):
                         # End of table
                         break
-        
+
         # Return ArrayInfo for native perccli after processing all lines
         if is_native_perccli:
             return ArrayInfo(
@@ -683,10 +687,10 @@ class RAIDParser:
                         disk_cache = "Default"
                     elif "Enabled" in props:
                         disk_cache = "Enabled"
-            
+
             # Determine RAID type for legacy format
             raid_type = RAIDParser._determine_raid_type(raid_level, span_depth)
-        
+
         # If we reach here, return default/fallback array info
         return ArrayInfo(
             controller_id=controller_id,
@@ -701,12 +705,12 @@ class RAIDParser:
             cache_cade_info=cache_cade_info,
             in_progress=in_progress
         )
-    
+
     @staticmethod
     def _parse_size(size_str: str) -> str:
         """Parse and normalize size string."""
         size_str = size_str.strip()
-        
+
         if size_str.endswith("MB"):
             size = float(size_str.rstrip("MB").strip())
             if size > 1000:
@@ -719,26 +723,26 @@ class RAIDParser:
         else:  # GB or no unit
             size = float(size_str.rstrip("GB").strip())
             return f"{int(round(size))}G"
-    
+
     @staticmethod
     def _parse_cache_properties(props: str) -> str:
         """Parse cache properties."""
         properties = ""
-        
+
         if "ReadAdaptive" in props:
             properties += "ADRA"
         elif "ReadAhead" in props:
             properties += "RA"
         elif "ReadAheadNone" in props:
             properties += "NORA"
-            
+
         if "WriteBack" in props:
             properties += ",WB"
         elif "WriteThrough" in props:
             properties += ",WT"
-            
+
         return properties
-    
+
     @staticmethod
     def _determine_raid_type(raid_level: int, span_depth: int) -> str:
         """Determine RAID type from level and span depth."""
@@ -746,7 +750,7 @@ class RAIDParser:
             return f"RAID-{raid_level}0"
         else:
             return f"RAID-{raid_level}"
-    
+
     @staticmethod
     def parse_disk_info(output: List[str], controller_id: int) -> List[DiskInfo]:
         """Parse disk information from MegaCLI or native perccli output."""
@@ -755,20 +759,20 @@ class RAIDParser:
         array_id = "Unknown"
         array_index = -1
         disk_id = "Unknown"
-        
+
         # Check if this is native perccli output
         is_native_perccli = False
         for line in output:
             if "Drive /c" in line and "/e" in line and "/s" in line and line.endswith(" :"):
                 is_native_perccli = True
                 break
-        
+
         if is_native_perccli:
             return RAIDParser._parse_native_perccli_disks(output, controller_id)
-        
+
         for line in output:
             line = line.strip()
-            
+
             if match := re.match(r"^(CacheCade )?Virtual (Disk|Drive): ([0-9]+).*$", line):
                 array_index += 1
                 array_id = match.group(3)
@@ -805,13 +809,13 @@ class RAIDParser:
             elif match := RegexPatterns.DRIVE_TEMP.match(line):
                 temp_str = match.group(1).strip()
                 current_disk["temperature"] = re.sub(r" \(.*\)", "", temp_str)
-        
+
         # Don't forget the last disk
         if current_disk and "model" in current_disk:
             disks.append(RAIDParser._create_disk_info(current_disk, controller_id, array_id, disk_id))
-        
+
         return disks
-    
+
     @staticmethod
     def _parse_native_perccli_disks(output: List[str], controller_id: int) -> List[DiskInfo]:
         """Parse disk information from native perccli output."""
@@ -819,16 +823,16 @@ class RAIDParser:
         current_disk = {}
         current_drive = None
         in_device_table = False
-        
+
         for line in output:
             line_stripped = line.strip()
-            
+
             # Start of new drive section: "Drive /c0/e64/s0 :"
             if match := re.match(r"^Drive /c(\d+)/e(\d+)/s(\d+) :$", line_stripped):
                 # Save previous disk if we have one
                 if current_disk and current_drive:
                     disks.append(RAIDParser._create_native_disk_info(current_disk, controller_id, current_drive))
-                
+
                 # Start new disk
                 current_drive = {
                     "controller": match.group(1),
@@ -837,7 +841,7 @@ class RAIDParser:
                 }
                 current_disk = {}
                 in_device_table = False
-            
+
             elif current_drive:  # Only parse if we're in a drive section
                 # Device table header: "EID:Slt DID State DG     Size Intf Med SED PI SeSz Model                   Sp Type"
                 if line_stripped.startswith("EID:Slt DID State"):
@@ -853,30 +857,30 @@ class RAIDParser:
                             size_idx = 4  # Size is at index 4
                             if parts[size_idx+1] in ["TB", "GB"]:  # Size + unit
                                 current_disk["size"] = f"{parts[size_idx]} {parts[size_idx+1]}"
-                            
+
                             intf_idx = size_idx + 2  # Interface after size
                             current_disk["interface"] = parts[intf_idx]
-                            
+
                             med_idx = intf_idx + 1  # Media type after interface  
                             current_disk["media_type"] = parts[med_idx]
-                            
+
                             # Model starts after SeSz (sector size) - usually around index 10+
                             model_start = 10
                             if len(parts) > model_start:
                                 # Combine remaining parts as model, excluding last 2 (Sp Type)
                                 model_parts = parts[model_start:-2] if len(parts) > model_start+2 else parts[model_start:]
                                 current_disk["model"] = " ".join(model_parts)
-                            
+
                             # State
                             current_disk["state"] = "Online, Spun Up" if parts[2] == "Onln" else parts[2]
-                            
+
                             # Array ID (DG)
                             current_disk["array_id"] = parts[3]
-                            
+
                             in_device_table = False  # We've processed the table row
                         except (IndexError, ValueError):
                             pass  # Ignore parsing errors
-                
+
                 # Drive position = DriveGroup:0, Span:0, Row:0 (backup method)
                 elif line_stripped.startswith("Drive position =") and "array_id" not in current_disk:
                     if "DriveGroup:" in line_stripped:
@@ -885,12 +889,12 @@ class RAIDParser:
                             current_disk["array_id"] = dg_part
                         except:
                             pass
-                
+
                 # Drive Temperature = 26C (78.80 F)
                 elif line_stripped.startswith("Drive Temperature ="):
                     temp_match = re.search(r"(\d+)C", line_stripped)
                     current_disk["temperature"] = f"{temp_match.group(1)}C" if temp_match else "Unknown"
-                
+
                 # Device attributes section
                 elif line_stripped.startswith("Model Number ="):
                     current_disk["model"] = line_stripped.split("=")[1].strip()
@@ -902,26 +906,26 @@ class RAIDParser:
                     current_disk["speed"] = line_stripped.split("=")[1].strip()
                 elif line_stripped.startswith("SN ="):
                     current_disk["serial"] = line_stripped.split("=")[1].strip()
-        
+
         # Don't forget the last disk
         if current_disk and current_drive:
             disks.append(RAIDParser._create_native_disk_info(current_disk, controller_id, current_drive))
-        
+
         return disks
-    
+
     @staticmethod
     def _create_native_disk_info(disk_data: dict, controller_id: int, drive_info: dict) -> DiskInfo:
         """Create DiskInfo object from native perccli parsed data."""
         # Create disk ID based on slot
         disk_id = drive_info["slot"]
         array_id = disk_data.get("array_id", "Unknown")
-        
+
         # Determine media type - default to HDD unless we detect SSD
         media_type = "HDD"  # Default
         model = disk_data.get("model", "Unknown")
         if "SSD" in model.upper() or "NVME" in model.upper():
             media_type = "SSD"
-        
+
         return DiskInfo(
             controller_id=controller_id,
             array_id=array_id,
@@ -938,7 +942,7 @@ class RAIDParser:
             manufacturer=disk_data.get("manufacturer", ""),
             serial=disk_data.get("serial", "")
         )
-    
+
     @staticmethod
     def _parse_inquiry_hex(hex_line: str, disk_data: dict):
         """Try to extract model info from inquiry hex data."""
@@ -946,7 +950,7 @@ class RAIDParser:
             # Convert hex to ASCII and look for readable strings
             hex_bytes = bytes.fromhex(hex_line.replace(' ', ''))
             ascii_str = ''.join(chr(b) if 32 <= b <= 126 else ' ' for b in hex_bytes)
-            
+
             # Look for common patterns in inquiry data
             if "Samsung" in ascii_str and "model" not in disk_data:
                 disk_data["model"] = ascii_str.strip()
@@ -958,7 +962,7 @@ class RAIDParser:
                 disk_data["model"] = ascii_str.strip()
         except:
             pass  # Ignore parsing errors
-    
+
     @staticmethod
     def _create_disk_info(disk_data: dict, controller_id: int, array_id: str, disk_id: str) -> DiskInfo:
         """Create DiskInfo object from parsed data."""
@@ -978,13 +982,13 @@ class RAIDParser:
             manufacturer=disk_data.get("manufacturer", ""),
             serial=disk_data.get("serial", "")
         )
-    
+
     @staticmethod
     def _parse_drive_model(model: str) -> dict:
         """Parse manufacturer and serial from drive model string."""
         original_model = model
         model = re.sub(r" +", " ", model)
-        
+
         # Handle Seagate drives specially
         seagate_match = re.match(r"(\w{8})(ST\w+)(?:-(\w{6}))?(?:\s+(\w+))", model)
         if seagate_match:
@@ -992,13 +996,13 @@ class RAIDParser:
                 formatted_model = f"{seagate_match.group(2)}-{seagate_match.group(3)} {seagate_match.group(4)} {seagate_match.group(1)}"
             else:
                 formatted_model = f"{seagate_match.group(2)} {seagate_match.group(4):>10} {seagate_match.group(1)}"
-            
+
             return {
                 "model": formatted_model,
                 "manufacturer": "Seagate",
                 "serial": seagate_match.group(1)
             }
-        
+
         # Generic parsing - extract manufacturer, drive type and serial
         parts = model.split()
         if len(parts) >= 2:
@@ -1006,7 +1010,7 @@ class RAIDParser:
             drive_type = parts[1] if len(parts) > 1 else ""
             # Try to find serial at the end
             serial = parts[-1] if len(parts) > 2 else ""
-            
+
             # Format similar to original: "SERIAL MANUFACTURER DRIVETYPE FIRMWARE"
             if len(parts) >= 4:
                 formatted_model = f"{parts[-1]} {parts[0]} {parts[1]} {parts[-2]}"
@@ -1016,7 +1020,7 @@ class RAIDParser:
             manufacturer = model.split()[0] if model.split() else "Unknown"
             formatted_model = original_model
             serial = ""
-        
+
         return {
             "model": formatted_model,
             "manufacturer": manufacturer,
@@ -1026,19 +1030,19 @@ class RAIDParser:
 
 class OutputFormatter(ABC):
     """Abstract base class for output formatters."""
-    
+
     @abstractmethod
     def format_controllers(self, controllers: List[ControllerInfo]) -> str:
         pass
-    
+
     @abstractmethod
     def format_arrays(self, arrays: List[ArrayInfo]) -> str:
         pass
-    
+
     @abstractmethod
     def format_disks(self, disks: List[DiskInfo]) -> str:
         pass
-    
+
     @abstractmethod
     def format_summary(self, stats: RAIDStats) -> str:
         pass
@@ -1046,81 +1050,81 @@ class OutputFormatter(ABC):
 
 class NormalFormatter(OutputFormatter):
     """Formatter for normal human-readable output."""
-    
+
     def format_controllers(self, controllers: List[ControllerInfo]) -> str:
         if not controllers:
             return ""
-        
+
         lines = ["-- Controller information --"]
-        
+
         # Calculate column widths
         model_width = max(len("H/W Model"), max(len(c.model) for c in controllers))
-        
+
         # Header
         header_fmt = f"{'-- ID':<5} | {f'H/W Model':<{model_width}} | {'RAM':<6} | {'Temp':<4} | {'BBU':<6} | {'Firmware':<12}"
         lines.append(header_fmt)
-        
+
         # Controllers
         for controller in controllers:
             line_fmt = f"{f'c{controller.controller_id}':<5} | {controller.model:<{model_width}} | {controller.memory:<6} | {controller.temperature:<4} | {controller.bbu_status:<6} | {controller.firmware:<12}"
             lines.append(line_fmt)
-        
+
         lines.append("")
         return "\n".join(lines)
-    
+
     def format_arrays(self, arrays: List[ArrayInfo]) -> str:
         if not arrays:
             return ""
-        
+
         lines = ["-- Array information --"]
-        
+
         # Calculate column widths
         id_width = max(len("-- ID"), max(len(a.array_id) for a in arrays))
         type_width = max(len("Type"), max(len(a.raid_type) for a in arrays))
         size_width = max(len("Size"), max(len(a.size) for a in arrays))
         flags_width = max(len("Flags"), max(len(a.properties) for a in arrays))
         cache_width = max(len("CacheCade"), max(len(a.cache_cade_info) for a in arrays))
-        
+
         # Header
         header_fmt = f"{'-- ID':<{id_width}} | {f'Type':<{type_width}} | {'Size':<{size_width}} | {'Strpsz':<7} | {f'Flags':<{flags_width}} | {'DskCache':<8} | {'Status':<8} | {'OS Path':<8} | {f'CacheCade':<{cache_width}} | {'InProgress':<12}"
         lines.append(header_fmt)
-        
+
         # Arrays
         for array in arrays:
             line_fmt = f"{array.array_id:<{id_width}} | {array.raid_type:<{type_width}} | {array.size:<{size_width}} | {array.strip_size:<7} | {array.properties:<{flags_width}} | {array.disk_cache:<8} | {array.state:<8} | {array.os_path:<8} | {array.cache_cade_info:<{cache_width}} | {array.in_progress:<12}"
             lines.append(line_fmt)
-        
+
         lines.append("")
         return "\n".join(lines)
-    
+
     def format_disks(self, disks: List[DiskInfo]) -> str:
         if not disks:
             return ""
-        
+
         lines = ["-- Disk information --"]
-        
+
         # Calculate column widths
         disk_ids = [f"c{d.controller_id}u{d.array_id}p{d.disk_id}" for d in disks]
         id_width = max(len("-- ID"), max(len(disk_id) for disk_id in disk_ids)) if disk_ids else len("-- ID")
         model_width = max(len("Drive Model"), max(len(d.model) for d in disks))
         size_width = max(len("Size"), max(len(d.size) for d in disks))
         status_width = max(len("Status"), max(len(d.state) for d in disks))
-        
+
         # Header
         header_fmt = f"{'-- ID':<{id_width}} | {'Type':<4} | {f'Drive Model':<{model_width}} | {'Size':<{size_width}} | {f'Status':<{status_width}} | {'Speed':<8} | {'Temp':<4} | {'Slot ID':<8} | {'LSI ID':<8}"
         lines.append(header_fmt)
-        
+
         # Disks
         for disk in disks:
             disk_id = f"c{disk.controller_id}u{disk.array_id}p{disk.disk_id}"
             slot_info = f"[{disk.enclosure_id}:{disk.slot_id}]"
-            
+
             line_fmt = f"{disk_id:<{id_width}} | {disk.media_type:<4} | {disk.model:<{model_width}} | {disk.size:<{size_width}} | {disk.state:<{status_width}} | {disk.speed:<8} | {disk.temperature:<4} | {slot_info:<8} | {disk.lsi_id:<8}"
             lines.append(line_fmt)
-        
+
         lines.append("")
         return "\n".join(lines)
-    
+
     def format_summary(self, stats: RAIDStats) -> str:
         if stats.has_errors:
             return f"""
@@ -1132,16 +1136,16 @@ RAID ERROR - Arrays: OK:{stats.good_arrays} Bad:{stats.bad_arrays} - Disks: OK:{
 
 class NagiosFormatter(OutputFormatter):
     """Formatter for Nagios monitoring output."""
-    
+
     def format_controllers(self, controllers: List[ControllerInfo]) -> str:
         return ""  # Nagios doesn't need detailed controller info
-    
+
     def format_arrays(self, arrays: List[ArrayInfo]) -> str:
         return ""  # Handled in summary
-    
+
     def format_disks(self, disks: List[DiskInfo]) -> str:
         return ""  # Handled in summary
-    
+
     def format_summary(self, stats: RAIDStats) -> str:
         if stats.has_errors:
             return f"RAID ERROR - Arrays: OK:{stats.good_arrays} Bad:{stats.bad_arrays} - Disks: OK:{stats.good_disks} Bad:{stats.bad_disks}"
@@ -1151,18 +1155,18 @@ class NagiosFormatter(OutputFormatter):
 
 class InfluxDBFormatter(OutputFormatter):
     """Formatter for InfluxDB metrics output."""
-    
+
     def __init__(self):
         self.hostname = os.uname().nodename
         self.timestamp = self._get_timestamp()
-    
+
     def _get_timestamp(self) -> str:
         """Get timestamp for InfluxDB."""
         if sys.version_info >= (3, 7):
             return str(time.time_ns())
         else:
             return str(int(time.time() * 1000000000))
-    
+
     def format_controllers(self, controllers: List[ControllerInfo]) -> str:
         lines = []
         for controller in controllers:
@@ -1172,7 +1176,7 @@ class InfluxDBFormatter(OutputFormatter):
                    f'bbu={controller.bbu_status},controller={controller.controller_id}i {self.timestamp}')
             lines.append(line)
         return "\n".join(lines)
-    
+
     def format_arrays(self, arrays: List[ArrayInfo]) -> str:
         lines = []
         for array in arrays:
@@ -1183,13 +1187,13 @@ class InfluxDBFormatter(OutputFormatter):
                    f'task="{array.in_progress}" {self.timestamp}')
             lines.append(line)
         return "\n".join(lines)
-    
+
     def format_disks(self, disks: List[DiskInfo]) -> str:
         lines = []
         for disk in disks:
             disk_id = f"c{disk.controller_id}u{disk.array_id}p{disk.disk_id}"
             temp = disk.temperature.rstrip('C') if disk.temperature.endswith('C') else disk.temperature
-            
+
             line = (f'megaraid_disk,host={self.hostname},'
                    f'status={disk.state.replace(" ", "").replace(",", "+")},'
                    f'serial={disk.serial},disk_id={disk_id} '
@@ -1197,7 +1201,7 @@ class InfluxDBFormatter(OutputFormatter):
                    f'size="{disk.size}",speed="{disk.speed}",temp={temp}i {self.timestamp}')
             lines.append(line)
         return "\n".join(lines)
-    
+
     def format_summary(self, stats: RAIDStats) -> str:
         status = "ERROR" if stats.has_errors else "OK"
         return (f'megaraid_global,host={self.hostname},raid_global={status} '
@@ -1207,16 +1211,16 @@ class InfluxDBFormatter(OutputFormatter):
 
 class RAIDStatusChecker:
     """Main RAID status checking class."""
-    
+
     def __init__(self, config: Config):
         self.config = config
         self.megacli = MegaCLIInterface(config)
         self.parser = RAIDParser()
         self.formatter = self._create_formatter()
-        
+
         # Check privileges
         self._check_privileges()
-    
+
     def _check_privileges(self):
         """Check if running with required privileges."""
         try:
@@ -1225,14 +1229,14 @@ class RAIDStatusChecker:
                 is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
             else:  # Unix-like
                 is_admin = os.geteuid() == 0
-            
+
             if not is_admin:
                 print("# This script requires Administrator privileges")
                 sys.exit(5)
-                
+
         except Exception as e:
             logger.warning(f"Could not check privileges: {e}")
-    
+
     def _create_formatter(self) -> OutputFormatter:
         """Create appropriate formatter based on config."""
         if self.config.output_mode == OutputMode.NAGIOS:
@@ -1241,29 +1245,29 @@ class RAIDStatusChecker:
             return InfluxDBFormatter()
         else:
             return NormalFormatter()
-    
+
     def check_system_status(self) -> Tuple[List[ControllerInfo], List[ArrayInfo], List[DiskInfo], RAIDStats]:
         """Check the status of the entire RAID system."""
         controllers = []
         arrays = []
         disks = []
         stats = RAIDStats()
-        
+
         # Set reference for debug output in parser
         RAIDParser._megacli_ref = self.megacli
-        
+
         try:
             controller_count = self.megacli.get_controller_count()
             if controller_count == 0:
                 print("No MegaRAID or PERC adapter detected on your system!")
                 sys.exit(1)
-            
+
             for controller_id in range(controller_count):
                 # Get controller info
                 if self.config.print_controller:
                     controller_output = self.megacli.get_controller_info(controller_id)
                     controller_info = self.parser.parse_controller_info(controller_output, controller_id)
-                    
+
                     # Check BBU status if present
                     if controller_info.bbu_status == "Present":
                         try:
@@ -1272,89 +1276,89 @@ class RAIDStatusChecker:
                         except Exception as e:
                             logger.warning(f"Could not get BBU status for controller {controller_id}: {e}")
                             controller_info.bbu_status = "Unknown"
-                    
+
                     controllers.append(controller_info)
-                
+
                 # Get array info
                 if self.config.print_array:
                     # Build LD table to map array indices to actual LD IDs
                     ld_table = self._build_ld_table(controller_id)
-                    
+
                     # Get PCI info for OS path detection
                     pci_output = self.megacli.get_pci_info(controller_id)
                     pci_path = self.parser.parse_pci_info(pci_output)
-                    
+
                     for array_index, ld_id in enumerate(ld_table):
                         try:
                             single_array_output = self.megacli.get_array_info(controller_id, ld_id)
                             array_info = self.parser.parse_array_info(single_array_output, controller_id, ld_id)
-                            
+
                             # Try to find OS device path
                             if pci_path:
                                 array_info.os_path = self._find_os_device_path(pci_path, array_info.target_id)
-                            
+
                             arrays.append(array_info)
-                            
+
                             # Debug array state
                             if self.config.debug:
                                 self.megacli._debug_print(f"Array state : LD {array_info.array_id}, status : {array_info.state}")
-                            
+
                             # Update stats
                             if array_info.state in ["Optimal", "N/A"]:
                                 stats.good_arrays += 1
                             else:
                                 stats.bad_arrays += 1
-                                
+
                         except Exception as e:
                             logger.warning(f"Could not parse array {ld_id} (index {array_index}) on controller {controller_id}: {e}")
-                
+
                 # Get disk info
                 if self.config.print_disk:
                     try:
                         disk_output = self.megacli.get_physical_drives_info(controller_id)
                         disk_list = self.parser.parse_disk_info(disk_output, controller_id)
                         disks.extend(disk_list)
-                        
+
                         # Update disk stats
                         for disk in disk_list:
                             disk_name = f"{controller_id}{disk.enclosure_id}{disk.slot_id}"
                             if self.config.debug:
                                 self.megacli._debug_print(f"Disk c{disk_name} status : {disk.state}")
-                            
+
                             if self._is_disk_good(disk.state):
                                 stats.good_disks += 1
                             else:
                                 stats.bad_disks += 1
-                                
+
                     except Exception as e:
                         logger.warning(f"Could not parse disks for controller {controller_id}: {e}")
-        
+
         except MegaCLIError as e:
             logger.error(f"MegaCLI error: {e}")
             sys.exit(3)
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
             sys.exit(1)
-        
+
         return controllers, arrays, disks, stats
-    
+
     def _count_arrays(self, output: List[str]) -> int:
         """Count the number of arrays from output (legacy and native formats)."""
         count = 0
-        
+
         # Check if this is native perccli output - look for VD sections
         is_native_perccli = False
         for line in output:
             if "/c0/v" in line and " :" in line:
                 is_native_perccli = True
                 break
-        
+
         if is_native_perccli:
             # Count native perccli VD sections: "/c0/v0 :", "/c0/v1 :", etc.
             for line in output:
                 if re.match(r"^/c\d+/v\d+ :$", line.strip()):
                     count += 1
-            
+
             if self.config.debug:
                 self.megacli._debug_print(f"Native perccli array count: {count}")
             return count
@@ -1369,57 +1373,65 @@ class RAIDStatusChecker:
                         return count
                     except (IndexError, ValueError):
                         continue
-            
+
             # Legacy format parsing
             for line in output:
                 if re.match(r"^(CacheCade )?Virtual Drive:.*$", line.strip()):
                     count += 1
-        
+
         if self.config.debug and count > 0:
             self.megacli._debug_print(f"Array count detected: {count}")
-        
+
         return count
-    
+
     def _build_ld_table(self, controller_id: int) -> List[int]:
         """Build mapping of array indices to actual LD IDs, like original script."""
         ld_table = []
-        
+
         try:
             # First get array count
             all_arrays_output = self.megacli.get_all_arrays_info(controller_id)
             array_count = self._count_arrays(all_arrays_output)
-            
+
             # Check if we're using native perccli format
             is_native_perccli = False
             for line in all_arrays_output:
                 if "/c0/v" in line and " :" in line:
                     is_native_perccli = True
                     break
-            
+
             if is_native_perccli:
-                # For native perccli, VDs are numbered sequentially starting from 0
-                ld_table = list(range(array_count))
+                # For native perccli, extract actual VD numbers from /c0/vX : lines
+                ld_table = []
+                import re
+                for line in all_arrays_output:
+                    # Look for lines like "/c0/v239 :"
+                    match = re.match(r"^/c\d+/v(\d+)\s*:$", line.strip())
+                    if match:
+                        vd_number = int(match.group(1))
+                        ld_table.append(vd_number)
+
                 if self.config.debug:
-                    self.megacli._debug_print(f"Native perccli LD table: {ld_table}")
+                    self.megacli._debug_print(f"Native perccli LD table (actual VD numbers): {ld_table}")
                 return ld_table
-            
+
             # Legacy approach: probe each LD ID to find which ones exist
             ld_id = 0
             found_count = 0
             max_attempts = 256  # Reasonable upper limit to avoid infinite loops
-            
+
             while found_count < array_count and ld_id < max_attempts:
                 try:
                     # Try to get info for this LD ID
                     test_output = self.megacli.get_array_info(controller_id, ld_id)
-                    
+
                     # Check if this LD exists (doesn't contain "Does not Exist")
                     ld_exists = True
                     for line in test_output:
                         if "Does not Exist" in line:
                             ld_exists = False
                             break
-                    
+
                     if ld_exists:
                         # Check if this is actually a virtual drive
                         for line in test_output:
@@ -1427,21 +1439,21 @@ class RAIDStatusChecker:
                                 ld_table.append(ld_id)
                                 found_count += 1
                                 break
-                    
+
                 except Exception as e:
                     # LD doesn't exist, skip
                     pass
-                
+
                 ld_id += 1
-            
+
             return ld_table
-            
+
         except Exception as e:
             logger.warning(f"Could not build LD table for controller {controller_id}: {e}")
             # Fall back to simple sequential mapping
             array_count = self._count_arrays(self.megacli.get_all_arrays_info(controller_id))
             return list(range(array_count))
-    
+
     def _is_disk_good(self, state: str) -> bool:
         """Check if disk state is considered good."""
         good_states = [
@@ -1449,29 +1461,29 @@ class RAIDStatusChecker:
             "Unconfigured(good), Spun Up", "Unconfigured(good), Spun down",
             "Hotspare, Spun Up", "Hotspare, Spun down", "JBOD"
         ]
-        
+
         # Handle rebuilding states with percentages
         if state.startswith("Rebuilding"):
             return True
-            
+
         return state in good_states
-    
+
     def _find_os_device_path(self, pci_path: str, target_id: str) -> str:
         """Find OS device path from PCI path and target ID."""
         if not pci_path or not target_id:
             return "N/A"
-            
+
         disk_prefix = f"/dev/disk/by-path/pci-{pci_path}-scsi-0:"
-        
+
         if self.config.debug:
             self.megacli._debug_print(f"Will look for DISKprefix : {disk_prefix}")
-        
+
         # First attempt: Try the reported target ID with various channels (original logic)
         for channel in range(1, 8):
             disk_path = f"{disk_prefix}{channel}:{target_id}:0"
             if self.config.debug:
                 self.megacli._debug_print(f"Looking for DISKpath : {disk_path}")
-            
+
             if os.path.exists(disk_path):
                 try:
                     real_path = os.path.realpath(disk_path)
@@ -1480,26 +1492,26 @@ class RAIDStatusChecker:
                     return real_path
                 except OSError:
                     continue
-        
+
         # Second attempt: Fallback search through all SCSI paths for this controller
         # This handles cases where Virtual Drive Target ID != actual SCSI Target ID
         if self.config.debug:
             self.megacli._debug_print(f"Target ID {target_id} not found, searching all SCSI paths for controller")
-        
+
         try:
             import glob
             # Search for all SCSI paths matching this PCI controller
             search_pattern = f"/dev/disk/by-path/pci-{pci_path}-scsi-*"
             scsi_paths = glob.glob(search_pattern)
-            
+
             # Filter out partition entries (we want base devices only)
             base_devices = [path for path in scsi_paths if not re.search(r'-part\d+$', path)]
-            
+
             if base_devices:
                 # Sort by device name to get consistent results
                 base_devices.sort()
                 found_path = base_devices[0]  # Take the first (usually /dev/sda)
-                
+
                 try:
                     real_path = os.path.realpath(found_path)
                     if self.config.debug:
@@ -1508,65 +1520,65 @@ class RAIDStatusChecker:
                     return real_path
                 except OSError:
                     pass
-                    
+
         except Exception as e:
             if self.config.debug:
                 self.megacli._debug_print(f"Fallback search failed: {str(e)}")
-        
+
         return "N/A"
-    
+
     def _print_debug_dump(self, controllers: List[ControllerInfo], arrays: List[ArrayInfo], disks: List[DiskInfo]):
         """Print comprehensive debug dump like the original script."""
         self.megacli._debug_print("Printing Command Cache")
         for cmd, output in self.megacli._command_cache.items():
             self.megacli._debug_print(f"Command: {cmd}")
             sys.stderr.write("\n".join(output) + "\n\n")
-        
+
         if controllers:
             self.megacli._debug_print("Printing Controllers")
             for controller in controllers:
                 sys.stderr.write(f"Controller {controller.controller_id}: {controller.model} | {controller.memory} | {controller.temperature} | {controller.bbu_status} | {controller.firmware}\n")
-        
+
         if arrays:
             self.megacli._debug_print("Printing Arrays")
             for array in arrays:
                 sys.stderr.write(f"{array.array_id} | {array.raid_type} | {array.size} | {array.state} | {array.os_path}\n")
-        
+
         if disks:
             self.megacli._debug_print("Printing Disks")
             for disk in disks:
                 disk_id = f"c{disk.controller_id}u{disk.array_id}p{disk.disk_id}"
                 sys.stderr.write(f"{disk_id} | {disk.media_type} | {disk.model} | {disk.size} | {disk.state} | {disk.temperature}\n")
-    
+
     def run(self):
         """Main execution method."""
         controllers, arrays, disks, stats = self.check_system_status()
-        
+
         # Format and print output
         if self.config.print_controller:
             output = self.formatter.format_controllers(controllers)
             if output:
                 print(output)
-        
+
         if self.config.print_array:
             output = self.formatter.format_arrays(arrays)
             if output:
                 print(output)
-        
+
         if self.config.print_disk:
             output = self.formatter.format_disks(disks)
             if output:
                 print(output)
-        
+
         # Print summary
         summary = self.formatter.format_summary(stats)
         if summary:
             print(summary)
-        
+
         # Debug output dump (like original script)
         if self.config.debug:
             self._print_debug_dump(controllers, arrays, disks)
-        
+
         # Exit with appropriate code
         if stats.has_errors:
             if self.config.output_mode == OutputMode.NAGIOS:
@@ -1583,7 +1595,7 @@ def create_config_from_args() -> Config:
         description="MegaCLI/perccli/storcli RAID status checker v2",
         epilog="Modernized Python implementation with improved error handling and structure."
     )
-    
+
     parser.add_argument(
         "--nagios", 
         action="store_true",
@@ -1626,22 +1638,22 @@ def create_config_from_args() -> Config:
         "--megacli-path",
         help="Explicit path to MegaCLI/perccli/storcli binary"
     )
-    
+
     args = parser.parse_args()
-    
+
     # Determine output mode
     output_mode = OutputMode.NORMAL
     if args.nagios:
         output_mode = OutputMode.NAGIOS
     elif args.influxdb:
         output_mode = OutputMode.INFLUXDB
-    
+
     # Configure logging level
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
         # Also configure stderr output to be unbuffered like original
         sys.stderr.reconfigure(line_buffering=True)
-    
+
     return Config(
         output_mode=output_mode,
         debug=args.debug,
