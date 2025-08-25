@@ -9,8 +9,47 @@ Modernized Python implementation
 A tool to monitor RAID controller status using MegaCLI, perccli, or storcli.
 """
 
-# $Id: megaclisas-status,v 2.01 2025/08/25 17:00:00 enhanced Exp $
-__version__ = "megaclisas-status,v 2.01 2025/08/25 17:00:00 enhanced Exp"
+# $Id: megaclisas-status,v 2.04 2025/08/25 17:45:00 enhanced Exp $
+__version__ = "megaclisas-status,v 2.04 2025/08/25 17:45:00 enhanced Exp"
+
+#
+# VERSION HISTORY:
+# ================
+#
+# v2.04 (2025-08-25): Enhanced progress reporting for perccli64
+#   - Added "Active Operations" parsing for native perccli format
+#   - Both MegaCli64 and perccli64 paths now show consistency check progress
+#   - Complete feature parity across all tool combinations
+#
+# v2.03 (2025-08-25): Fixed progress reporting regression 
+#   - Added "Ongoing Progresses" parsing for MegaCli64 format
+#   - Restored consistency check progress display like legacy script
+#   - Handles Check Consistency, Background Initialization, Reconstruction
+#
+# v2.02 (2025-08-25): Defensive programming enhancements
+#   - Enhanced array/disk state handling with maintenance state recognition
+#   - Added graceful handling for unknown states with warning logging
+#   - Improved robustness for production environments
+#   - Added data validation framework with safe defaults
+#
+# v2.01 (2025-08-25): Major parsing and display improvements
+#   - Fixed unconfigured drive ID format (c0uXpY instead of c0uXpUnknown)
+#   - Improved drive model display format (model firmware serial)
+#   - Enhanced parsing logic for both MegaCli64 and perccli64
+#   - Better unconfigured drive detection and separate section display
+#   - Fixed serial numbers and firmware versions in Drive Model column
+#
+# v2.00 (2025-08-24): Initial modernization and versioning
+#   - Added --version flag support
+#   - Renamed from megaclisas-status-v2 to main megaclisas-status
+#   - Established version string format compatible with original $Id$ field
+#   - Maintained megaclisas-status-v2 copy for community link compatibility
+#
+# PRIOR VERSIONS: Legacy Perl script with various community enhancements
+#   - Original concept and implementation
+#   - Basic MegaCli64 support and output formatting
+#   - Nagios and InfluxDB output format support
+#
 
 import os
 import re
@@ -608,6 +647,12 @@ class RAIDParser:
                 # Extract OS Drive Name if present  
                 if "OS Drive Name" in line_stripped and "=" in line_stripped:
                     os_path = line_stripped.split("=", 1)[1].strip()
+                    
+                # Extract Active Operations (progress) if present
+                elif "Active Operations" in line_stripped and "=" in line_stripped:
+                    operations = line_stripped.split("=", 1)[1].strip()
+                    if operations and operations != "None":
+                        in_progress = operations
 
                 if "DG/VD TYPE" in line_stripped and "State" in line_stripped:
                     in_vd_table = True
@@ -690,6 +735,28 @@ class RAIDParser:
                         disk_cache = "Default"
                     elif "Enabled" in props:
                         disk_cache = "Enabled"
+                elif "Ongoing Progresses:" in line:
+                    # Look ahead for progress details
+                    for j in range(i + 1, min(i + 10, len(output))):  # Look at next 10 lines max
+                        progress_line = output[j].strip()
+                        if not progress_line:
+                            continue
+                        if "Check Consistency" in progress_line and ":" in progress_line:
+                            # Extract: "Check Consistency        : Completed 0%, Taken 0 min."
+                            progress_info = progress_line.split(":", 1)[1].strip()
+                            in_progress = f"Check Consistency : {progress_info}"
+                            break
+                        elif "Background Initialization" in progress_line and ":" in progress_line:
+                            progress_info = progress_line.split(":", 1)[1].strip()
+                            in_progress = f"Background Initialization : {progress_info}"
+                            break
+                        elif "Reconstruction" in progress_line and ":" in progress_line:
+                            progress_info = progress_line.split(":", 1)[1].strip()
+                            in_progress = f"Reconstruction : {progress_info}"
+                            break
+                        elif not progress_line.startswith(" ") and progress_line != "":
+                            # Stop looking if we hit a line that doesn't start with space (new section)
+                            break
 
             # Determine RAID type for legacy format
             raid_type = RAIDParser._determine_raid_type(raid_level, span_depth)
@@ -1505,8 +1572,8 @@ class RAIDStatusChecker:
                             if self.config.debug:
                                 self.megacli._debug_print(f"Array state : LD {array_info.array_id}, status : {array_info.state}")
 
-                            # Update stats
-                            if array_info.state in ["Optimal", "N/A"]:
+                            # Update stats with defensive handling
+                            if self._is_array_healthy(array_info.state):
                                 stats.good_arrays += 1
                             else:
                                 stats.bad_arrays += 1
@@ -1643,6 +1710,27 @@ class RAIDStatusChecker:
             array_count = self._count_arrays(self.megacli.get_all_arrays_info(controller_id))
             return list(range(array_count))
 
+    def _is_array_healthy(self, state: str) -> bool:
+        """Check if array state indicates healthy status (good or maintenance)."""
+        good_states = ["Optimal", "Optl", "N/A"]
+        # Known maintenance states (not failures)
+        maintenance_states = [
+            "CC", "Check Consistency", "BGI", "Background Initialization",
+            "Reconstruction", "Rebuild", "Rebuilding", "Migrating", "Migration",
+            "Initializing", "INIT", "Synchronizing", "SYNC"
+        ]
+        
+        if state in good_states:
+            return True
+        elif state in maintenance_states:
+            if self.config.debug:
+                print(f"INFO: Array in maintenance state: {state}")
+            return True  # Maintenance is not a failure
+        else:
+            # Log unknown states for future enhancement
+            print(f"WARNING: Unknown array state encountered: '{state}' - treating as potentially bad")
+            return False
+
     def _is_disk_good(self, state: str) -> bool:
         """Check if disk state is considered good."""
         good_states = [
@@ -1651,12 +1739,27 @@ class RAIDStatusChecker:
             "UGood",  # perccli format for unconfigured good drives
             "Hotspare, Spun Up", "Hotspare, Spun down", "JBOD"
         ]
+        
+        # Known maintenance states for disks
+        maintenance_states = ["Copyback", "Patrol Read", "Smart Error"]
 
         # Handle rebuilding states with percentages
         if state.startswith("Rebuilding"):
             return True
+            
+        # Handle maintenance states
+        if any(maintenance in state for maintenance in maintenance_states):
+            if self.config.debug:
+                print(f"INFO: Disk in maintenance state: {state}")
+            return True
 
-        return state in good_states
+        if state in good_states:
+            return True
+        else:
+            # Log unknown disk states for future enhancement
+            if self.config.debug:
+                print(f"WARNING: Unknown disk state encountered: '{state}' - treating as potentially bad")
+            return False
     
     def _is_disk_unconfigured(self, state: str) -> bool:
         """Check if disk is unconfigured (good but not part of array)."""
@@ -1665,6 +1768,39 @@ class RAIDStatusChecker:
             "UGood"  # perccli format for unconfigured good drives
         ]
         return state in unconfigured_states
+        
+    def _validate_parsed_data(self, data_type: str, data: dict) -> dict:
+        """Validate parsed data and provide safe defaults for missing/invalid fields."""
+        validated = {}
+        
+        if data_type == "array":
+            validated["array_id"] = str(data.get("array_id", "Unknown"))
+            validated["raid_type"] = data.get("raid_type", "Unknown")
+            validated["state"] = data.get("state", "Unknown")
+            validated["size"] = data.get("size", "Unknown")
+            validated["properties"] = data.get("properties", "Unknown")
+            validated["disk_cache"] = data.get("disk_cache", "Unknown")
+            validated["os_path"] = data.get("os_path", "N/A")
+            
+        elif data_type == "disk":
+            validated["array_id"] = str(data.get("array_id", "Unknown"))
+            validated["disk_id"] = str(data.get("disk_id", "Unknown"))
+            validated["enclosure_id"] = str(data.get("enclosure_id", ""))
+            validated["slot_id"] = str(data.get("slot_id", "Unknown"))
+            validated["model"] = data.get("model", "Unknown")
+            validated["state"] = data.get("state", "Unknown")
+            validated["media_type"] = data.get("media_type", "Unknown")
+            validated["size"] = data.get("size", "Unknown")
+            validated["speed"] = data.get("speed", "Unknown")
+            validated["temperature"] = data.get("temperature", "N/A")
+            validated["lsi_id"] = str(data.get("lsi_id", "Unknown"))
+            
+        # Log if we had to use defaults
+        missing_fields = [k for k, v in validated.items() if v in ["Unknown", "N/A", ""]]
+        if missing_fields and self.config.debug:
+            print(f"INFO: Used defaults for {data_type} fields: {missing_fields}")
+            
+        return validated
 
     def _find_os_device_path(self, pci_path: str, target_id: str) -> str:
         """Find OS device path from PCI path and target ID."""
