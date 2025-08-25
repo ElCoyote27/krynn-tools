@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-MegaCLI SAS Status Tool v2 - Modernized Python implementation
+MegaCLI SAS Status Tool - Modernized Python implementation
 
 Original by Adam Cecile <gandalf@le-vert.net>
 Modified by Vincent S. Cojot <vincent@cojot.name>
-Modernized Python v2 implementation
+Modernized Python implementation
 
 A tool to monitor RAID controller status using MegaCLI, perccli, or storcli.
 """
+
+# $Id: megaclisas-status,v 2.00 2025/08/24 18:30:00 enhanced Exp $
+__version__ = "megaclisas-status,v 2.00 2025/08/24 18:30:00 enhanced Exp"
 
 import os
 import re
@@ -1592,10 +1595,15 @@ class RAIDStatusChecker:
 def create_config_from_args() -> Config:
     """Create configuration from command line arguments."""
     parser = argparse.ArgumentParser(
-        description="MegaCLI/perccli/storcli RAID status checker v2",
+        description="MegaCLI/perccli/storcli RAID status checker",
         epilog="Modernized Python implementation with improved error handling and structure."
     )
 
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=__version__
+    )
     parser.add_argument(
         "--nagios", 
         action="store_true",
