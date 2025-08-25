@@ -9,8 +9,8 @@ Modernized Python implementation
 A tool to monitor RAID controller status using MegaCLI, perccli, or storcli.
 """
 
-# $Id: megaclisas-status,v 2.00 2025/08/24 18:30:00 enhanced Exp $
-__version__ = "megaclisas-status,v 2.00 2025/08/24 18:30:00 enhanced Exp"
+# $Id: megaclisas-status,v 2.01 2025/08/25 17:00:00 enhanced Exp $
+__version__ = "megaclisas-status,v 2.01 2025/08/25 17:00:00 enhanced Exp"
 
 import os
 import re
@@ -436,8 +436,8 @@ class MegaCLIInterface:
 
     def get_physical_drives_info(self, controller_id: int) -> List[str]:
         """Get physical drives information."""
-        # First try legacy MegaCLI-style command
-        cmd = f"{self.megacli_path} -LdPdInfo -a{controller_id} -NoLog"
+        # First try legacy MegaCLI-style command (use -PDList to get ALL drives like legacy)
+        cmd = f"{self.megacli_path} -PDList -a{controller_id} -NoLog"
         output = self.execute_command(cmd)
 
         # Check if the legacy command was deprecated (newer perccli)
@@ -772,6 +772,16 @@ class RAIDParser:
 
         if is_native_perccli:
             return RAIDParser._parse_native_perccli_disks(output, controller_id)
+        
+        # Check if this is -PDList format (lists all drives individually)
+        is_pdlist_format = False
+        for line in output:
+            if "Enclosure Device ID:" in line and "Virtual Drive:" not in ''.join(output[:10]):
+                is_pdlist_format = True
+                break
+        
+        if is_pdlist_format:
+            return RAIDParser._parse_megacli_pdlist(output, controller_id)
 
         for line in output:
             line = line.strip()
@@ -874,8 +884,14 @@ class RAIDParser:
                                 model_parts = parts[model_start:-2] if len(parts) > model_start+2 else parts[model_start:]
                                 current_disk["model"] = " ".join(model_parts)
 
-                            # State
-                            current_disk["state"] = "Online, Spun Up" if parts[2] == "Onln" else parts[2]
+                            # State - convert perccli abbreviations to full status
+                            state_raw = parts[2]
+                            if state_raw == "Onln":
+                                current_disk["state"] = "Online, Spun Up"
+                            elif state_raw == "UGood":
+                                current_disk["state"] = "Unconfigured(good), Spun Up"
+                            else:
+                                current_disk["state"] = state_raw
 
                             # Array ID (DG)
                             current_disk["array_id"] = parts[3]
@@ -909,6 +925,8 @@ class RAIDParser:
                     current_disk["speed"] = line_stripped.split("=")[1].strip()
                 elif line_stripped.startswith("SN ="):
                     current_disk["serial"] = line_stripped.split("=")[1].strip()
+                elif line_stripped.startswith("Firmware Revision ="):
+                    current_disk["firmware"] = line_stripped.split("=")[1].strip()
 
         # Don't forget the last disk
         if current_disk and current_drive:
@@ -923,11 +941,29 @@ class RAIDParser:
         disk_id = drive_info["slot"]
         array_id = disk_data.get("array_id", "Unknown")
 
-        # Determine media type - default to HDD unless we detect SSD
-        media_type = "HDD"  # Default
-        model = disk_data.get("model", "Unknown")
-        if "SSD" in model.upper() or "NVME" in model.upper():
-            media_type = "SSD"
+        # Use media type from parsed table data first, fall back to model-based detection
+        media_type = disk_data.get("media_type", "HDD")  # Use parsed "Med" column
+        
+        # Combine model, firmware, and serial into one field 
+        base_model = disk_data.get("model", "Unknown")
+        firmware = disk_data.get("firmware", "").strip()
+        serial = disk_data.get("serial", "").strip()
+        
+        # Format: "model firmware serial" (more readable)
+        model_parts = []
+        if base_model and base_model != "Unknown":
+            model_parts.append(base_model)
+        if firmware:
+            model_parts.append(firmware)
+        if serial:
+            model_parts.append(serial)
+        
+        model = " ".join(model_parts) if model_parts else "Unknown"
+        
+        # If media_type is still generic, try to detect from model name
+        if media_type == "HDD":  # Only override if it's the default
+            if "SSD" in model.upper() or "NVME" in model.upper():
+                media_type = "SSD"
 
         return DiskInfo(
             controller_id=controller_id,
@@ -967,6 +1003,99 @@ class RAIDParser:
             pass  # Ignore parsing errors
 
     @staticmethod
+    def _parse_megacli_pdlist(output: List[str], controller_id: int) -> List[DiskInfo]:
+        """Parse disk information from MegaCli -PDList output format."""
+        disks = []
+        current_disk = {}
+        
+        for line in output:
+            line = line.strip()
+            
+            # Start of new drive entry
+            if line.startswith("Enclosure Device ID:"):
+                # Save previous disk if we have one
+                if current_disk and "model" in current_disk:
+                    # If no "Drive's position:" line was encountered, this is an unconfigured drive
+                    if "array_id" not in current_disk:
+                        current_disk["array_id"] = "X"  # Unconfigured marker
+                        current_disk["disk_id"] = current_disk.get("slot_id", "Unknown")
+                    disks.append(RAIDParser._create_pdlist_disk_info(current_disk, controller_id))
+                
+                # Start new disk
+                current_disk = {"enclosure_id": line.split(":")[1].strip()}
+                
+            elif line.startswith("Slot Number:"):
+                current_disk["slot_id"] = line.split(":")[1].strip()
+                
+            elif line.startswith("Device Id:"):
+                current_disk["lsi_id"] = line.split(":")[1].strip()
+                
+            elif line.startswith("Drive's position:"):
+                # Extract array info: "DiskGroup: 0, Span: 0, Arm: 0" or empty for unconfigured
+                position_info = line.split(":", 1)[1].strip()
+                if "DiskGroup:" in position_info:
+                    # Configured drive - extract DiskGroup (array ID)
+                    try:
+                        dg_part = position_info.split("DiskGroup:")[1].split(",")[0].strip()
+                        current_disk["array_id"] = dg_part
+                        # For configured drives, disk_id is the slot position within the array
+                        current_disk["disk_id"] = current_disk.get("slot_id", "Unknown")
+                    except:
+                        current_disk["array_id"] = "Unknown"
+                        current_disk["disk_id"] = current_disk.get("slot_id", "Unknown")
+                else:
+                    # Unconfigured drive
+                    current_disk["array_id"] = "X"  # Unconfigured marker like legacy
+                    slot_id = current_disk.get("slot_id", "Unknown")
+                    current_disk["disk_id"] = slot_id
+                    # Debug: print what we got for unconfigured drive
+                    print(f"DEBUG: Unconfigured drive - slot_id='{slot_id}', current_disk keys={list(current_disk.keys())}")
+                    
+            elif line.startswith("Firmware state:"):
+                current_disk["state"] = line.split(":", 1)[1].strip()
+                
+            elif line.startswith("Inquiry Data:"):
+                # Parse: "S753NS0W812677Y     Samsung SSD 870 EVO 2TB                 SVT03B6Q"
+                inquiry_data = line.split(":", 1)[1].strip()
+                current_disk["model"] = inquiry_data
+                current_disk.update(RAIDParser._parse_drive_model(inquiry_data))
+                
+            elif line.startswith("Media Type:"):
+                media_type = line.split(":", 1)[1].strip()
+                if media_type == "Hard Disk Device":
+                    current_disk["media_type"] = "HDD"
+                elif media_type == "Solid State Device":
+                    current_disk["media_type"] = "SSD"
+                else:
+                    current_disk["media_type"] = "N/A"
+                    
+            elif line.startswith("Coerced Size:"):
+                # Parse size like "1.818 TB [0xe8d00000 Sectors]"
+                size_str = line.split(":", 1)[1].strip()
+                if "[" in size_str:
+                    size_str = size_str.split("[")[0].strip()
+                current_disk["size"] = size_str
+                
+            elif line.startswith("Device Speed:"):
+                current_disk["speed"] = line.split(":", 1)[1].strip()
+                
+            elif line.startswith("Drive Temperature"):
+                # Parse: "Drive Temperature :27C (80.60 F)"
+                temp_part = line.split(":")[1].strip()
+                temp_match = re.search(r"(\d+)C", temp_part)
+                current_disk["temperature"] = f"{temp_match.group(1)}C" if temp_match else "Unknown"
+        
+        # Don't forget the last disk
+        if current_disk and "model" in current_disk:
+            # If no "Drive's position:" line was encountered, this is an unconfigured drive
+            if "array_id" not in current_disk:
+                current_disk["array_id"] = "X"  # Unconfigured marker
+                current_disk["disk_id"] = current_disk.get("slot_id", "Unknown")
+            disks.append(RAIDParser._create_pdlist_disk_info(current_disk, controller_id))
+        
+        return disks
+
+    @staticmethod
     def _create_disk_info(disk_data: dict, controller_id: int, array_id: str, disk_id: str) -> DiskInfo:
         """Create DiskInfo object from parsed data."""
         return DiskInfo(
@@ -975,6 +1104,26 @@ class RAIDParser:
             disk_id=disk_id,
             enclosure_id=disk_data.get("enclosure_id", ""),
             slot_id=disk_data.get("slot_id", ""),
+            lsi_id=disk_data.get("lsi_id", "Unknown"),
+            media_type=disk_data.get("media_type", "Unknown"),
+            model=disk_data.get("model", "Unknown"),
+            size=disk_data.get("size", "Unknown"),
+            state=disk_data.get("state", "Unknown"),
+            speed=disk_data.get("speed", "Unknown"),
+            temperature=disk_data.get("temperature", "Unknown"),
+            manufacturer=disk_data.get("manufacturer", ""),
+            serial=disk_data.get("serial", "")
+        )
+
+    @staticmethod
+    def _create_pdlist_disk_info(disk_data: dict, controller_id: int) -> DiskInfo:
+        """Create DiskInfo object from -PDList parsed data."""
+        return DiskInfo(
+            controller_id=controller_id,
+            array_id=disk_data.get("array_id", "Unknown"),
+            disk_id=disk_data.get("disk_id", "Unknown"),
+            enclosure_id=disk_data.get("enclosure_id", "Unknown"),
+            slot_id=disk_data.get("slot_id", "Unknown"),
             lsi_id=disk_data.get("lsi_id", "Unknown"),
             media_type=disk_data.get("media_type", "Unknown"),
             model=disk_data.get("model", "Unknown"),
@@ -1044,6 +1193,10 @@ class OutputFormatter(ABC):
 
     @abstractmethod
     def format_disks(self, disks: List[DiskInfo]) -> str:
+        pass
+
+    @abstractmethod
+    def format_unconfigured_disks(self, disks: List[DiskInfo]) -> str:
         pass
 
     @abstractmethod
@@ -1128,6 +1281,34 @@ class NormalFormatter(OutputFormatter):
         lines.append("")
         return "\n".join(lines)
 
+    def format_unconfigured_disks(self, disks: List[DiskInfo]) -> str:
+        if not disks:
+            return ""
+
+        lines = ["-- Unconfigured Disk information --"]
+
+        # Calculate column widths - unconfigured drives use c0uXpY format like legacy
+        disk_ids = [f"c{d.controller_id}uXp{d.disk_id}" for d in disks]
+        id_width = max(len("-- ID"), max(len(disk_id) for disk_id in disk_ids)) if disk_ids else len("-- ID")
+        model_width = max(len("Drive Model"), max(len(d.model) for d in disks))
+        size_width = max(len("Size"), max(len(d.size) for d in disks))
+        status_width = max(len("Status"), max(len(d.state) for d in disks))
+
+        # Header (same as regular disks but with Path column like legacy)
+        header_fmt = f"{'-- ID':<{id_width}} | {'Type':<4} | {f'Drive Model':<{model_width}} | {'Size':<{size_width}} | {f'Status':<{status_width}} | {'Speed':<8} | {'Temp':<4} | {'Slot ID':<8} | {'LSI ID':<8} | {'Path':<8}"
+        lines.append(header_fmt)
+
+        # Unconfigured disks
+        for disk in disks:
+            disk_id = f"c{disk.controller_id}uXp{disk.disk_id}"  # Legacy format for unconfigured
+            slot_info = f"[{disk.enclosure_id}:{disk.slot_id}]"
+
+            line_fmt = f"{disk_id:<{id_width}} | {disk.media_type:<4} | {disk.model:<{model_width}} | {disk.size:<{size_width}} | {disk.state:<{status_width}} | {disk.speed:<8} | {disk.temperature:<4} | {slot_info:<8} | {disk.lsi_id:<8} | {'N/A':<8}"
+            lines.append(line_fmt)
+
+        lines.append("")
+        return "\n".join(lines)
+
     def format_summary(self, stats: RAIDStats) -> str:
         if stats.has_errors:
             return f"""
@@ -1147,6 +1328,9 @@ class NagiosFormatter(OutputFormatter):
         return ""  # Handled in summary
 
     def format_disks(self, disks: List[DiskInfo]) -> str:
+        return ""  # Handled in summary
+
+    def format_unconfigured_disks(self, disks: List[DiskInfo]) -> str:
         return ""  # Handled in summary
 
     def format_summary(self, stats: RAIDStats) -> str:
@@ -1205,6 +1389,20 @@ class InfluxDBFormatter(OutputFormatter):
             lines.append(line)
         return "\n".join(lines)
 
+    def format_unconfigured_disks(self, disks: List[DiskInfo]) -> str:
+        lines = []
+        for disk in disks:
+            disk_id = f"c{disk.controller_id}uXp{disk.disk_id}"  # Unconfigured format
+            temp = disk.temperature.rstrip('C') if disk.temperature.endswith('C') else disk.temperature
+
+            line = (f'megaraid_unconfigured_disk,host={self.hostname},'
+                   f'status={disk.state.replace(" ", "").replace(",", "+")},'
+                   f'serial={disk.serial},disk_id={disk_id} '
+                   f'model="{disk.manufacturer}",disk_type="{disk.media_type}",'
+                   f'size="{disk.size}",speed="{disk.speed}",temp={temp}i {self.timestamp}')
+            lines.append(line)
+        return "\n".join(lines)
+
     def format_summary(self, stats: RAIDStats) -> str:
         status = "ERROR" if stats.has_errors else "OK"
         return (f'megaraid_global,host={self.hostname},raid_global={status} '
@@ -1249,11 +1447,12 @@ class RAIDStatusChecker:
         else:
             return NormalFormatter()
 
-    def check_system_status(self) -> Tuple[List[ControllerInfo], List[ArrayInfo], List[DiskInfo], RAIDStats]:
+    def check_system_status(self) -> Tuple[List[ControllerInfo], List[ArrayInfo], List[DiskInfo], List[DiskInfo], RAIDStats]:
         """Check the status of the entire RAID system."""
         controllers = []
         arrays = []
         disks = []
+        unconfigured_disks = []
         stats = RAIDStats()
 
         # Set reference for debug output in parser
@@ -1320,18 +1519,23 @@ class RAIDStatusChecker:
                     try:
                         disk_output = self.megacli.get_physical_drives_info(controller_id)
                         disk_list = self.parser.parse_disk_info(disk_output, controller_id)
-                        disks.extend(disk_list)
 
-                        # Update disk stats
+                        # Separate configured and unconfigured drives
                         for disk in disk_list:
                             disk_name = f"{controller_id}{disk.enclosure_id}{disk.slot_id}"
                             if self.config.debug:
                                 self.megacli._debug_print(f"Disk c{disk_name} status : {disk.state}")
 
-                            if self._is_disk_good(disk.state):
-                                stats.good_disks += 1
+                            if self._is_disk_unconfigured(disk.state):
+                                # Unconfigured drives go to separate list
+                                unconfigured_disks.append(disk)
                             else:
-                                stats.bad_disks += 1
+                                # Configured drives go to main list and count toward stats
+                                disks.append(disk)
+                                if self._is_disk_good(disk.state):
+                                    stats.good_disks += 1
+                                else:
+                                    stats.bad_disks += 1
 
                     except Exception as e:
                         logger.warning(f"Could not parse disks for controller {controller_id}: {e}")
@@ -1343,7 +1547,7 @@ class RAIDStatusChecker:
             logger.error(f"Unexpected error: {e}")
             sys.exit(1)
 
-        return controllers, arrays, disks, stats
+        return controllers, arrays, disks, unconfigured_disks, stats
 
     def _count_arrays(self, output: List[str]) -> int:
         """Count the number of arrays from output (legacy and native formats)."""
@@ -1418,36 +1622,18 @@ class RAIDStatusChecker:
                     self.megacli._debug_print(f"Native perccli LD table (actual VD numbers): {ld_table}")
                 return ld_table
 
-            # Legacy approach: probe each LD ID to find which ones exist
-            ld_id = 0
-            found_count = 0
-            max_attempts = 256  # Reasonable upper limit to avoid infinite loops
+            # Legacy approach: extract LD IDs directly from -LDInfo -lall output
+            # This is much more efficient than probing every possible ID!
+            import re
+            for line in all_arrays_output:
+                # Look for "Virtual Drive: N (Target Id: X)" lines
+                match = re.match(r"^(CacheCade )?Virtual Drive:\s*(\d+)", line.strip())
+                if match:
+                    ld_id = int(match.group(2))  # group(1) is optional CacheCade, group(2) is the ID
+                    ld_table.append(ld_id)
 
-            while found_count < array_count and ld_id < max_attempts:
-                try:
-                    # Try to get info for this LD ID
-                    test_output = self.megacli.get_array_info(controller_id, ld_id)
-
-                    # Check if this LD exists (doesn't contain "Does not Exist")
-                    ld_exists = True
-                    for line in test_output:
-                        if "Does not Exist" in line:
-                            ld_exists = False
-                            break
-
-                    if ld_exists:
-                        # Check if this is actually a virtual drive
-                        for line in test_output:
-                            if re.match(r"^(CacheCade )?Virtual Drive:", line.strip()):
-                                ld_table.append(ld_id)
-                                found_count += 1
-                                break
-
-                except Exception as e:
-                    # LD doesn't exist, skip
-                    pass
-
-                ld_id += 1
+            if self.config.debug:
+                self.megacli._debug_print(f"Legacy LD table (from -lall): {ld_table}")
 
             return ld_table
 
@@ -1462,6 +1648,7 @@ class RAIDStatusChecker:
         good_states = [
             "Online", "Online, Spun Up", "Rebuilding",
             "Unconfigured(good), Spun Up", "Unconfigured(good), Spun down",
+            "UGood",  # perccli format for unconfigured good drives
             "Hotspare, Spun Up", "Hotspare, Spun down", "JBOD"
         ]
 
@@ -1470,6 +1657,14 @@ class RAIDStatusChecker:
             return True
 
         return state in good_states
+    
+    def _is_disk_unconfigured(self, state: str) -> bool:
+        """Check if disk is unconfigured (good but not part of array)."""
+        unconfigured_states = [
+            "Unconfigured(good), Spun Up", "Unconfigured(good), Spun down",
+            "UGood"  # perccli format for unconfigured good drives
+        ]
+        return state in unconfigured_states
 
     def _find_os_device_path(self, pci_path: str, target_id: str) -> str:
         """Find OS device path from PCI path and target ID."""
@@ -1555,7 +1750,7 @@ class RAIDStatusChecker:
 
     def run(self):
         """Main execution method."""
-        controllers, arrays, disks, stats = self.check_system_status()
+        controllers, arrays, disks, unconfigured_disks, stats = self.check_system_status()
 
         # Format and print output
         if self.config.print_controller:
@@ -1572,6 +1767,12 @@ class RAIDStatusChecker:
             output = self.formatter.format_disks(disks)
             if output:
                 print(output)
+            
+            # Print unconfigured disks section (like legacy version)
+            if unconfigured_disks:
+                output = self.formatter.format_unconfigured_disks(unconfigured_disks)
+                if output:
+                    print(output)
 
         # Print summary
         summary = self.formatter.format_summary(stats)
