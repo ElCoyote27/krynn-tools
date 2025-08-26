@@ -9,12 +9,18 @@ Modernized Python implementation
 A tool to monitor RAID controller status using MegaCLI, perccli, or storcli.
 """
 
-# $Id: megaclisas-status,v 2.04 2025/08/25 17:45:00 enhanced Exp $
-__version__ = "megaclisas-status,v 2.04 2025/08/25 17:45:00 enhanced Exp"
+# $Id: megaclisas-status,v 2.05 2025/08/25 18:00:00 enhanced Exp $
+__version__ = "megaclisas-status,v 2.05 2025/08/25 18:00:00 enhanced Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v2.05 (2025-08-25): OS Path fallback fix for system compatibility
+#   - Fixed OS Path display to fall back to target_id when device path unavailable
+#   - Resolves regression on systems like daltigoth where /dev/disk/by-path mapping fails
+#   - Maintains compatibility with original script behavior
+#   - Ensures consistent output across different system configurations
 #
 # v2.04 (2025-08-25): Enhanced progress reporting for perccli64
 #   - Added "Active Operations" parsing for native perccli format
@@ -1859,7 +1865,10 @@ class RAIDStatusChecker:
             if self.config.debug:
                 self.megacli._debug_print(f"Fallback search failed: {str(e)}")
 
-        return "N/A"
+        # Final fallback: return target_id like the original script
+        if self.config.debug:
+            self.megacli._debug_print(f"No real path found, falling back to target_id: {target_id}")
+        return target_id
 
     def _print_debug_dump(self, controllers: List[ControllerInfo], arrays: List[ArrayInfo], disks: List[DiskInfo]):
         """Print comprehensive debug dump like the original script."""
