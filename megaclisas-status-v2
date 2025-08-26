@@ -51,7 +51,7 @@ __version__ = "megaclisas-status,v 2.05 2025/08/25 18:00:00 enhanced Exp"
 #   - Established version string format compatible with original $Id$ field
 #   - Maintained megaclisas-status-v2 copy for community link compatibility
 #
-# PRIOR VERSIONS: Legacy Perl script with various community enhancements
+# PRIOR VERSIONS: Legacy Python script with various community enhancements
 #   - Original concept and implementation
 #   - Basic MegaCli64 support and output formatting
 #   - Nagios and InfluxDB output format support
