@@ -9,12 +9,44 @@ Modernized Python implementation
 A tool to monitor RAID controller status using MegaCLI, perccli, or storcli.
 """
 
-# $Id: megaclisas-status,v 2.05 2025/08/25 18:00:00 enhanced Exp $
-__version__ = "megaclisas-status,v 2.05 2025/08/25 18:00:00 enhanced Exp"
+# $Id: megaclisas-status,v 2.14 2025/08/28 16:00:00 flexible-args Exp $
+__version__ = "megaclisas-status,v 2.14 2025/08/28 16:00:00 flexible-args Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v2.14 (2025-08-28): Flexible tool path arguments and improved help text
+#   - Added support for --perccli-path and --tool-path as aliases for --megacli-path
+#   - All three argument names are completely interchangeable (auto-detection still works)
+#   - Cleaned up help text formatting with generic PATH metavar for clarity
+#   - Enhanced user experience: choose the argument name that matches your tool preference
+#
+# v2.12 (2025-08-28): Performance optimization and enhanced diagnostics
+#   - Optimized syntax detection: Once-only detection during initialization vs every command
+#   - Enhanced --version flag: Shows all discovered tools, active tool, and capabilities
+#   - Fixed critical tool type detection bug: MegaCli64 now correctly identified as 'megacli'
+#   - Improved user experience: Better formatting and clearer diagnostic messages
+#
+# v2.11 (2025-08-28): Hardware detection accuracy fix
+#   - Fixed critical bug where /proc/scsi/scsi LUNs were incorrectly counted as controllers
+#   - Removed /proc/scsi/scsi from controller detection (it shows LUNs, not controllers)
+#   - Made lspci the sole authoritative source for physical controller counting
+#   - This correctly detects single controllers on both daltigoth and palanthas
+#
+# v2.10 (2025-08-28): Multi-tool auto-detection and hardware validation
+#   - Added comprehensive tool discovery (MegaCli64, perccli legacy/native, storcli)
+#   - Implemented hardware validation using lspci, /proc/scsi/scsi, kernel modules
+#   - Added intelligent fallback when tools fail to detect known hardware
+#   - Enhanced error reporting with detailed diagnostics and recommendations
+#   - Automatic tool capability detection (legacy vs native syntax support)
+#   - Cross-validation between tool reports and hardware detection
+#   - Robust handling of tool version incompatibilities and regressions
+#
+# v2.05 (2025-08-25): Progress reporting and consistency check enhancements
+#   - Enhanced progress reporting to handle both legacy and native formats
+#   - Improved consistency check detection across different tool versions
+#   - Added comprehensive version history documentation
 #
 # v2.05 (2025-08-25): OS Path fallback fix for system compatibility
 #   - Fixed OS Path display to fall back to target_id when device path unavailable
@@ -27,7 +59,7 @@ __version__ = "megaclisas-status,v 2.05 2025/08/25 18:00:00 enhanced Exp"
 #   - Both MegaCli64 and perccli64 paths now show consistency check progress
 #   - Complete feature parity across all tool combinations
 #
-# v2.03 (2025-08-25): Fixed progress reporting regression 
+# v2.03 (2025-08-25): Fixed progress reporting regression
 #   - Added "Ongoing Progresses" parsing for MegaCli64 format
 #   - Restored consistency check progress display like legacy script
 #   - Handles Check Consistency, Background Initialization, Reconstruction
@@ -116,6 +148,7 @@ class Config:
     print_array: bool = True
     print_disk: bool = True
     megacli_path: Optional[str] = None
+    has_admin_privileges: bool = False
 
 
 @dataclass
@@ -188,6 +221,33 @@ class MegaCLIError(Exception):
     pass
 
 
+class ToolType(Enum):
+    """Types of RAID management tools."""
+    MEGACLI = "megacli"
+    PERCCLI_LEGACY = "perccli_legacy"  # Old perccli with MegaCli compatibility
+    PERCCLI_NATIVE = "perccli_native"  # New perccli with native syntax only
+    STORCLI = "storcli"
+
+
+@dataclass
+class ToolInfo:
+    """Information about detected RAID management tool."""
+    tool_type: ToolType
+    binary_path: str
+    version: str
+    supports_legacy_syntax: bool
+    supports_native_syntax: bool
+    priority: int  # Lower number = higher priority
+
+
+@dataclass
+class HardwareInfo:
+    """System hardware detection information."""
+    controllers_in_lspci: List[str]
+    megaraid_driver_loaded: bool
+    expected_controller_count: int
+
+
 class RegexPatterns:
     """Compiled regex patterns for parsing."""
 
@@ -230,8 +290,12 @@ class MegaCLIInterface:
     """Interface to MegaCLI/perccli/storcli commands."""
 
     def __init__(self, config: Config):
+        """Initialize MegaCLI interface with enhanced tool detection."""
         self.config = config
-        self.megacli_path = self._find_megacli_binary()
+        self.available_tools: List[ToolInfo] = []
+        self.hardware_info: HardwareInfo = self._detect_hardware()
+        self.active_tool: Optional[ToolInfo] = None
+        self.megacli_path = self._find_best_tool()
         self._command_cache: Dict[str, List[str]] = {}
 
     def _find_megacli_binary(self) -> str:
@@ -271,6 +335,308 @@ class MegaCLIInterface:
                 return path
 
         raise MegaCLIError("Cannot find MegaCLI, perccli, or storcli binary in PATH")
+
+    def _detect_hardware(self) -> HardwareInfo:
+        """Detect RAID hardware using system information."""
+        controllers_in_lspci = []
+        megaraid_driver_loaded = False
+
+        try:
+            # Check lspci for RAID controllers (this is the authoritative method)
+            lspci_output = subprocess.run(['lspci'], capture_output=True, text=True, timeout=10)
+            if lspci_output.returncode == 0:
+                for line in lspci_output.stdout.splitlines():
+                    if any(keyword in line.lower() for keyword in ['raid', 'perc', 'megaraid', 'lsi']):
+                        controllers_in_lspci.append(line.strip())
+                        if self.config.debug:
+                            self._debug_print(f"Found RAID controller in lspci: {line.strip()}")
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            if self.config.debug:
+                self._debug_print("Could not run lspci command")
+
+        try:
+            # Check if megaraid_sas driver is loaded (confirmation that hardware is working)
+            lsmod_output = subprocess.run(['lsmod'], capture_output=True, text=True, timeout=10)
+            if lsmod_output.returncode == 0:
+                megaraid_driver_loaded = 'megaraid_sas' in lsmod_output.stdout
+                if self.config.debug:
+                    self._debug_print(f"megaraid_sas driver loaded: {megaraid_driver_loaded}")
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            if self.config.debug:
+                self._debug_print("Could not run lsmod command")
+
+        # Controller count is based solely on lspci results
+        expected_count = len(controllers_in_lspci)
+        if self.config.debug:
+            self._debug_print(f"Hardware controller count from lspci: {expected_count}")
+
+        hardware_info = HardwareInfo(
+            controllers_in_lspci=controllers_in_lspci,
+            megaraid_driver_loaded=megaraid_driver_loaded,
+            expected_controller_count=expected_count
+        )
+
+        if self.config.debug:
+            self._debug_print(f"Hardware detection results: {hardware_info}")
+
+        return hardware_info
+
+    def _discover_all_tools(self) -> List[ToolInfo]:
+        """Discover all available RAID management tools and their capabilities."""
+        tools = []
+
+        # Search paths for tools
+        search_paths = [
+            "/opt/MegaRAID/MegaCli",
+            "/ms/dist/hwmgmt/bin",
+            "/opt/MegaRAID/perccli",
+            "/opt/MegaRAID/storcli",
+            "/opt/lsi/storcli",
+        ]
+
+        # Add paths to environment
+        for path in search_paths:
+            if os.path.isdir(path):
+                os.environ["PATH"] += os.pathsep + path
+
+        # Tool discovery configuration: (binary_name, tool_type, priority)
+        tool_configs = [
+            ("MegaCli64", ToolType.MEGACLI, 1),
+            ("MegaCli", ToolType.MEGACLI, 2),
+            ("perccli64", ToolType.PERCCLI_LEGACY, 3),  # Will be reclassified after version check
+            ("perccli", ToolType.PERCCLI_LEGACY, 4),
+            ("storcli64", ToolType.STORCLI, 5),
+            ("storcli", ToolType.STORCLI, 6),
+        ]
+
+        for binary_name, tool_type, priority in tool_configs:
+            binary_path = shutil.which(binary_name)
+            if binary_path:
+                try:
+                    version, capabilities = self._analyze_tool_version(binary_path, tool_type)
+                    tool_info = ToolInfo(
+                        tool_type=capabilities['tool_type'],  # Use the refined type
+                        binary_path=binary_path,
+                        version=version,
+                        supports_legacy_syntax=capabilities['legacy_syntax'],
+                        supports_native_syntax=capabilities['native_syntax'],
+                        priority=priority
+                    )
+                    tools.append(tool_info)
+                    if self.config.debug:
+                        self._debug_print(f"Discovered tool: {tool_info}")
+                except Exception as e:
+                    if self.config.debug:
+                        self._debug_print(f"Error analyzing {binary_name}: {e}")
+
+        # Sort by priority (lower number = higher priority)
+        tools.sort(key=lambda t: t.priority)
+        return tools
+
+    def _determine_initial_tool_type(self, binary_path: str) -> ToolType:
+        """Determine initial tool type based on binary name."""
+        binary_name = Path(binary_path).name.lower()
+
+        if "megacli" in binary_name:
+            return ToolType.MEGACLI
+        elif "perccli" in binary_name:
+            return ToolType.PERCCLI_LEGACY  # Will be refined in _analyze_tool_version
+        elif "storcli" in binary_name:
+            return ToolType.STORCLI
+        else:
+            # Default assumption for unknown binaries
+            return ToolType.PERCCLI_LEGACY
+
+    def _analyze_tool_version(self, binary_path: str, initial_type: ToolType) -> Tuple[str, Dict]:
+        """Analyze tool version and determine its capabilities."""
+        version = "Unknown"
+        capabilities = {
+            'tool_type': initial_type,
+            'legacy_syntax': False,
+            'native_syntax': False
+        }
+
+        try:
+            # Get version information
+            version_cmd = f"{binary_path} -v"
+            if initial_type in [ToolType.PERCCLI_LEGACY, ToolType.STORCLI]:
+                # Try native syntax first for perccli/storcli
+                version_result = subprocess.run(
+                    [binary_path, "-v"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15
+                )
+                if version_result.returncode == 0:
+                    version = self._extract_version_from_output(version_result.stdout)
+
+                    # For perccli, determine if it supports legacy syntax
+                    if "perccli" in binary_path.lower():
+                        legacy_test = subprocess.run(
+                            [binary_path, "-adpCount", "-NoLog"],
+                            capture_output=True,
+                            text=True,
+                            timeout=10
+                        )
+
+                        if legacy_test.returncode == 0 and "syntax error" not in legacy_test.stdout.lower():
+                            capabilities['tool_type'] = ToolType.PERCCLI_LEGACY
+                            capabilities['legacy_syntax'] = True
+                            capabilities['native_syntax'] = True
+                        else:
+                            capabilities['tool_type'] = ToolType.PERCCLI_NATIVE
+                            capabilities['legacy_syntax'] = False
+                            capabilities['native_syntax'] = True
+                    else:
+                        # storcli
+                        capabilities['legacy_syntax'] = False
+                        capabilities['native_syntax'] = True
+
+            elif initial_type == ToolType.MEGACLI:
+                # MegaCli only supports legacy syntax
+                capabilities['legacy_syntax'] = True
+                capabilities['native_syntax'] = False
+                version_result = subprocess.run(
+                    [binary_path, "-v"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15
+                )
+                if version_result.returncode == 0:
+                    version = self._extract_version_from_output(version_result.stdout)
+
+        except subprocess.TimeoutExpired:
+            if self.config.debug:
+                self._debug_print(f"Timeout analyzing {binary_path}")
+        except Exception as e:
+            if self.config.debug:
+                self._debug_print(f"Error analyzing {binary_path}: {e}")
+
+        return version, capabilities
+
+    def _extract_version_from_output(self, output: str) -> str:
+        """Extract version string from tool output."""
+        # Look for common version patterns
+        patterns = [
+            r"Ver\s+(\d+\.\d+\.\d+\.\d+)",       # "Ver 007.3208.0000.0000"
+            r"Version\s+(\d+\.\d+\.\d+)",        # "Version 8.07.14"
+            r"MegaCli\s+SAS\s+RAID\s+Management\s+Tool\s+Ver\s+(\S+)",
+            r"PercCli\s+.*Ver\s+(\S+)",
+            r"StorCli\s+.*Ver\s+(\S+)"
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, output, re.IGNORECASE)
+            if match:
+                return match.group(1)
+
+        return "Unknown"
+
+    def _find_best_tool(self) -> str:
+        """Find the best available tool, with intelligent fallback and validation."""
+        # If user specified a path, validate and use it
+        if self.config.megacli_path:
+            if Path(self.config.megacli_path).is_file():
+                # Analyze the specified tool
+                try:
+                    initial_type = self._determine_initial_tool_type(self.config.megacli_path)
+                    version, capabilities = self._analyze_tool_version(
+                        self.config.megacli_path,
+                        initial_type
+                    )
+                    self.active_tool = ToolInfo(
+                        tool_type=capabilities['tool_type'],
+                        binary_path=self.config.megacli_path,
+                        version=version,
+                        supports_legacy_syntax=capabilities['legacy_syntax'],
+                        supports_native_syntax=capabilities['native_syntax'],
+                        priority=0  # User-specified gets highest priority
+                    )
+                    if self.config.debug:
+                        syntax_mode = "legacy syntax" if self.active_tool.supports_legacy_syntax else "native syntax"
+                        self._debug_print(f"Selected user-specified tool {self.active_tool.binary_path} (type: {self.active_tool.tool_type.value}, supports: {syntax_mode})")
+                    return self.config.megacli_path
+                except Exception as e:
+                    if self.config.debug:
+                        self._debug_print(f"Error analyzing user-specified tool: {e}")
+            else:
+                raise MegaCLIError(f"Cannot find specified MegaCLI binary: {self.config.megacli_path}")
+
+        # Discover all available tools
+        self.available_tools = self._discover_all_tools()
+
+        if not self.available_tools:
+            raise MegaCLIError("Cannot find MegaCLI, perccli, or storcli binary in PATH")
+
+        # If hardware is detected but no tools can see it, try alternative approaches
+        if self.hardware_info.expected_controller_count > 0:
+            if self.config.debug:
+                self._debug_print(f"Hardware detected: {self.hardware_info.expected_controller_count} controllers")
+
+            # Try each tool and validate it can see the hardware
+            for tool in self.available_tools:
+                if self._validate_tool_with_hardware(tool):
+                    self.active_tool = tool
+                    if self.config.debug:
+                        syntax_mode = "legacy syntax" if tool.supports_legacy_syntax else "native syntax"
+                        self._debug_print(f"Selected validated tool {tool.binary_path} (type: {tool.tool_type.value}, supports: {syntax_mode})")
+                    return tool.binary_path
+
+        # Fallback: use the highest priority available tool
+        self.active_tool = self.available_tools[0]
+        if self.config.debug:
+            syntax_mode = "legacy syntax" if self.active_tool.supports_legacy_syntax else "native syntax"
+            self._debug_print(f"Selected fallback tool {self.active_tool.binary_path} (type: {self.active_tool.tool_type.value}, supports: {syntax_mode})")
+        return self.active_tool.binary_path
+
+    def _validate_tool_with_hardware(self, tool: ToolInfo) -> bool:
+        """Test if a tool can actually detect the hardware we know exists."""
+        try:
+            # Test controller count detection
+            if tool.supports_legacy_syntax:
+                test_cmd = f"{tool.binary_path} -adpCount -NoLog"
+            else:
+                test_cmd = f"{tool.binary_path} show ctrlcount"
+
+            result = subprocess.run(
+                test_cmd.split(),
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+
+            if result.returncode == 0:
+                detected_count = self._parse_controller_count_from_output(result.stdout, tool)
+                if detected_count > 0:
+                    if self.config.debug:
+                        self._debug_print(f"Tool {tool.binary_path} detected {detected_count} controllers")
+                    return True
+
+        except Exception as e:
+            if self.config.debug:
+                self._debug_print(f"Tool validation failed for {tool.binary_path}: {e}")
+
+        return False
+
+    def _parse_controller_count_from_output(self, output: str, tool: ToolInfo) -> int:
+        """Parse controller count from tool output."""
+        # Try various patterns to extract controller count
+        patterns = [
+            r"Controller Count\s*[=:]\s*(\d+)",
+            r"Number of Controllers\s*[=:]\s*(\d+)",
+            r"Controllers Found\s*[=:]\s*(\d+)",
+            r"Adapter Count\s*[=:]\s*(\d+)",
+            r"Controllers\s*[=:]\s*(\d+)",
+        ]
+
+        for line in output.splitlines():
+            line_stripped = line.strip()
+            for pattern in patterns:
+                match = re.search(pattern, line_stripped, re.IGNORECASE)
+                if match:
+                    return int(match.group(1))
+
+        return 0
 
     def execute_command(self, cmd: str) -> List[str]:
         """Execute MegaCLI command with caching and error handling."""
@@ -317,210 +683,226 @@ class MegaCLIInterface:
             sys.stderr.write(f"# DEBUG ({line_num}) : {msg}\n")
 
     def get_controller_count(self) -> int:
-        """Get the number of controllers."""
-        # First try legacy MegaCLI-style command
-        cmd = f"{self.megacli_path} -adpCount -NoLog"
-        output = self.execute_command(cmd)
+        """Get the number of controllers using progressive tool testing."""
+        if not self.active_tool:
+            if self.config.debug:
+                self._debug_print("No active tool available")
+            return 0
 
-        # Check if the legacy command was deprecated (newer perccli)
-        legacy_deprecated = False
-        for line in output:
-            if "Deprecated command" in line or "Status = Failure" in line:
-                legacy_deprecated = True
+        # For perccli tools, try both legacy and native syntax
+        if self.active_tool.tool_type in [ToolType.PERCCLI_LEGACY, ToolType.PERCCLI_NATIVE]:
+            return self._try_perccli_progressive_detection()
+        else:
+            # For MegaCli64 and storcli, use their native approach
+            return self._try_controller_detection()
+
+    def _try_perccli_progressive_detection(self) -> int:
+        """Try perccli with legacy syntax first, then native syntax."""
+        if self.config.debug:
+            self._debug_print(f"Testing perccli progressive detection with {self.active_tool.binary_path}")
+
+        # Step 1: Try legacy syntax first (works with older perccli versions)
+        try:
+            cmd = f"{self.active_tool.binary_path} -adpCount -NoLog"
+            output = self.execute_command(cmd)
+
+            # Check if legacy command worked (no syntax errors)
+            has_syntax_error = any("syntax error" in line.lower() or "deprecated command" in line.lower()
+                                 for line in output)
+
+            if not has_syntax_error:
+                count = self._parse_controller_count_from_output("\n".join(output), self.active_tool)
+                if count > 0:
+                    if self.config.debug:
+                        self._debug_print(f"Legacy syntax succeeded: found {count} controllers")
+                    return count
+                elif self.config.debug:
+                    self._debug_print(f"Legacy syntax worked but found 0 controllers")
+            else:
                 if self.config.debug:
-                    self._debug_print("Legacy command deprecated, trying native perccli syntax")
-                break
+                    self._debug_print("Legacy syntax not supported, trying native syntax")
 
-        # If legacy command was deprecated, try native perccli syntax
-        if legacy_deprecated:
-            cmd_native = f"{self.megacli_path} show ctrlcount"
+        except Exception as e:
+            if self.config.debug:
+                self._debug_print(f"Legacy syntax failed: {e}")
+
+        # Step 2: Try native syntax
+        try:
+            cmd = f"{self.active_tool.binary_path} show ctrlcount"
+            output = self.execute_command(cmd)
+            count = self._parse_controller_count_from_output("\n".join(output), self.active_tool)
+
+            if count > 0:
+                if self.config.debug:
+                    self._debug_print(f"Native syntax succeeded: found {count} controllers")
+                return count
+            elif self.config.debug:
+                self._debug_print(f"Native syntax worked but found 0 controllers")
+
+        except Exception as e:
+            if self.config.debug:
+                self._debug_print(f"Native syntax failed: {e}")
+
+        # Step 3: Both approaches failed or returned 0
+        if self.config.debug:
+            self._debug_print("Both legacy and native syntax failed to detect controllers")
+
+        return 0
+
+    def _try_controller_detection(self) -> int:
+        """Try controller detection using the active tool."""
+        if not self.active_tool:
+            return 0
+
+        try:
+            # Choose command based on tool capabilities
+            if self.active_tool.supports_legacy_syntax:
+                cmd = f"{self.active_tool.binary_path} -adpCount -NoLog"
+            else:
+                cmd = f"{self.active_tool.binary_path} show ctrlcount"
+
+            output = self.execute_command(cmd)
+            count = self._parse_controller_count_from_output("\n".join(output), self.active_tool)
+
+            if self.config.debug:
+                self._debug_print(f"Tool {self.active_tool.tool_type.value} detected {count} controllers")
+
+            return count
+
+        except Exception as e:
+            if self.config.debug:
+                self._debug_print(f"Controller detection failed with active tool: {e}")
+            return 0
+
+    def _try_fallback_tools(self) -> int:
+        """Try fallback tools when primary tool fails to detect controllers."""
+        for tool in self.available_tools:
+            if tool == self.active_tool:
+                continue  # Skip the tool that already failed
+
             try:
-                output = self.execute_command(cmd_native)
+                if self.config.debug:
+                    self._debug_print(f"Trying fallback tool: {tool.binary_path}")
 
-                # Parse native perccli output
-                for line in output:
-                    line_stripped = line.strip()
-                    # Native perccli format: "Controller Count = 1"
-                    native_patterns = [
-                        r"Controller Count\s*=\s*(\d+)",          # "Controller Count = 1"
-                        r"Number of Controllers\s*=\s*(\d+)",     # "Number of Controllers = 1"
-                        r"Controllers\s*=\s*(\d+)",               # "Controllers = 1"
-                    ]
+                # Switch to this tool and try progressive detection if it's perccli
+                old_tool = self.active_tool
+                self.active_tool = tool
+                self.megacli_path = tool.binary_path
 
-                    for pattern in native_patterns:
-                        if match := re.search(pattern, line_stripped, re.IGNORECASE):
-                            controller_count = int(match.group(1))
-                            if self.config.debug:
-                                self._debug_print(f"Found controller count (native): {controller_count} using pattern: {pattern}")
-                            return controller_count
+                if tool.tool_type in [ToolType.PERCCLI_LEGACY, ToolType.PERCCLI_NATIVE]:
+                    count = self._try_perccli_progressive_detection()
+                else:
+                    count = self._try_controller_detection()
+
+                if count > 0:
+                    if self.config.debug:
+                        self._debug_print(f"Fallback tool {tool.tool_type.value} successfully detected {count} controllers")
+                    return count
+                else:
+                    # Restore original tool if fallback also failed
+                    self.active_tool = old_tool
+                    self.megacli_path = old_tool.binary_path if old_tool else ""
 
             except Exception as e:
                 if self.config.debug:
-                    self._debug_print(f"Native perccli command also failed: {str(e)}")
+                    self._debug_print(f"Fallback tool {tool.binary_path} failed: {e}")
 
-        # Parse legacy command output if it worked
-        for line in output:
-            line_stripped = line.strip()
-
-            # Try multiple patterns to handle different perccli64/megacli versions
-            patterns = [
-                r"Controller Count\s*:\s*(\d+)",          # "Controller Count: 1"
-                r"Number of Controllers\s*:\s*(\d+)",     # "Number of Controllers: 1"  
-                r"Controllers Found\s*:\s*(\d+)",         # "Controllers Found: 1"
-                r"Adapter Count\s*:\s*(\d+)",             # "Adapter Count: 1"
-                r"Controllers\s*:\s*(\d+)",               # "Controllers: 1"
-                r"Total Controllers\s*:\s*(\d+)",         # "Total Controllers: 1"
-            ]
-
-            for pattern in patterns:
-                if match := re.search(pattern, line_stripped, re.IGNORECASE):
-                    controller_count = int(match.group(1))
-                    if self.config.debug:
-                        self._debug_print(f"Found controller count (legacy): {controller_count} using pattern: {pattern}")
-                    return controller_count
-
-            # Fallback: Try the original logic for backward compatibility
-            if RegexPatterns.CONTROLLER_COUNT.match(line_stripped):
-                try:
-                    return int(line_stripped.split(":")[1].strip().strip("."))
-                except (IndexError, ValueError):
-                    continue
-
+        # If no tools can detect controllers, there are no controllers accessible to management tools
         if self.config.debug:
-            self._debug_print("No controller count pattern matched in output:")
-            for line in output:
-                self._debug_print(f"  {line}")
+            self._debug_print("No management tools could detect controllers")
 
         return 0
 
     def get_controller_info(self, controller_id: int) -> List[str]:
-        """Get detailed controller information."""
-        # First try legacy MegaCLI-style command
-        cmd = f"{self.megacli_path} -AdpAllInfo -a{controller_id} -NoLog"
-        output = self.execute_command(cmd)
+        """Get controller information."""
+        if self.active_tool and self.active_tool.tool_type in [ToolType.PERCCLI_LEGACY, ToolType.PERCCLI_NATIVE]:
+            if self.active_tool.supports_legacy_syntax:
+                cmd = f"{self.megacli_path} -AdpAllInfo -a{controller_id} -NoLog"
+            else:
+                cmd = f"{self.megacli_path} /c{controller_id} show all"
+            return self.execute_command(cmd)
+        else:
+            # For MegaCli64, use legacy syntax
+            cmd = f"{self.megacli_path} -AdpAllInfo -a{controller_id} -NoLog"
+            return self.execute_command(cmd)
 
-        # Check if the legacy command was deprecated (newer perccli)
-        legacy_deprecated = False
-        for line in output:
-            if "Deprecated command" in line or "Status = Failure" in line:
-                legacy_deprecated = True
-                if self.config.debug:
-                    self._debug_print("Legacy controller info command deprecated, trying native perccli syntax")
-                break
 
-        # If legacy command was deprecated, try native perccli syntax
-        if legacy_deprecated:
-            cmd_native = f"{self.megacli_path} /c{controller_id} show all"
-            try:
-                output = self.execute_command(cmd_native)
-                if self.config.debug:
-                    self._debug_print("Using native perccli format for controller info")
-            except Exception as e:
-                if self.config.debug:
-                    self._debug_print(f"Native perccli controller info command also failed: {str(e)}")
-                # Fall back to original output
-                pass
 
-        return output
+
+
+
+
+
+
+
+
+
 
     def get_array_info(self, controller_id: int, array_id: int) -> List[str]:
         """Get array information."""
-        # First try legacy MegaCLI-style command
-        cmd = f"{self.megacli_path} -LDInfo -l{array_id} -a{controller_id} -NoLog"
-        output = self.execute_command(cmd)
-
-        # Check if the legacy command was deprecated (newer perccli)
-        legacy_deprecated = False
-        for line in output:
-            if "Deprecated command" in line or "Status = Failure" in line:
-                legacy_deprecated = True
-                if self.config.debug:
-                    self._debug_print("Legacy array info command deprecated, trying native perccli syntax")
-                break
-
-        # If legacy command was deprecated, try native perccli syntax
-        if legacy_deprecated:
-            cmd_native = f"{self.megacli_path} /c{controller_id}/v{array_id} show all"
-            try:
-                output = self.execute_command(cmd_native)
-                if self.config.debug:
-                    self._debug_print("Using native perccli format for array info")
-            except Exception as e:
-                if self.config.debug:
-                    self._debug_print(f"Native perccli array info command also failed: {str(e)}")
-
-        return output
+        if self.active_tool and self.active_tool.tool_type in [ToolType.PERCCLI_LEGACY, ToolType.PERCCLI_NATIVE]:
+            if self.active_tool.supports_legacy_syntax:
+                cmd = f"{self.megacli_path} -LDInfo -l{array_id} -a{controller_id} -NoLog"
+            else:
+                cmd = f"{self.megacli_path} /c{controller_id}/v{array_id} show all"
+            return self.execute_command(cmd)
+        else:
+            cmd = f"{self.megacli_path} -LDInfo -l{array_id} -a{controller_id} -NoLog"
+            return self.execute_command(cmd)
 
     def get_all_arrays_info(self, controller_id: int) -> List[str]:
         """Get information for all arrays on controller."""
-        # First try legacy MegaCLI-style command
-        cmd = f"{self.megacli_path} -LDInfo -lall -a{controller_id} -NoLog"
-        output = self.execute_command(cmd)
-
-        # Check if the legacy command was deprecated (newer perccli)
-        legacy_deprecated = False
-        for line in output:
-            if "Deprecated command" in line or "Status = Failure" in line:
-                legacy_deprecated = True
-                if self.config.debug:
-                    self._debug_print("Legacy all arrays info command deprecated, trying native perccli syntax")
-                break
-
-        # If legacy command was deprecated, try native perccli syntax
-        if legacy_deprecated:
-            cmd_native = f"{self.megacli_path} /c{controller_id}/vall show all"
-            try:
-                output = self.execute_command(cmd_native)
-                if self.config.debug:
-                    self._debug_print("Using native perccli format for all arrays info")
-            except Exception as e:
-                if self.config.debug:
-                    self._debug_print(f"Native perccli all arrays info command also failed: {str(e)}")
-
-        return output
+        if self.active_tool and self.active_tool.tool_type in [ToolType.PERCCLI_LEGACY, ToolType.PERCCLI_NATIVE]:
+            if self.active_tool.supports_legacy_syntax:
+                cmd = f"{self.megacli_path} -LDInfo -lall -a{controller_id} -NoLog"
+            else:
+                cmd = f"{self.megacli_path} /c{controller_id}/vall show all"
+            return self.execute_command(cmd)
+        else:
+            cmd = f"{self.megacli_path} -LDInfo -lall -a{controller_id} -NoLog"
+            return self.execute_command(cmd)
 
     def get_physical_drives_info(self, controller_id: int) -> List[str]:
         """Get physical drives information."""
-        # First try legacy MegaCLI-style command (use -PDList to get ALL drives like legacy)
-        cmd = f"{self.megacli_path} -PDList -a{controller_id} -NoLog"
-        output = self.execute_command(cmd)
-
-        # Check if the legacy command was deprecated (newer perccli)
-        legacy_deprecated = False
-        for line in output:
-            if "Deprecated command" in line or "Status = Failure" in line:
-                legacy_deprecated = True
-                if self.config.debug:
-                    self._debug_print("Legacy physical drives info command deprecated, trying native perccli syntax")
-                break
-
-        # If legacy command was deprecated, try native perccli syntax
-        if legacy_deprecated:
-            cmd_native = f"{self.megacli_path} /c{controller_id}/eall/sall show all"
-            try:
-                output = self.execute_command(cmd_native)
-                if self.config.debug:
-                    self._debug_print("Using native perccli format for physical drives info")
-            except Exception as e:
-                if self.config.debug:
-                    self._debug_print(f"Native perccli physical drives info command also failed: {str(e)}")
-
-        return output
+        if self.active_tool and self.active_tool.tool_type in [ToolType.PERCCLI_LEGACY, ToolType.PERCCLI_NATIVE]:
+            if self.active_tool.supports_legacy_syntax:
+                cmd = f"{self.megacli_path} -PDList -a{controller_id} -NoLog"
+            else:
+                cmd = f"{self.megacli_path} /c{controller_id}/eall/sall show all"
+            return self.execute_command(cmd)
+        else:
+            cmd = f"{self.megacli_path} -PDList -a{controller_id} -NoLog"
+            return self.execute_command(cmd)
 
     def get_unconfigured_drives_info(self, controller_id: int) -> List[str]:
         """Get unconfigured drives information."""
-        cmd = f"{self.megacli_path} -PDList -a{controller_id} -NoLog"
-        return self.execute_command(cmd)
+        # Same as physical drives - we filter unconfigured ones in the parser
+        return self.get_physical_drives_info(controller_id)
 
     def get_pci_info(self, controller_id: int) -> List[str]:
         """Get PCI information for controller."""
-        cmd = f"{self.megacli_path} -AdpGetPciInfo -a{controller_id} -NoLog"
-        return self.execute_command(cmd)
+        if self.active_tool and self.active_tool.tool_type in [ToolType.PERCCLI_LEGACY, ToolType.PERCCLI_NATIVE]:
+            if self.active_tool.supports_legacy_syntax:
+                cmd = f"{self.megacli_path} -AdpGetPciInfo -a{controller_id} -NoLog"
+            else:
+                # PCI info is embedded in controller info for native perccli
+                cmd = f"{self.megacli_path} /c{controller_id} show all"
+            return self.execute_command(cmd)
+        else:
+            cmd = f"{self.megacli_path} -AdpGetPciInfo -a{controller_id} -NoLog"
+            return self.execute_command(cmd)
 
     def get_bbu_status(self, controller_id: int) -> List[str]:
         """Get BBU status information."""
-        cmd = f"{self.megacli_path} -AdpBbuCmd -GetBbuStatus -a{controller_id} -NoLog"
-        return self.execute_command(cmd)
+        if self.active_tool and self.active_tool.tool_type in [ToolType.PERCCLI_LEGACY, ToolType.PERCCLI_NATIVE]:
+            if self.active_tool.supports_legacy_syntax:
+                cmd = f"{self.megacli_path} -AdpBbuCmd -GetBbuStatus -a{controller_id} -NoLog"
+            else:
+                cmd = f"{self.megacli_path} /c{controller_id}/bbu show all"
+            return self.execute_command(cmd)
+        else:
+            cmd = f"{self.megacli_path} -AdpBbuCmd -GetBbuStatus -a{controller_id} -NoLog"
+            return self.execute_command(cmd)
 
 
 class RAIDParser:
@@ -650,10 +1032,10 @@ class RAIDParser:
             for line in output:
                 line_stripped = line.strip()
 
-                # Extract OS Drive Name if present  
+                # Extract OS Drive Name if present
                 if "OS Drive Name" in line_stripped and "=" in line_stripped:
                     os_path = line_stripped.split("=", 1)[1].strip()
-                    
+
                 # Extract Active Operations (progress) if present
                 elif "Active Operations" in line_stripped and "=" in line_stripped:
                     operations = line_stripped.split("=", 1)[1].strip()
@@ -675,7 +1057,7 @@ class RAIDParser:
                         if "/" in dg_vd:
                             vd_number = int(dg_vd.split("/")[1])
                             if vd_number == array_id:
-                                raid_type = parts[1]  # "RAID0", "RAID6"  
+                                raid_type = parts[1]  # "RAID0", "RAID6"
                                 state = "Optimal" if parts[2] == "Optl" else parts[2]
                                 # Size parsing: look for pattern like "1.818 TB" in the line
                                 # Format can be: "...OFF  1.818 TB boot" or "...OFF 43.656 TB"
@@ -845,14 +1227,14 @@ class RAIDParser:
 
         if is_native_perccli:
             return RAIDParser._parse_native_perccli_disks(output, controller_id)
-        
+
         # Check if this is -PDList format (lists all drives individually)
         is_pdlist_format = False
         for line in output:
             if "Enclosure Device ID:" in line and "Virtual Drive:" not in ''.join(output[:10]):
                 is_pdlist_format = True
                 break
-        
+
         if is_pdlist_format:
             return RAIDParser._parse_megacli_pdlist(output, controller_id)
 
@@ -922,7 +1304,7 @@ class RAIDParser:
                 # Start new disk
                 current_drive = {
                     "controller": match.group(1),
-                    "enclosure": match.group(2), 
+                    "enclosure": match.group(2),
                     "slot": match.group(3)
                 }
                 current_disk = {}
@@ -947,7 +1329,7 @@ class RAIDParser:
                             intf_idx = size_idx + 2  # Interface after size
                             current_disk["interface"] = parts[intf_idx]
 
-                            med_idx = intf_idx + 1  # Media type after interface  
+                            med_idx = intf_idx + 1  # Media type after interface
                             current_disk["media_type"] = parts[med_idx]
 
                             # Model starts after SeSz (sector size) - usually around index 10+
@@ -1016,12 +1398,12 @@ class RAIDParser:
 
         # Use media type from parsed table data first, fall back to model-based detection
         media_type = disk_data.get("media_type", "HDD")  # Use parsed "Med" column
-        
-        # Combine model, firmware, and serial into one field 
+
+        # Combine model, firmware, and serial into one field
         base_model = disk_data.get("model", "Unknown")
         firmware = disk_data.get("firmware", "").strip()
         serial = disk_data.get("serial", "").strip()
-        
+
         # Format: "model firmware serial" (more readable)
         model_parts = []
         if base_model and base_model != "Unknown":
@@ -1030,9 +1412,9 @@ class RAIDParser:
             model_parts.append(firmware)
         if serial:
             model_parts.append(serial)
-        
+
         model = " ".join(model_parts) if model_parts else "Unknown"
-        
+
         # If media_type is still generic, try to detect from model name
         if media_type == "HDD":  # Only override if it's the default
             if "SSD" in model.upper() or "NVME" in model.upper():
@@ -1043,7 +1425,7 @@ class RAIDParser:
             array_id=array_id,
             disk_id=disk_id,
             enclosure_id=drive_info["enclosure"],
-            slot_id=drive_info["slot"], 
+            slot_id=drive_info["slot"],
             lsi_id=disk_data.get("lsi_id", drive_info["slot"]),  # Use slot as fallback
             media_type=media_type,
             model=model,
@@ -1068,7 +1450,7 @@ class RAIDParser:
                 disk_data["model"] = ascii_str.strip()
                 disk_data["manufacturer"] = "Samsung"
             elif "WDC" in ascii_str and "model" not in disk_data:
-                disk_data["model"] = ascii_str.strip()  
+                disk_data["model"] = ascii_str.strip()
                 disk_data["manufacturer"] = "Western Digital"
             elif len(ascii_str.strip()) > 10 and "model" not in disk_data:
                 disk_data["model"] = ascii_str.strip()
@@ -1080,10 +1462,10 @@ class RAIDParser:
         """Parse disk information from MegaCli -PDList output format."""
         disks = []
         current_disk = {}
-        
+
         for line in output:
             line = line.strip()
-            
+
             # Start of new drive entry
             if line.startswith("Enclosure Device ID:"):
                 # Save previous disk if we have one
@@ -1093,16 +1475,16 @@ class RAIDParser:
                         current_disk["array_id"] = "X"  # Unconfigured marker
                         current_disk["disk_id"] = current_disk.get("slot_id", "Unknown")
                     disks.append(RAIDParser._create_pdlist_disk_info(current_disk, controller_id))
-                
+
                 # Start new disk
                 current_disk = {"enclosure_id": line.split(":")[1].strip()}
-                
+
             elif line.startswith("Slot Number:"):
                 current_disk["slot_id"] = line.split(":")[1].strip()
-                
+
             elif line.startswith("Device Id:"):
                 current_disk["lsi_id"] = line.split(":")[1].strip()
-                
+
             elif line.startswith("Drive's position:"):
                 # Extract array info: "DiskGroup: 0, Span: 0, Arm: 0" or empty for unconfigured
                 position_info = line.split(":", 1)[1].strip()
@@ -1123,16 +1505,16 @@ class RAIDParser:
                     current_disk["disk_id"] = slot_id
                     # Debug: print what we got for unconfigured drive
                     print(f"DEBUG: Unconfigured drive - slot_id='{slot_id}', current_disk keys={list(current_disk.keys())}")
-                    
+
             elif line.startswith("Firmware state:"):
                 current_disk["state"] = line.split(":", 1)[1].strip()
-                
+
             elif line.startswith("Inquiry Data:"):
                 # Parse: "S753NS0W812677Y     Samsung SSD 870 EVO 2TB                 SVT03B6Q"
                 inquiry_data = line.split(":", 1)[1].strip()
                 current_disk["model"] = inquiry_data
                 current_disk.update(RAIDParser._parse_drive_model(inquiry_data))
-                
+
             elif line.startswith("Media Type:"):
                 media_type = line.split(":", 1)[1].strip()
                 if media_type == "Hard Disk Device":
@@ -1141,23 +1523,23 @@ class RAIDParser:
                     current_disk["media_type"] = "SSD"
                 else:
                     current_disk["media_type"] = "N/A"
-                    
+
             elif line.startswith("Coerced Size:"):
                 # Parse size like "1.818 TB [0xe8d00000 Sectors]"
                 size_str = line.split(":", 1)[1].strip()
                 if "[" in size_str:
                     size_str = size_str.split("[")[0].strip()
                 current_disk["size"] = size_str
-                
+
             elif line.startswith("Device Speed:"):
                 current_disk["speed"] = line.split(":", 1)[1].strip()
-                
+
             elif line.startswith("Drive Temperature"):
                 # Parse: "Drive Temperature :27C (80.60 F)"
                 temp_part = line.split(":")[1].strip()
                 temp_match = re.search(r"(\d+)C", temp_part)
                 current_disk["temperature"] = f"{temp_match.group(1)}C" if temp_match else "Unknown"
-        
+
         # Don't forget the last disk
         if current_disk and "model" in current_disk:
             # If no "Drive's position:" line was encountered, this is an unconfigured drive
@@ -1165,7 +1547,7 @@ class RAIDParser:
                 current_disk["array_id"] = "X"  # Unconfigured marker
                 current_disk["disk_id"] = current_disk.get("slot_id", "Unknown")
             disks.append(RAIDParser._create_pdlist_disk_info(current_disk, controller_id))
-        
+
         return disks
 
     @staticmethod
@@ -1496,7 +1878,7 @@ class RAIDStatusChecker:
         self._check_privileges()
 
     def _check_privileges(self):
-        """Check if running with required privileges."""
+        """Check if running with required privileges, but allow diagnostics mode."""
         try:
             if os.name == 'nt':  # Windows
                 import ctypes
@@ -1505,11 +1887,17 @@ class RAIDStatusChecker:
                 is_admin = os.geteuid() == 0
 
             if not is_admin:
-                print("# This script requires Administrator privileges")
-                sys.exit(5)
+                # Store privilege status but don't exit immediately
+                # Allow the script to show diagnostics when tools fail
+                self.config.has_admin_privileges = False
+                if self.config.debug:
+                    self.megacli._debug_print("Running without administrator privileges - functionality may be limited")
+            else:
+                self.config.has_admin_privileges = True
 
         except Exception as e:
             logger.warning(f"Could not check privileges: {e}")
+            self.config.has_admin_privileges = False
 
     def _create_formatter(self) -> OutputFormatter:
         """Create appropriate formatter based on config."""
@@ -1534,8 +1922,13 @@ class RAIDStatusChecker:
         try:
             controller_count = self.megacli.get_controller_count()
             if controller_count == 0:
-                print("No MegaRAID or PERC adapter detected on your system!")
-                sys.exit(1)
+                self._handle_no_controllers_detected()
+                # If no controllers and no admin privileges, suggest running as admin
+                if not self.config.has_admin_privileges:
+                    print("\nTry running with administrator/root privileges for complete functionality.")
+                    sys.exit(5)  # Use exit code 5 for privilege issues
+                else:
+                    sys.exit(1)  # Use exit code 1 for no controllers detected
 
             for controller_id in range(controller_count):
                 # Get controller info
@@ -1643,7 +2036,7 @@ class RAIDStatusChecker:
                 self.megacli._debug_print(f"Native perccli array count: {count}")
             return count
         else:
-            # Check if this is controller overview with "Virtual Drives = X"  
+            # Check if this is controller overview with "Virtual Drives = X"
             for line in output:
                 if "Virtual Drives =" in line:
                     try:
@@ -1725,7 +2118,7 @@ class RAIDStatusChecker:
             "Reconstruction", "Rebuild", "Rebuilding", "Migrating", "Migration",
             "Initializing", "INIT", "Synchronizing", "SYNC"
         ]
-        
+
         if state in good_states:
             return True
         elif state in maintenance_states:
@@ -1745,14 +2138,14 @@ class RAIDStatusChecker:
             "UGood",  # perccli format for unconfigured good drives
             "Hotspare, Spun Up", "Hotspare, Spun down", "JBOD"
         ]
-        
+
         # Known maintenance states for disks
         maintenance_states = ["Copyback", "Patrol Read", "Smart Error"]
 
         # Handle rebuilding states with percentages
         if state.startswith("Rebuilding"):
             return True
-            
+
         # Handle maintenance states
         if any(maintenance in state for maintenance in maintenance_states):
             if self.config.debug:
@@ -1766,7 +2159,7 @@ class RAIDStatusChecker:
             if self.config.debug:
                 print(f"WARNING: Unknown disk state encountered: '{state}' - treating as potentially bad")
             return False
-    
+
     def _is_disk_unconfigured(self, state: str) -> bool:
         """Check if disk is unconfigured (good but not part of array)."""
         unconfigured_states = [
@@ -1774,11 +2167,11 @@ class RAIDStatusChecker:
             "UGood"  # perccli format for unconfigured good drives
         ]
         return state in unconfigured_states
-        
+
     def _validate_parsed_data(self, data_type: str, data: dict) -> dict:
         """Validate parsed data and provide safe defaults for missing/invalid fields."""
         validated = {}
-        
+
         if data_type == "array":
             validated["array_id"] = str(data.get("array_id", "Unknown"))
             validated["raid_type"] = data.get("raid_type", "Unknown")
@@ -1787,7 +2180,7 @@ class RAIDStatusChecker:
             validated["properties"] = data.get("properties", "Unknown")
             validated["disk_cache"] = data.get("disk_cache", "Unknown")
             validated["os_path"] = data.get("os_path", "N/A")
-            
+
         elif data_type == "disk":
             validated["array_id"] = str(data.get("array_id", "Unknown"))
             validated["disk_id"] = str(data.get("disk_id", "Unknown"))
@@ -1800,12 +2193,12 @@ class RAIDStatusChecker:
             validated["speed"] = data.get("speed", "Unknown")
             validated["temperature"] = data.get("temperature", "N/A")
             validated["lsi_id"] = str(data.get("lsi_id", "Unknown"))
-            
+
         # Log if we had to use defaults
         missing_fields = [k for k, v in validated.items() if v in ["Unknown", "N/A", ""]]
         if missing_fields and self.config.debug:
             print(f"INFO: Used defaults for {data_type} fields: {missing_fields}")
-            
+
         return validated
 
     def _find_os_device_path(self, pci_path: str, target_id: str) -> str:
@@ -1893,6 +2286,63 @@ class RAIDStatusChecker:
                 disk_id = f"c{disk.controller_id}u{disk.array_id}p{disk.disk_id}"
                 sys.stderr.write(f"{disk_id} | {disk.media_type} | {disk.model} | {disk.size} | {disk.state} | {disk.temperature}\n")
 
+    def _handle_no_controllers_detected(self):
+        """Provide detailed diagnostics when no controllers are detected."""
+        print("No MegaRAID or PERC adapter detected by management tools!")
+        print()
+
+        # Show hardware detection results
+        if self.megacli.hardware_info.controllers_in_lspci:
+            print("However, hardware detection found:")
+            for controller in self.megacli.hardware_info.controllers_in_lspci:
+                print(f"  lspci: {controller}")
+            print()
+
+        if self.megacli.hardware_info.megaraid_driver_loaded:
+            print("The megaraid_sas kernel driver is loaded.")
+            print()
+
+        # Show tool information
+        if self.megacli.active_tool:
+            print(f"Active tool: {self.megacli.active_tool.binary_path}")
+            print(f"Tool type: {self.megacli.active_tool.tool_type.value}")
+            print(f"Version: {self.megacli.active_tool.version}")
+            print(f"Legacy syntax support: {self.megacli.active_tool.supports_legacy_syntax}")
+            print(f"Native syntax support: {self.megacli.active_tool.supports_native_syntax}")
+            print()
+
+        if self.megacli.available_tools:
+            print("Available tools discovered:")
+            for tool in self.megacli.available_tools:
+                print(f"  {tool.binary_path} ({tool.tool_type.value}, v{tool.version})")
+            print()
+
+        # Show privilege status
+        if not self.config.has_admin_privileges:
+            print("PRIVILEGE STATUS:")
+            print("- Running without administrator/root privileges")
+            print("- This may prevent tools from accessing RAID hardware")
+            print()
+
+        # Provide recommendations
+        if self.megacli.hardware_info.controllers_in_lspci:
+            print("RECOMMENDATIONS:")
+            print("- RAID hardware is present but management tools cannot detect it")
+            print("- This may be due to:")
+            if not self.config.has_admin_privileges:
+                print("  * Insufficient privileges (try running as root/administrator)")
+            print("  * Tool version incompatibility with newer hardware")
+            print("  * Missing or outdated management software")
+            print("  * Driver or firmware issues")
+            print("- Try updating to the latest perccli/storcli from Dell/Broadcom")
+            print("- Check system logs (dmesg) for controller initialization errors")
+            if not self.config.has_admin_privileges:
+                print("- Run as root/administrator for full functionality")
+        else:
+            print("No RAID hardware detected on this system.")
+            if not self.config.has_admin_privileges:
+                print("Note: Limited detection capabilities without administrator privileges.")
+
     def run(self):
         """Main execution method."""
         controllers, arrays, disks, unconfigured_disks, stats = self.check_system_status()
@@ -1912,7 +2362,7 @@ class RAIDStatusChecker:
             output = self.formatter.format_disks(disks)
             if output:
                 print(output)
-            
+
             # Print unconfigured disks section (like legacy version)
             if unconfigured_disks:
                 output = self.formatter.format_unconfigured_disks(unconfigured_disks)
@@ -1947,17 +2397,17 @@ def create_config_from_args() -> Config:
 
     parser.add_argument(
         "--version",
-        action="version",
-        version=__version__
+        action="store_true",
+        help="Show version and auto-detected tool information"
     )
     parser.add_argument(
-        "--nagios", 
+        "--nagios",
         action="store_true",
         help="Enable Nagios monitoring output format"
     )
     parser.add_argument(
         "--influxdb",
-        action="store_true", 
+        action="store_true",
         help="Enable InfluxDB metrics output format"
     )
     parser.add_argument(
@@ -1985,15 +2435,59 @@ def create_config_from_args() -> Config:
     parser.add_argument(
         "--nodisk",
         action="store_false",
-        dest="disk", 
+        dest="disk",
         help="Omit disk information from output"
     )
     parser.add_argument(
-        "--megacli-path",
-        help="Explicit path to MegaCLI/perccli/storcli binary"
+        "--megacli-path", "--perccli-path", "--tool-path",
+        dest="megacli_path",
+        metavar="PATH",
+        help="Explicit path to MegaCLI/perccli/storcli binary (all argument names are interchangeable)"
     )
 
     args = parser.parse_args()
+
+    # Handle --version flag with tool detection info
+    if args.version:
+        print(__version__)
+        print()
+
+        # If no specific megacli-path provided, show auto-detection results
+        if not args.megacli_path:
+            try:
+                # Create a temporary config for tool detection
+                temp_config = Config(
+                    output_mode=OutputMode.NORMAL,
+                    debug=False,
+                    no_temp=False,
+                    print_controller=True,
+                    print_array=True,
+                    print_disk=True,
+                    megacli_path=None
+                )
+
+                # Initialize interface to trigger auto-detection
+                megacli = MegaCLIInterface(temp_config)
+
+                if megacli.available_tools:
+                    print("Available tools discovered:")
+                    for i, tool in enumerate(megacli.available_tools):
+                        active_marker = " (active)" if tool == megacli.active_tool else ""
+                        print(f"  {tool.binary_path} ({tool.tool_type.value}, v{tool.version}){active_marker}")
+
+                    if megacli.active_tool:
+                        print(f"\nActive tool ({megacli.active_tool.binary_path}) capabilities:")
+                        print(f"  Legacy syntax support: {megacli.active_tool.supports_legacy_syntax}")
+                        print(f"  Native syntax support: {megacli.active_tool.supports_native_syntax}")
+                else:
+                    print("No RAID management tools detected.")
+
+            except Exception as e:
+                print(f"Tool detection failed: {e}")
+        else:
+            print(f"\nUsing specified tool: {args.megacli_path}")
+
+        sys.exit(0)
 
     # Determine output mode
     output_mode = OutputMode.NORMAL
