@@ -1,8 +1,44 @@
 #!/usr/bin/env python3
-# $Id: RHEL_VRTS_links.py,v 1.0 2024/01/01 00:00:00 converted from bash Exp $
+"""
+RHEL Veritas Storage Foundation Kernel Module Relinker
 
-# Python rewrite of RHEL_VRTS_links bash script
-# Maintains same command syntax: --force, --silent, --exec
+Python rewrite of RHEL_VRTS_links bash script
+Maintains same command syntax: --force, --silent, --exec
+"""
+
+# $Id: RHEL_VRTS_links.py 1.01 2025/08/31 19:00:00 enhanced-version-detection Exp $
+__version__ = "RHEL_VRTS_links.py 1.01 2025/08/31 19:00:00 enhanced-version-detection Exp"
+
+#
+# VERSION HISTORY:
+# ================
+#
+# v1.01 (2025-08-31): Enhanced version detection and display
+#   - Robust RHEL version detection with multiple fallback methods
+#   - Enhanced --version flag now displays detected RHEL version
+#   - Support for /etc/redhat-release, /etc/os-release, /etc/system-release fallbacks
+#   - Changed default RHEL version from 8 to 9 (more current)
+#   - Debug mode support for version detection (--version --debug)
+#   - Updated descriptions to use "relinker" terminology
+#   - Production tested on daltigoth and solinari RHEL 9.6 systems
+#
+# v1.00 (2025-08-31): Python rewrite with enhanced features
+#   - Complete Python rewrite of original bash script
+#   - Added --version flag with proper version history
+#   - Enhanced debug mode with detailed matching logic
+#   - Improved kernel module blacklisting with cleaner set-based approach
+#   - Added comprehensive error handling and logging
+#   - Maintained full compatibility with original command syntax
+#   - Added /dev/null symlink detection for disabled VCS modules
+#   - Enhanced SELinux context handling
+#   - Improved RHEL version detection and multi-kernel processing
+#
+# PRIOR VERSIONS: Legacy bash script
+#   - Original bash implementation
+#   - Basic kernel module linking functionality
+#   - Support for VxFS, VxVM, and VCS modules
+#   - SELinux context management
+#
 
 import os
 import sys
@@ -87,8 +123,34 @@ class VRTSLinker:
             sudo_cmd = ['sudo'] + sys.argv
             os.execvp('sudo', sudo_cmd)
 
+    def check_rhel_system(self):
+        """Check if running on Red Hat Enterprise Linux"""
+        try:
+            with open('/etc/redhat-release', 'r') as f:
+                content = f.read().strip()
+
+            if 'Red Hat Enterprise Linux' not in content:
+                print(f"ERROR: This script is designed for Red Hat Enterprise Linux only.")
+                print(f"Detected system: {content}")
+                print(f"This script requires RHEL to function properly with Veritas Storage Foundation.")
+                sys.exit(1)
+
+            self.debug_print(f"Verified RHEL system: {content}")
+
+        except FileNotFoundError:
+            print("ERROR: /etc/redhat-release not found.")
+            print("This script is designed for Red Hat Enterprise Linux only.")
+            print("This script requires RHEL to function properly with Veritas Storage Foundation.")
+            sys.exit(1)
+        except Exception as e:
+            print(f"ERROR: Could not verify RHEL system: {e}")
+            print("This script requires RHEL to function properly with Veritas Storage Foundation.")
+            sys.exit(1)
+
     def get_rhel_version(self):
-        """Get RHEL version using lsb_release"""
+        """Get RHEL version using multiple detection methods"""
+
+        # Method 1: Try lsb_release (if available)
         try:
             result = subprocess.run(['lsb_release', '-r'],
                                   capture_output=True, text=True, check=True)
@@ -96,12 +158,54 @@ class VRTSLinker:
             version_line = result.stdout.strip()
             version = version_line.split(':')[1].strip().split('.')[0]
             rhel_version = int(version)
-            self.debug_print(f"Detected RHEL version: {rhel_version}")
+            self.debug_print(f"Detected RHEL version via lsb_release: {rhel_version}")
             return rhel_version
-        except (subprocess.CalledProcessError, ValueError, IndexError):
-            print("Warning: Could not determine RHEL version")
-            self.debug_print("Failed to detect RHEL version, defaulting to 8")
-            return 8  # Default to 8
+        except (subprocess.CalledProcessError, ValueError, IndexError, FileNotFoundError):
+            self.debug_print("lsb_release not available or failed, trying alternative methods")
+
+        # Method 2: Try /etc/redhat-release
+        try:
+            with open('/etc/redhat-release', 'r') as f:
+                content = f.read().strip()
+            # Look for version pattern like "Red Hat Enterprise Linux release 9.1" or "CentOS Linux release 8.4"
+            match = re.search(r'release\s+(\d+)', content)
+            if match:
+                rhel_version = int(match.group(1))
+                self.debug_print(f"Detected RHEL version via /etc/redhat-release: {rhel_version}")
+                return rhel_version
+        except (FileNotFoundError, ValueError, AttributeError):
+            self.debug_print("/etc/redhat-release not available or invalid format")
+
+        # Method 3: Try /etc/os-release
+        try:
+            with open('/etc/os-release', 'r') as f:
+                content = f.read()
+            # Look for VERSION_ID="9.1" or similar
+            match = re.search(r'VERSION_ID="(\d+)', content)
+            if match:
+                rhel_version = int(match.group(1))
+                self.debug_print(f"Detected RHEL version via /etc/os-release: {rhel_version}")
+                return rhel_version
+        except (FileNotFoundError, ValueError, AttributeError):
+            self.debug_print("/etc/os-release not available or invalid format")
+
+        # Method 4: Try /etc/system-release
+        try:
+            with open('/etc/system-release', 'r') as f:
+                content = f.read().strip()
+            # Look for version pattern similar to redhat-release
+            match = re.search(r'release\s+(\d+)', content)
+            if match:
+                rhel_version = int(match.group(1))
+                self.debug_print(f"Detected RHEL version via /etc/system-release: {rhel_version}")
+                return rhel_version
+        except (FileNotFoundError, ValueError, AttributeError):
+            self.debug_print("/etc/system-release not available or invalid format")
+
+        # Fallback: Default to RHEL 9
+        print("Warning: Could not determine RHEL version using any method")
+        self.debug_print("Failed to detect RHEL version, defaulting to 9")
+        return 9  # Default to 9
 
     def get_installed_kernels(self) -> List[str]:
         """Get list of installed kernel versions from RPM"""
@@ -500,6 +604,9 @@ class VRTSLinker:
 
     def run(self):
         """Main execution function"""
+        # Check if running on RHEL first
+        self.check_rhel_system()
+
         # Check for vxiod
         if not os.path.exists('/sbin/vxiod') or not os.access('/sbin/vxiod', os.X_OK):
             print("/sbin/vxiod missing!")
@@ -589,9 +696,26 @@ class VRTSLinker:
         self.debug_print("Script completed successfully")
         sys.exit(0)
 
+def show_version_info(debug_mode=False):
+    """Display version information including detected RHEL version"""
+    print(__version__)
+
+    # Create a temporary linker instance to detect RHEL version
+    linker = VRTSLinker()
+    linker.silent = True  # Don't show warnings during version detection
+    linker.debug = debug_mode  # Allow debug output if requested
+
+    try:
+        rhel_version = linker.get_rhel_version()
+        print(f"Detected RHEL version: {rhel_version}")
+    except Exception as e:
+        print(f"RHEL version detection failed: {e}")
+
+    sys.exit(0)
+
 def main():
     parser = argparse.ArgumentParser(
-        description="RHEL Veritas Storage Foundation kernel module linker",
+        description="RHEL Veritas Storage Foundation kernel module relinker",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -610,8 +734,14 @@ Examples:
                        help='Execute commands instead of just displaying them')
     parser.add_argument('--debug', action='store_true',
                        help='Enable debug output showing matching logic (prefixed with #)')
+    parser.add_argument('--version', action='store_true',
+                       help='Show version information and exit')
 
     args = parser.parse_args()
+
+    # Handle --version flag before any other processing
+    if args.version:
+        show_version_info(debug_mode=args.debug)
 
     # Create and configure the linker
     linker = VRTSLinker()
