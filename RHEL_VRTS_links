@@ -7,11 +7,17 @@ Maintains same command syntax: --force, --silent, --exec
 """
 
 # $Id: RHEL_VRTS_links,v 1.05 2025/08/31 23:00:00 fixed-rdma-logic Exp $
-__version__ = "RHEL_VRTS_links,v 1.06 2024/12/19 21:55:00 allow-dryrun-non-root Exp"
+__version__ = "RHEL_VRTS_links,v 1.07 2024/12/19 22:05:00 rename-class-to-relinker Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.07 (2024-12-19): Renamed class to VRTSRelinker for accurate terminology
+#   - Changed class name from VRTSLinker to VRTSRelinker
+#   - Updated variable names from "linker" to "relinker" for consistency
+#   - Reflects that script re-links existing modules, doesn't create initial links
+#   - More accurately describes the script's purpose and functionality
 #
 # v1.06 (2024-12-19): Allow dry-run mode without root privileges
 #   - Modified check_root_privileges() to skip sudo requirement in --force mode
@@ -83,7 +89,7 @@ import argparse
 from pathlib import Path
 from typing import List, Optional
 
-class VRTSLinker:
+class VRTSRelinker:
     def __init__(self):
         self.force = False
         self.silent = False
@@ -801,13 +807,13 @@ def show_version_info(debug_mode=False):
     """Display version information including detected RHEL version"""
     print(__version__)
 
-    # Create a temporary linker instance to detect RHEL version
-    linker = VRTSLinker()
-    linker.silent = True  # Don't show warnings during version detection
-    linker.debug = debug_mode  # Allow debug output if requested
+    # Create a temporary relinker instance to detect RHEL version
+    relinker = VRTSRelinker()
+    relinker.silent = True  # Don't show warnings during version detection
+    relinker.debug = debug_mode  # Allow debug output if requested
 
     try:
-        rhel_version = linker.get_rhel_version()
+        rhel_version = relinker.get_rhel_version()
         print(f"Detected RHEL version: {rhel_version}")
     except Exception as e:
         print(f"RHEL version detection failed: {e}")
@@ -844,19 +850,19 @@ Examples:
     if args.version:
         show_version_info(debug_mode=args.debug)
 
-    # Create and configure the linker
-    linker = VRTSLinker()
-    linker.force = args.force
-    linker.silent = args.silent
-    linker.run_exec = args.exec
-    linker.debug = args.debug
+    # Create and configure the relinker
+    relinker = VRTSRelinker()
+    relinker.force = args.force
+    relinker.silent = args.silent
+    relinker.run_exec = args.exec
+    relinker.debug = args.debug
 
     # If --exec is specified, also set silent mode
     if args.exec:
-        linker.silent = True
+        relinker.silent = True
 
     # Run the main functionality (banner will be printed after privilege check)
-    linker.run()
+    relinker.run()
 
 if __name__ == "__main__":
     main()
