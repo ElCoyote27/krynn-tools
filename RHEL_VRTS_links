@@ -6,20 +6,19 @@ Python rewrite of RHEL_VRTS_links bash script
 Maintains same command syntax: --force, --silent, --exec
 """
 
-# $Id: RHEL_VRTS_links,v 1.05 2025/08/31 23:00:00 fixed-rdma-logic Exp $
-__version__ = "RHEL_VRTS_links,v 1.07 2024/12/19 22:05:00 rename-class-to-relinker Exp"
+__version__ = "RHEL_VRTS_links 1.07 2025/08/31 22:05:00 python-rewrite Exp"
 
 #
 # VERSION HISTORY:
 # ================
 #
-# v1.07 (2024-12-19): Renamed class to VRTSRelinker for accurate terminology
+# v1.07 (2025-08-31): Renamed class to VRTSRelinker for accurate terminology
 #   - Changed class name from VRTSLinker to VRTSRelinker
 #   - Updated variable names from "linker" to "relinker" for consistency
 #   - Reflects that script re-links existing modules, doesn't create initial links
 #   - More accurately describes the script's purpose and functionality
 #
-# v1.06 (2024-12-19): Allow dry-run mode without root privileges
+# v1.06 (2025-08-31): Allow dry-run mode without root privileges
 #   - Modified check_root_privileges() to skip sudo requirement in --force mode
 #   - Enables testing and validation without elevated privileges
 #   - Maintains security for actual execution mode
