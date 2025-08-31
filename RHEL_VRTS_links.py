@@ -6,12 +6,32 @@ Python rewrite of RHEL_VRTS_links bash script
 Maintains same command syntax: --force, --silent, --exec
 """
 
-# $Id: RHEL_VRTS_links,v 1.03 2025/08/31 21:00:00 dynamic-vcs-patterns Exp $
-__version__ = "RHEL_VRTS_links,v 1.03 2025/08/31 21:00:00 dynamic-vcs-patterns Exp"
+# $Id: RHEL_VRTS_links,v 1.05 2025/08/31 23:00:00 fixed-rdma-logic Exp $
+__version__ = "RHEL_VRTS_links,v 1.06 2024/12/19 21:55:00 allow-dryrun-non-root Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.06 (2024-12-19): Allow dry-run mode without root privileges
+#   - Modified check_root_privileges() to skip sudo requirement in --force mode
+#   - Enables testing and validation without elevated privileges
+#   - Maintains security for actual execution mode
+#   - Shows warning message when running dry-run as non-root user
+#
+# v1.05 (2025-08-31): Fixed RDMA logic - module-specific pattern optimization
+#   - CRITICAL FIX: Apply RDMA logic only to LLT module (only one with RDMA variants)
+#   - Other VCS modules (gab, vxfen, amf) use untyped patterns only
+#   - Prevents module selection failures on non-RDMA VCS modules
+#   - Based on production daltigoth module analysis showing LLT-specific RDMA variants
+#   - Maintains optimization benefits while ensuring compatibility
+#
+# v1.04 (2025-08-31): Optimized RDMA detection and VCS pattern efficiency
+#   - Added global RDMA capability detection (kernel-level property, not per-module)
+#   - Streamlined VCS module patterns from 12 to 8 by detecting RDMA vs non-RDMA once
+#   - RDMA detection uses multiple methods: loaded modules, packages, InfiniBand devices
+#   - Reduced redundant pattern matching for better performance and logical consistency
+#   - Defaults to non-RDMA if no RDMA capability detected
 #
 # v1.03 (2025-08-31): Dynamic VCS module patterns using detected RHEL version
 #   - Replaced hardcoded pattern ranges el[7-9] and el1[0-9] with dynamic patterns
@@ -71,6 +91,7 @@ class VRTSLinker:
         self.debug = False
         self.action = 0
         self.rhel_version = None
+        self.is_rdma_capable = None  # Will be detected during run()
 
         # Module groups and their target directories
         self.generic_modules = ['veki', 'vxglm', 'vxgms', 'vxodm', 'storageapi']
@@ -133,6 +154,12 @@ class VRTSLinker:
     def check_root_privileges(self):
         """Check if running as root, exec sudo if not"""
         if os.getuid() != 0:
+            # In force (dry-run) mode, don't require root privileges
+            if self.force:
+                if not self.silent:
+                    print("WARNING: Running in dry-run mode without root privileges")
+                return
+
             # Re-exec with sudo
             sudo_cmd = ['sudo'] + sys.argv
             os.execvp('sudo', sudo_cmd)
@@ -160,6 +187,43 @@ class VRTSLinker:
             print(f"ERROR: Could not verify RHEL system: {e}")
             print("This script requires RHEL to function properly with Veritas Storage Foundation.")
             sys.exit(1)
+
+    def detect_rdma_capability(self):
+        """Detect if the kernel has RDMA capability"""
+        self.debug_print("Detecting RDMA capability...")
+
+        # Method 1: Check for loaded RDMA modules
+        try:
+            result = subprocess.run(['lsmod'], capture_output=True, text=True, check=True)
+            if 'rdma' in result.stdout.lower() or 'ib_' in result.stdout or 'irdma' in result.stdout:
+                self.debug_print("RDMA capability detected via loaded modules")
+                return True
+        except subprocess.CalledProcessError:
+            pass
+
+        # Method 2: Check for RDMA packages  
+        try:
+            result = subprocess.run(['rpm', '-qa'], capture_output=True, text=True, check=True)
+            rdma_packages = [line for line in result.stdout.split('\n') 
+                           if any(pkg in line.lower() for pkg in ['rdma', 'infiniband', 'ib-'])]
+            if rdma_packages:
+                self.debug_print(f"RDMA capability detected via packages: {len(rdma_packages)} found")
+                return True
+        except subprocess.CalledProcessError:
+            pass
+
+        # Method 3: Check for InfiniBand devices
+        try:
+            import os
+            if os.path.exists('/sys/class/infiniband') and os.listdir('/sys/class/infiniband'):
+                self.debug_print("RDMA capability detected via InfiniBand devices")
+                return True
+        except Exception:
+            pass
+
+        # Default to non-RDMA
+        self.debug_print("No RDMA capability detected, defaulting to non-RDMA")
+        return False
 
     def get_rhel_version(self):
         """Get RHEL version using multiple detection methods"""
@@ -474,26 +538,43 @@ class VRTSLinker:
 
         self.debug_print(f"  Looking for VCS module {module_name} in {local_kmod_dir}")
 
-        # Use detected RHEL version to build targeted patterns (much cleaner than hardcoded ranges)
+        # Use detected RHEL version and RDMA capability to build targeted patterns
         rhel_version = self.rhel_version  # Already detected in run()
+        is_rdma = self.is_rdma_capable    # Already detected in run()
+
         self.debug_print(f"  Using RHEL version {rhel_version} for VCS module patterns")
-        
-        patterns = [
-            # KSUBREV patterns (prioritizing non-RDMA first, then RDMA)
-            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el{rhel_version}_[0-9]*.x86_64",
-            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el{rhel_version}_[0-9]*.x86_64-nonrdma",
-            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el{rhel_version}_[0-9]*.x86_64-rdma",
-            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el{rhel_version}.x86_64",
-            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el{rhel_version}.x86_64-nonrdma", 
-            f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el{rhel_version}.x86_64-rdma",
-            # KREV patterns
-            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el{rhel_version}_[0-9]*.x86_64",
-            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el{rhel_version}_[0-9]*.x86_64-nonrdma",
-            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el{rhel_version}_[0-9]*.x86_64-rdma",
-            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el{rhel_version}.x86_64",
-            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el{rhel_version}.x86_64-nonrdma",
-            f"{local_kmod_dir}/{module_name}.ko.{krev}*.el{rhel_version}.x86_64-rdma"
-        ]
+        self.debug_print(f"  RDMA capability: {'Yes' if is_rdma else 'No'}")
+
+        # Only LLT module has RDMA variants, others use untyped patterns only
+        if module_name == 'llt':
+            # LLT has both untyped and RDMA-specific variants
+            rdma_suffix = "-rdma" if is_rdma else "-nonrdma"
+            self.debug_print(f"  LLT module: using RDMA suffix '{rdma_suffix}'")
+
+            patterns = [
+                # KSUBREV patterns - untyped first, then RDMA-specific for LLT
+                f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el{rhel_version}_[0-9]*.x86_64",
+                f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el{rhel_version}_[0-9]*.x86_64{rdma_suffix}",
+                f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el{rhel_version}.x86_64",
+                f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el{rhel_version}.x86_64{rdma_suffix}",
+                # KREV patterns - untyped first, then RDMA-specific for LLT
+                f"{local_kmod_dir}/{module_name}.ko.{krev}*.el{rhel_version}_[0-9]*.x86_64",
+                f"{local_kmod_dir}/{module_name}.ko.{krev}*.el{rhel_version}_[0-9]*.x86_64{rdma_suffix}",
+                f"{local_kmod_dir}/{module_name}.ko.{krev}*.el{rhel_version}.x86_64",
+                f"{local_kmod_dir}/{module_name}.ko.{krev}*.el{rhel_version}.x86_64{rdma_suffix}"
+            ]
+        else:
+            # Other VCS modules (gab, vxfen, amf) only have untyped variants
+            self.debug_print(f"  {module_name} module: using untyped patterns only")
+
+            patterns = [
+                # KSUBREV patterns - untyped only for other modules
+                f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el{rhel_version}_[0-9]*.x86_64",
+                f"{local_kmod_dir}/{module_name}.ko.{ksubrev}*.el{rhel_version}.x86_64",
+                # KREV patterns - untyped only for other modules
+                f"{local_kmod_dir}/{module_name}.ko.{krev}*.el{rhel_version}_[0-9]*.x86_64",
+                f"{local_kmod_dir}/{module_name}.ko.{krev}*.el{rhel_version}.x86_64"
+            ]
 
         def extract_vcs_subrev(filename):
             """Extract subrevision from VCS module filename"""
@@ -641,6 +722,9 @@ class VRTSLinker:
 
         # Get RHEL version
         self.rhel_version = self.get_rhel_version()
+
+        # Detect RDMA capability once for all VCS modules
+        self.is_rdma_capable = self.detect_rdma_capability()
 
         # Get installed kernels
         kernels = self.get_installed_kernels()
