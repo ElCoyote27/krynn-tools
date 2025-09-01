@@ -51,11 +51,12 @@ def get_current_profile():
         print("Error: tuned-adm not found. Is tuned installed?")
         sys.exit(1)
 
-def set_profile(profile):
+def set_profile(profile, quiet=False):
     """Set the tuned profile using sudo"""
     try:
         subprocess.run(['sudo', 'tuned-adm', 'profile', profile], check=True)
-        print(f"Successfully switched to profile: {profile}")
+        if not quiet:
+            print(f"Successfully switched to profile: {profile}")
     except subprocess.CalledProcessError as e:
         print(f"Error switching to profile '{profile}': {e}")
         sys.exit(1)
@@ -75,51 +76,57 @@ Available profiles:
 Examples:
   TunedReconfig.py p      Switch to powersave
   TunedReconfig.py v      Switch to virtual-host intel-sst
+  TunedReconfig.py -q p   Switch to powersave silently
   TunedReconfig.py        Show current profile and toggle options
         """)
-    
     parser.add_argument('profile', nargs='?', 
                        help='Profile to switch to (p/v or full name)')
     parser.add_argument('-s', '--status', action='store_true',
                        help='Show current profile only')
+    parser.add_argument('-q', '--quiet', action='store_true',
+                       help='Suppress all output except critical errors')
     parser.add_argument('--version', action='version', version=__version__,
                        help='Show version information')
-    
+
     args = parser.parse_args()
-    
+
     current = get_current_profile()
-    
+
     if args.status:
-        print(f"Current profile: {current}")
+        if not args.quiet:
+            print(f"Current profile: {current}")
         return
-    
+
     if not args.profile:
-        print(f"Current profile: {current}")
-        print("\nAvailable options:")
-        print("  p/power     -> powersave")
-        print("  v/virtual   -> virtual-host intel-sst")
-        
-        # Auto-suggest toggle
-        if current == 'powersave':
-            print(f"\nSuggestion: TunedReconfig.py v  (switch to virtual-host intel-sst)")
-        elif current == 'virtual-host intel-sst':
-            print(f"\nSuggestion: TunedReconfig.py p  (switch to powersave)")
+        if not args.quiet:
+            print(f"Current profile: {current}")
+            print("\nAvailable options:")
+            print("  p/power     -> powersave")
+            print("  v/virtual   -> virtual-host intel-sst")
+
+            # Auto-suggest toggle
+            if current == 'powersave':
+                print(f"\nSuggestion: TunedReconfig.py v  (switch to virtual-host intel-sst)")
+            elif current == 'virtual-host intel-sst':
+                print(f"\nSuggestion: TunedReconfig.py p  (switch to powersave)")
         return
-    
+
     # Look up the profile
     profile_key = args.profile.lower()
     if profile_key not in PROFILES:
         print(f"Unknown profile: {args.profile}")
         print("Valid options: p, power, powersave, v, virtual, intel")
         sys.exit(1)
-    
+
     target_profile = PROFILES[profile_key]
-    
+
     if current == target_profile:
-        print(f"Already using profile: {current}")
+        if not args.quiet:
+            print(f"Already using profile: {current}")
     else:
-        print(f"Switching from '{current}' to '{target_profile}'")
-        set_profile(target_profile)
+        if not args.quiet:
+            print(f"Switching from '{current}' to '{target_profile}'")
+        set_profile(target_profile, quiet=args.quiet)
 
 if __name__ == '__main__':
     main()
