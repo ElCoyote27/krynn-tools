@@ -8,8 +8,8 @@ It's useful for testing VXFS snapshot functionality.
 Author: Converted from bash script
 """
 
-# $Id: vxfs_recycle_snapshot.py,v 1.00 2025/09/02 17:00:00 python-conversion Exp $
-__version__ = "vxfs_recycle_snapshot.py,v 1.00 2025/09/02 17:00:00 python-conversion Exp"
+# $Id: vxfs_recycle_snapshot.py,v 1.01 2025/09/02 18:20:00 python-conversion Exp $
+__version__ = "vxfs_recycle_snapshot.py,v 1.01 2025/09/02 18:20:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:

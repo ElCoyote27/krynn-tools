@@ -9,8 +9,8 @@ hypervisor-specific configurations.
 Author: Converted from bash script
 """
 
-# $Id: rsync_KVM_OS.py,v 1.00 2025/09/02 17:00:00 python-conversion Exp $
-__version__ = "rsync_KVM_OS.py,v 1.00 2025/09/02 17:00:00 python-conversion Exp"
+# $Id: rsync_KVM_OS.py,v 1.01 2025/09/02 18:20:00 python-conversion Exp $
+__version__ = "rsync_KVM_OS.py,v 1.01 2025/09/02 18:20:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
@@ -102,6 +102,7 @@ class HostConfig:
     kvm_nvram_dst_dirs: List[str] = None
     default_vm_list: str = ""
     rsync_path: str = ""
+    stat_path: str = ""  # Path to stat binary (e.g., /opt/bin/stat for NAS)
     skip_define: bool = False
     vxfs_snapshots: bool = VXFS_SNAPSHOTS_ENABLED
     skip_mount_check: bool = False  # Skip remote mount point verification
@@ -157,6 +158,7 @@ class KVMReplicator:
         # Current configuration
         self.remote_host = ""
         self.host_config = None
+        self.stat_available = True  # Track if stat works on both source and destination
 
     def _init_host_configs(self) -> Dict[str, HostConfig]:
         """Initialize host-specific configurations."""
@@ -169,6 +171,8 @@ class KVMReplicator:
         # Only specify values that differ from defaults:
         # - remote_host: "" (defaults to detected hostname)
         # - threads: 1
+        # - rsync_path: "" (uses system default rsync)
+        # - stat_path: "" (uses system default stat)
         # - vxfs_snapshots: VXFS_SNAPSHOTS_ENABLED
         # - default_vm_list: default_vm_list
         # - skip_mount_check: False
@@ -180,6 +184,7 @@ class KVMReplicator:
             'kvm_images_dst_dirs': ["/shared/kvm0/images"],
             'kvm_nvram_dst_dirs': ["/shared/kvm0/nvram"],
             'rsync_path': "",  # Use default rsync
+            'stat_path': "",   # Use default stat (system PATH)
             'skip_define': False,
             'skip_mount_check': False,
             'skip_stat_check': False
@@ -189,9 +194,10 @@ class KVMReplicator:
             'kvm_images_dst_dirs': ["/volume1/kvm0/images"],
             'kvm_nvram_dst_dirs': ["/volume1/kvm0/nvram"], 
             'rsync_path': "/opt/bin/rsync",
+            'stat_path': "/opt/bin/stat",  # NAS-specific stat binary
             'skip_define': True,
             'skip_mount_check': True,
-            'skip_stat_check': True
+            'skip_stat_check': False  # Now we can do stat checks with correct path!
         }
         
         host_configs_table = {
@@ -272,6 +278,51 @@ class KVMReplicator:
         self.remote_host = self.host_config.get_effective_remote_host(detected_hostname)
         
         logger.info(f"Remote destination: {self.remote_host}")
+
+    def test_stat_availability(self):
+        """Test if stat command works on both local and remote systems."""
+        logger.info("Testing stat command availability...")
+        
+        # Test local stat (always use system default "stat" locally)
+        try:
+            result = subprocess.run(["stat", "--version"], 
+                                  capture_output=True, text=True, check=False)
+            if result.returncode != 0:
+                logger.warning("Local stat command not working properly")
+                self.stat_available = False
+                return
+        except Exception as e:
+            logger.warning(f"Local stat command test failed: {e}")
+            self.stat_available = False
+            return
+            
+        # Test remote stat
+        try:
+            remote_stat_cmd = self.host_config.stat_path if self.host_config.stat_path else "stat"
+            result = self.run_ssh_command(f"{remote_stat_cmd} --version", check=False)
+            if result.returncode != 0:
+                if self.host_config.stat_path:
+                    # Try fallback to system default
+                    result = self.run_ssh_command("stat --version", check=False)
+                    if result.returncode != 0:
+                        logger.warning(f"Both custom ({self.host_config.stat_path}) and default stat commands failed on {self.remote_host}")
+                        self.stat_available = False
+                        return
+                    else:
+                        logger.info(f"Custom stat path failed, but system stat works on {self.remote_host}")
+                else:
+                    logger.warning(f"Default stat command not working on {self.remote_host}")
+                    self.stat_available = False
+                    return
+        except Exception as e:
+            logger.warning(f"Remote stat command test failed: {e}")
+            self.stat_available = False
+            return
+            
+        if self.stat_available:
+            logger.info("Stat command available on both source and destination - will use file time comparisons")
+        else:
+            logger.warning("Stat command not available on both systems - falling back to rsync-based comparison")
 
     def test_ssh_connectivity(self):
         """Test SSH connectivity to remote host before proceeding."""
@@ -408,18 +459,24 @@ class KVMReplicator:
         if remote:
             if self.debug:
                 logger.info(f"DEBUG: Checking remote mtime for {file_path}")
+            
+            # Use the determined stat binary path (already tested by test_stat_availability)
+            stat_cmd = self.host_config.stat_path if self.host_config.stat_path else "stat"
+            
             try:
-                result = self.run_ssh_command(f"/usr/bin/stat -L -c %Y {file_path}", check=False)
+                result = self.run_ssh_command(f"{stat_cmd} -L -c %Y {file_path}", check=False)
                 if result.returncode == 0:
                     return int(result.stdout.strip())
-            except:
-                pass
-            return 0  # Assume epoch if file doesn't exist remotely
+                        
+            except Exception as e:
+                logger.debug(f"Error getting remote mtime for {file_path}: {e}")
+            
+            return 0  # Assume epoch if file doesn't exist remotely or stat failed
         else:
             try:
                 return int(os.path.getmtime(file_path))
             except OSError:
-                return 0
+                return 0  # File doesn't exist locally
 
     def should_skip_vm(self, vm_name: str) -> bool:
         """Check if VM should be skipped due to running state."""
@@ -801,6 +858,10 @@ class KVMReplicator:
         # Test SSH connectivity first (fail fast) - critical even in debug mode
         self.test_ssh_connectivity()
         
+        # Test stat availability on both systems (unless we're skipping stat checks)
+        if not self.host_config.skip_stat_check:
+            self.test_stat_availability()
+        
         # Check remote mount points
         self.check_remote_mount_points()
         
@@ -847,7 +908,9 @@ class KVMReplicator:
                         
                         dst_file = f"{self.host_config.kvm_images_dst_dirs[i]}/{os.path.basename(disk_file)}"
                         
-                        if self.force_action or self.host_config.skip_stat_check:
+                        if self.force_action or self.host_config.skip_stat_check or not self.stat_available:
+                            if not self.stat_available and not self.host_config.skip_stat_check:
+                                logger.debug(f"Stat not available on both systems, syncing {disk_file}")
                             logger.info(f"*** Will rsync ({vm}) {disk_file} to {self.remote_host}:{self.host_config.kvm_images_dst_dirs[i]}")
                             disk_files.append(disk_file)
                             vm_needs_sync = True
@@ -869,7 +932,9 @@ class KVMReplicator:
                         
                         dst_file = f"{self.host_config.kvm_nvram_dst_dirs[i]}/{os.path.basename(nvram_file)}"
                         
-                        if self.force_action or self.host_config.skip_stat_check:
+                        if self.force_action or self.host_config.skip_stat_check or not self.stat_available:
+                            if not self.stat_available and not self.host_config.skip_stat_check:
+                                logger.debug(f"Stat not available on both systems, syncing {nvram_file}")
                             logger.info(f"*** Will rsync ({vm}) {nvram_file} to {self.remote_host}:{self.host_config.kvm_nvram_dst_dirs[i]}")
                             nvram_files.append(nvram_file)
                             vm_needs_sync = True
@@ -923,18 +988,18 @@ class KVMReplicator:
                         if not self.sync_file(nvram_file, self.host_config.kvm_nvram_dst_dirs[i]):
                             success = False
                 
-                # Copy tools
-                script_path = os.path.realpath(sys.argv[0])
+                # Copy tools (entire script directory like the bash version)
+                script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))  # Get directory of executed script
                 dst_dir = os.path.dirname(self.host_config.kvm_images_dst_dirs[i])
                 logger.info(f"Copying tools to {self.remote_host}:{dst_dir}...")
                 if self.debug:
-                    logger.info(f"DEBUG: Would copy {script_path} to {self.remote_host}:{dst_dir}")
+                    logger.info(f"DEBUG: Would copy {script_dir} to {self.remote_host}:{dst_dir}")
                 else:
                     rsync_cmd = ['rsync']
                     rsync_cmd.extend(self.rsync_options.split())
                     if self.host_config.rsync_path:
                         rsync_cmd.extend(['--rsync-path', self.host_config.rsync_path])
-                    rsync_cmd.extend([script_path, f"{self.remote_host}:{dst_dir}/"])
+                    rsync_cmd.extend([script_dir, f"{self.remote_host}:{dst_dir}/"])
                     
                     try:
                         subprocess.run(rsync_cmd, check=True)
