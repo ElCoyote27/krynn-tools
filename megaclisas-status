@@ -16,12 +16,13 @@ __version__ = "megaclisas-status,v 2.15 2025/09/02 12:00:00 whitespace-fix Exp"
 # VERSION HISTORY:
 # ================
 #
-# v2.15 (2025-09-02): Drive model whitespace normalization fix
+# v2.15 (2025-09-02): Drive model whitespace normalization and cache property parsing fix
 #   - Fixed excessive whitespace in Drive Model column reported by community users
 #   - Added comprehensive whitespace normalization using re.sub(r'\s{2,}', ' ') across all parsing paths
 #   - Normalizes whitespace in inquiry data, model numbers, and combined model fields
 #   - Handles firmware-reported fields with inconsistent padding and spacing
 #   - Ensures consistent Drive Model display formatting across all controller types
+#   - Fixed cache property parsing bug: reordered ReadAheadNone before ReadAhead to avoid substring matching
 #   - Code cleanup: replaced whitespace-only lines with proper blank lines
 #   - Tested and validated on multiple systems (daltigoth, palanthas)
 #
@@ -1196,12 +1197,13 @@ class RAIDParser:
         """Parse cache properties."""
         properties = ""
 
-        if "ReadAdaptive" in props:
+        # Check most specific patterns first to avoid substring matching issues
+        if "ReadAheadNone" in props:
+            properties += "NORA"
+        elif "ReadAdaptive" in props:
             properties += "ADRA"
         elif "ReadAhead" in props:
             properties += "RA"
-        elif "ReadAheadNone" in props:
-            properties += "NORA"
 
         if "WriteBack" in props:
             properties += ",WB"
