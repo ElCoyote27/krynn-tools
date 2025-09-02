@@ -15,6 +15,10 @@ __version__ = "vxfs_recycle_snapshot.py,v 1.01 2025/09/02 18:20:00 python-conver
 # VERSION HISTORY:
 # ================
 #
+# v1.01 (2025-09-02): Version synchronization with rsync_KVM_OS.py
+#   - Bumped version to match main rsync_KVM_OS.py script
+#   - No functional changes - stable testing tool for VXFS snapshot operations
+#
 # v1.00 (2025-09-02): Initial Python conversion from bash script
 #   - Complete Python rewrite of vxfs_recycle_snapshot.sh
 #   - Enhanced debug mode: dry-run functionality with command tracing

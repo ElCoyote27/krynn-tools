@@ -9,12 +9,31 @@ hypervisor-specific configurations.
 Author: Converted from bash script
 """
 
-# $Id: rsync_KVM_OS.py,v 1.01 2025/09/02 18:20:00 python-conversion Exp $
-__version__ = "rsync_KVM_OS.py,v 1.01 2025/09/02 18:20:00 python-conversion Exp"
+# $Id: rsync_KVM_OS.py,v 1.02 2025/09/02 18:30:00 python-conversion Exp $
+__version__ = "rsync_KVM_OS.py,v 1.02 2025/09/02 18:30:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.02 (2025-09-02): CLI host override and validation enhancements
+#   - Added --host and --dest-host arguments to override destination host from CLI
+#   - Enhanced flexibility: CLI override takes precedence over script name auto-detection
+#   - SSH connectivity check always performed regardless of host determination method
+#   - Added validate_remote_host() method for common hostname validation logic
+#   - Improved logging to show host determination method (CLI vs auto-detected)
+#   - Maintains backward compatibility: existing script-name-based workflow unchanged
+#
+# v1.01 (2025-09-02): Critical bugfixes and stat binary enhancements
+#   - BUGFIX: Fixed stat command testing to use system stat locally, custom path only for remote
+#   - Enhanced stat availability checking on both source AND destination systems
+#   - Added intelligent fallback to rsync-based comparison when stat unavailable
+#   - Fixed tool copying to sync entire script directory (not just single file)
+#   - BUGFIX: Removed trailing slash in rsync directory copy to preserve directory structure
+#   - Added comprehensive dual-system stat testing with proper error handling
+#   - Improved NAS host support with configurable stat_path (/opt/bin/stat)
+#   - Enhanced debug output showing correct executed script paths
+#   - Performance optimization: only syncs files that actually changed via stat comparison
 #
 # v1.00 (2025-09-02): Initial Python conversion from bash script
 #   - Complete Python rewrite of rsync_KVM_OS.sh with feature parity
@@ -107,14 +126,14 @@ class HostConfig:
     vxfs_snapshots: bool = VXFS_SNAPSHOTS_ENABLED
     skip_mount_check: bool = False  # Skip remote mount point verification
     skip_stat_check: bool = False   # Skip file stat comparison checks
-    
+
     def __post_init__(self):
         # Use standard KVM configuration as defaults
         if self.kvm_images_dst_dirs is None:
             self.kvm_images_dst_dirs = ["/shared/kvm0/images"]
         if self.kvm_nvram_dst_dirs is None:
             self.kvm_nvram_dst_dirs = ["/shared/kvm0/nvram"]
-    
+
     def get_effective_remote_host(self, detected_hostname: str) -> str:
         """Get the effective remote host, using detected hostname if not specified."""
         return self.remote_host if self.remote_host else detected_hostname
@@ -122,7 +141,7 @@ class HostConfig:
 
 class KVMReplicator:
     """Main class for KVM VM replication operations."""
-    
+
     def __init__(self):
         # Runtime configuration - set by command line args
         self.force_checksum = False
@@ -131,30 +150,30 @@ class KVMReplicator:
         self.test_only = False
         self.update_only = False
         self.debug = False
-        
+
         # Use configuration constants
         self.wait_time = WAIT_TIME_BEFORE_SYNC
         self.vxfs_snapshots = VXFS_SNAPSHOTS_ENABLED
         self.vxsnap_prefix = VXSNAP_PREFIX
         self.vxsnap_opts = VXSNAP_OPTIONS
-        
+
         # Default paths from configuration
         self.kvm_conf_src_dir = DEFAULT_KVM_CONF_SRC_DIR
         self.kvm_conf_dst_dir = DEFAULT_KVM_CONF_DST_DIR
         self.kvm_images_src_dirs = DEFAULT_KVM_IMAGES_SRC_DIRS.copy()
         self.kvm_nvram_src_dirs = DEFAULT_KVM_NVRAM_SRC_DIRS.copy()
         self.default_kvm_templates = DEFAULT_KVM_TEMPLATES
-        
+
         # SSH and rsync configuration from constants
         self.ssh_cipher = SSH_CIPHER
         self.rsync_options = RSYNC_OPTIONS
-        
+
         # Default VM list from configuration
         self.default_vm_list = DEFAULT_VM_LIST.copy()
-        
+
         # Host-specific configurations
         self.host_configs = self._init_host_configs()
-        
+
         # Current configuration
         self.remote_host = ""
         self.host_config = None
@@ -164,7 +183,7 @@ class KVMReplicator:
         """Initialize host-specific configurations."""
         configs = {}
         default_vm_list = " ".join(DEFAULT_VM_LIST)
-        
+
         # =============================================================================
         # HOST CONFIGURATION TABLE  
         # =============================================================================
@@ -178,7 +197,7 @@ class KVMReplicator:
         # - skip_mount_check: False
         # - skip_stat_check: False
         # - Standard KVM paths: ["/shared/kvm0/images"], ["/shared/kvm0/nvram"]
-        
+
         # Standard configuration templates
         KVM_STD_CONFIG = {
             'kvm_images_dst_dirs': ["/shared/kvm0/images"],
@@ -189,7 +208,7 @@ class KVMReplicator:
             'skip_mount_check': False,
             'skip_stat_check': False
         }
-        
+
         NAS_STD_CONFIG = {
             'kvm_images_dst_dirs': ["/volume1/kvm0/images"],
             'kvm_nvram_dst_dirs': ["/volume1/kvm0/nvram"], 
@@ -199,7 +218,7 @@ class KVMReplicator:
             'skip_mount_check': True,
             'skip_stat_check': False  # Now we can do stat checks with correct path!
         }
-        
+
         host_configs_table = {
             # -228 management interface hosts (use KVM standard + remote host override)
             'daltigoth': {**KVM_STD_CONFIG, 'remote_host': 'daltigoth-228', 'threads': 2},
@@ -208,7 +227,7 @@ class KVMReplicator:
             'palanthas-228': {**KVM_STD_CONFIG, 'remote_host': 'palanthas-228', 'threads': 2},
             'ravenvale': {**KVM_STD_CONFIG, 'remote_host': 'ravenvale-228', 'vxfs_snapshots': False},
             'ravenvale-228': {**KVM_STD_CONFIG, 'remote_host': 'ravenvale-228', 'vxfs_snapshots': False},
-            
+
             # Standard KVM hosts (only override VM lists)
             'solinari': {**KVM_STD_CONFIG,
                 'default_vm_list': "rhel3-x86 win10-x64 win11-x64 bdc420x dc00 dc01 idm00 fedora-x64 fedora-csb-x64 cirros ca8"
@@ -219,52 +238,61 @@ class KVMReplicator:
             'lothlorien': {**KVM_STD_CONFIG,
                 'default_vm_list': "fedora-x64 cirros"
             },
-            
+
             # NAS/Synology hosts (use NAS standard + thread overrides)
             'kalaman': {**NAS_STD_CONFIG, 'threads': 2},
             'ligett': {**NAS_STD_CONFIG},
-            
+
             # Testing hosts (use KVM standard + limited VM lists)
             'rh8x64': {**KVM_STD_CONFIG, 'default_vm_list': "win11-x64 cirros"},
             'rh9x64': {**KVM_STD_CONFIG, 'default_vm_list': "win11-x64 cirros"}
         }
-        
+
         # =============================================================================
         # BUILD CONFIGURATIONS FROM TABLE
         # =============================================================================
-        
+
         for hostname, config_values in host_configs_table.items():
             # Apply default VM list if not already specified in the config
             if 'default_vm_list' not in config_values:
                 config_values = {**config_values, 'default_vm_list': default_vm_list}
-            
+
             configs[hostname] = HostConfig(**config_values)
-        
+
         return configs
+
+    def validate_remote_host(self, hostname: str) -> str:
+        """Validate a remote hostname (from CLI or script name detection)."""
+        if not hostname:
+            logger.error("Empty hostname provided!")
+            sys.exit(127)
+
+        # Validate hostname resolution
+        try:
+            socket.gethostbyname(hostname)
+        except socket.gaierror:
+            logger.error(f"Unable to resolve host \"{hostname}\"")
+            sys.exit(127)
+
+        # Check we're not running on the target host
+        if hostname == socket.gethostname():
+            logger.error(f"Don't run this on {hostname} to push files to {hostname}!")
+            sys.exit(127)
+
+        return hostname
 
     def get_remote_host_from_script_name(self) -> str:
         """Extract remote host name from script basename."""
         script_name = os.path.basename(sys.argv[0])
         # Remove rsync_KVM_ prefix and _OS.py suffix
         remote_host = script_name.replace('rsync_KVM_', '').replace('_OS.py', '').replace('.py', '')
-        
+
         if not remote_host:
             logger.error("Unable to guess Remote host from script name!")
             sys.exit(127)
-        
-        # Validate hostname resolution
-        try:
-            socket.gethostbyname(remote_host)
-        except socket.gaierror:
-            logger.error(f"Unable to resolve host \"{remote_host}\"")
-            sys.exit(127)
-        
-        # Check we're not running on the target host
-        if remote_host == socket.gethostname():
-            logger.error(f"Don't run this on {remote_host} to push files to {remote_host}!")
-            sys.exit(127)
-        
-        return remote_host
+
+        # Use common validation logic
+        return self.validate_remote_host(remote_host)
 
     def setup_host_config(self, detected_hostname: str):
         """Set up configuration for the specified remote host."""        
@@ -273,16 +301,16 @@ class KVMReplicator:
         else:
             # Use default config (remote_host will default to detected_hostname)
             self.host_config = HostConfig(default_vm_list=" ".join(DEFAULT_VM_LIST))
-        
+
         # Determine effective remote host
         self.remote_host = self.host_config.get_effective_remote_host(detected_hostname)
-        
+
         logger.info(f"Remote destination: {self.remote_host}")
 
     def test_stat_availability(self):
         """Test if stat command works on both local and remote systems."""
         logger.info("Testing stat command availability...")
-        
+
         # Test local stat (always use system default "stat" locally)
         try:
             result = subprocess.run(["stat", "--version"], 
@@ -295,7 +323,7 @@ class KVMReplicator:
             logger.warning(f"Local stat command test failed: {e}")
             self.stat_available = False
             return
-            
+
         # Test remote stat
         try:
             remote_stat_cmd = self.host_config.stat_path if self.host_config.stat_path else "stat"
@@ -318,7 +346,7 @@ class KVMReplicator:
             logger.warning(f"Remote stat command test failed: {e}")
             self.stat_available = False
             return
-            
+
         if self.stat_available:
             logger.info("Stat command available on both source and destination - will use file time comparisons")
         else:
@@ -353,7 +381,7 @@ class KVMReplicator:
                 mock_result.stdout = ""
                 mock_result.stderr = ""
                 return mock_result
-            
+
             result = subprocess.run(
                 command,
                 capture_output=capture_output,
@@ -383,13 +411,13 @@ class KVMReplicator:
     def check_remote_mount_points(self):
         """Verify remote mount points exist."""
         logger.info("Verifying remote mount points...")
-            
+
         for dst_dir in self.host_config.kvm_images_dst_dirs:
             if self.host_config.skip_mount_check:
                 continue  # Skip mount point check for this host type
-                
+
             check_dir = os.path.dirname(dst_dir)
-            
+
             try:
                 result = self.run_ssh_command(f"df -hP {dst_dir}")
                 lines = result.stdout.strip().split('\n')
@@ -409,34 +437,34 @@ class KVMReplicator:
         """Parse VM XML file and extract disk and NVRAM file paths."""
         disk_files = []
         nvram_files = []
-        
+
         try:
             tree = ET.parse(xml_file)
             root = tree.getroot()
-            
+
             # Extract disk files
             for disk in root.findall(".//disk[@type='file']/source"):
                 file_attr = disk.get('file')
                 if file_attr:
                     disk_files.append(file_attr)
-            
+
             # Extract NVRAM files
             for nvram in root.findall(".//nvram"):
                 if nvram.text:
                     nvram_files.append(nvram.text.strip())
-            
+
         except ET.ParseError as e:
             logger.warning(f"Failed to parse XML file {xml_file}: {e}")
         except FileNotFoundError:
             logger.warning(f"XML file not found: {xml_file}")
-        
+
         return disk_files, nvram_files
 
     def get_domain_state(self, vm_name: str, remote: bool = False) -> str:
         """Get the state of a libvirt domain."""
         if self.debug:
             logger.info(f"DEBUG: Checking domain state for {vm_name} ({'remote' if remote else 'local'})")
-            
+
         if remote:
             try:
                 result = self.run_ssh_command(f"PATH=/bin:/opt/bin virsh domstate {vm_name}", check=False)
@@ -451,7 +479,7 @@ class KVMReplicator:
                     return result.stdout.strip()
             except:
                 pass
-        
+
         return "unknown"
 
     def get_file_mtime(self, file_path: str, remote: bool = False) -> int:
@@ -459,18 +487,18 @@ class KVMReplicator:
         if remote:
             if self.debug:
                 logger.info(f"DEBUG: Checking remote mtime for {file_path}")
-            
+
             # Use the determined stat binary path (already tested by test_stat_availability)
             stat_cmd = self.host_config.stat_path if self.host_config.stat_path else "stat"
-            
+
             try:
                 result = self.run_ssh_command(f"{stat_cmd} -L -c %Y {file_path}", check=False)
                 if result.returncode == 0:
                     return int(result.stdout.strip())
-                        
+
             except Exception as e:
                 logger.debug(f"Error getting remote mtime for {file_path}: {e}")
-            
+
             return 0  # Assume epoch if file doesn't exist remotely or stat failed
         else:
             try:
@@ -482,70 +510,70 @@ class KVMReplicator:
         """Check if VM should be skipped due to running state."""
         if self.force_action:
             return False
-        
+
         local_state = self.get_domain_state(vm_name, remote=False)
         remote_state = self.get_domain_state(vm_name, remote=True)
-        
+
         if local_state == "running":
             logger.warning(f"Domain {vm_name} is running!! Skipping...")
             return True
-        
+
         if remote_state == "running":
             logger.warning(f"Domain {vm_name} is running on {self.remote_host}!! Skipping...")
             return True
-        
+
         return False
 
     def create_vxfs_snapshot(self, src_dir: str) -> Optional[Tuple[str, str, str, str]]:
         """Create VXFS snapshot if supported."""
         if not self.vxfs_snapshots or not self.host_config.vxfs_snapshots:
             return None
-        
+
         try:
             # Check if vxsnap command exists
             if not shutil.which('vxsnap'):
                 return None
-            
+
             # Get filesystem mount point
             result = self.run_command(['df', '--output=target', src_dir])
             kvm_fs_mnt = result.stdout.strip().split('\n')[1]
-            
+
             # Check if it's vxfs
             result = self.run_command(['findmnt', '-o', 'FSTYPE', kvm_fs_mnt])
             fs_type = result.stdout.strip().split('\n')[1]
-            
+
             if fs_type != 'vxfs':
                 return None
-            
+
             # Get volume group and logical volume
             result = self.run_command(['findmnt', '-n', '-o', 'SOURCE', kvm_fs_mnt])
             source = result.stdout.strip()
             parts = source.split('/')
             if len(parts) < 6:
                 return None
-            
+
             vxdg = parts[4]
             vxlv = parts[5]
             vxsnap_lv = f"{vxlv}_snapshot"
             vxsnap_mnt = f"{self.vxsnap_prefix}/{vxsnap_lv}"
-            
+
             if self.debug:
                 logger.info(f"DEBUG: Would create VXFS snapshot for {vxdg}/{vxlv}")
                 return vxdg, vxlv, vxsnap_lv, vxsnap_mnt
-            
+
             logger.info(f"Creating VXFS snapshot for {vxdg}/{vxlv}...")
-            
+
             # Try to prepare volume - it's OK if it's already prepared
             self.run_command(['vxsnap', '-g', vxdg, 'prepare', vxlv], check=False)
-            
+
             # Try to create snapshot - it's OK if it already exists
             self.run_command(['vxsnap', '-g', vxdg, 'make', 
                              f'source={vxlv}/newvol={vxsnap_lv}/{self.vxsnap_opts}'], 
                              check=False)
-            
+
             # Create mount directory
             os.makedirs(vxsnap_mnt, exist_ok=True)
-            
+
             # Check if already mounted
             result = self.run_command(['findmnt', '-o', 'FSTYPE', vxsnap_mnt], check=False)
             if hasattr(result, 'returncode') and result.returncode == 0 and result.stdout.strip():
@@ -555,7 +583,7 @@ class KVMReplicator:
                     if fs_type == 'vxfs':
                         logger.info(f"{vxsnap_mnt} already mounted, skipping...")
                         return vxdg, vxlv, vxsnap_lv, vxsnap_mnt
-            
+
             # Try to mount snapshot - only if not already mounted
             try:
                 self.run_command([
@@ -567,9 +595,9 @@ class KVMReplicator:
                 result = self.run_command(['findmnt', '-o', 'FSTYPE', vxsnap_mnt], check=False)
                 if not (hasattr(result, 'returncode') and result.returncode == 0):
                     raise
-            
+
             return vxdg, vxlv, vxsnap_lv, vxsnap_mnt
-            
+
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to create VXFS snapshot: {e}")
             return None
@@ -579,7 +607,7 @@ class KVMReplicator:
         if self.debug:
             logger.info(f"DEBUG: Would destroy VXFS snapshot {vxdg}/{vxlv} at {vxsnap_mnt}")
             return
-            
+
         try:
             # Check if mounted
             result = self.run_command(['findmnt', '-o', 'FSTYPE', vxsnap_mnt], check=False)
@@ -606,34 +634,34 @@ class KVMReplicator:
     def sync_file(self, src_file: str, dst_dir: str) -> bool:
         """Sync a single file using rsync."""
         rsync_cmd = ['rsync']
-        
+
         # Add rsync options
         rsync_cmd.extend(self.rsync_options.split())
-        
+
         # Add host-specific rsync path
         if self.host_config.rsync_path:
             rsync_cmd.extend(['--rsync-path', self.host_config.rsync_path])
-        
+
         # Add checksum option if needed
         if self.force_checksum:
             rsync_cmd.append('-c')
-        
+
         # Add update option if needed
         if self.update_only:
             rsync_cmd.append('-u')
-        
+
         # Add test option if needed
         if self.test_only:
             rsync_cmd.append('-n')
-        
+
         # Add dry-run flag in debug mode
         if self.debug:
             rsync_cmd.append('--dry-run')
-        
+
         # Add source and destination
         rsync_cmd.append(src_file)
         rsync_cmd.append(f"{self.remote_host}:{dst_dir}/")
-        
+
         try:
             # Use parent's stdout/stderr so we can see rsync progress
             subprocess.run(rsync_cmd, stdout=None, stderr=None, check=True)
@@ -650,54 +678,54 @@ class KVMReplicator:
         """Sync multiple files using parallel rsync processes like the original bash script."""
         if not file_list:
             return True
-            
+
         # Build base rsync command
         rsync_cmd = ['rsync']
         rsync_cmd.extend(self.rsync_options.split())
-        
+
         # Add host-specific rsync path
         if self.host_config.rsync_path:
             rsync_cmd.extend(['--rsync-path', self.host_config.rsync_path])
-        
+
         # Add checksum option if needed
         if self.force_checksum:
             rsync_cmd.append('-c')
-        
+
         # Add update option if needed
         if self.update_only:
             rsync_cmd.append('-u')
-        
+
         # Add test option if needed
         if self.test_only:
             rsync_cmd.append('-n')
-        
+
         # Add dry-run flag in debug mode
         if self.debug:
             rsync_cmd.append('--dry-run')
             logger.info(f"DEBUG: Running parallel rsync with {self.host_config.threads} threads (dry-run mode)...")
-        
+
         # Use xargs to parallelize exactly like the original bash script:
         # echo ${DISK_LIST}| xargs -n1 |
         # xargs --replace -n1 -I% -P${NR_THREADS} rsync ${RSYNC_OPTIONS} % ${REMOTE_HOST}:${dst_dir}
-        
+
         try:
             # Build the command exactly like the bash version
             files_str = ' '.join(file_list)
             rsync_cmd_str = ' '.join(rsync_cmd)
-            
+
             # Use bash to execute the same xargs pipeline as the original
             bash_cmd = (
                 f'echo "{files_str}" | xargs -n1 | '
                 f'xargs --replace -n1 -I% -P{self.host_config.threads} '
                 f'{rsync_cmd_str} % {self.remote_host}:{dst_dir}/'
             )
-            
+
             # Debug output to see the exact command
             if not self.debug:
                 logger.debug(f"Executing parallel rsync: {bash_cmd}")
                 import sys
                 sys.stdout.flush()  # Ensure output is flushed
-            
+
             # Execute with direct stdout/stderr so we can see rsync progress
             result = subprocess.run(
                 ['bash', '-c', bash_cmd],
@@ -705,9 +733,9 @@ class KVMReplicator:
                 stderr=None,  # Use parent's stderr
                 check=True
             )
-            
+
             return True
-            
+
         except KeyboardInterrupt:
             logger.warning("Interrupted by user during parallel rsync")
             # Try to kill any remaining rsync processes
@@ -720,29 +748,29 @@ class KVMReplicator:
     def process_vm_list(self, vm_list: List[str]) -> List[str]:
         """Process and validate VM list."""
         validated_vms = []
-        
+
         if not vm_list:
             vm_list = self.host_config.default_vm_list.split()
-        
+
         for vm in vm_list:
             vm = vm.replace('.xml', '')  # Remove .xml extension if present
             xml_file = f"{self.kvm_conf_src_dir}/{vm}.xml"
-            
+
             if os.path.exists(xml_file):
                 logger.info(f"Found Domain: {vm} ({xml_file})")
                 validated_vms.append(vm)
-        
+
         return sorted(set(validated_vms))
 
     def sync_vm_configs(self, vm_list: List[str]) -> bool:
         """Sync VM configuration files."""
         if not vm_list:
             return True
-        
+
         logger.info(f"Waiting {self.wait_time} seconds before push to {self.remote_host}...")
         if not self.debug:
             time.sleep(self.wait_time)
-        
+
         success = True
         for vm in vm_list:
             # Check for templated XML
@@ -751,19 +779,19 @@ class KVMReplicator:
                 xml_src = template_xml
             else:
                 xml_src = f"{self.kvm_conf_src_dir}/{vm}.xml"
-            
+
             # Sync XML file (with quiet flag to reduce output noise for small files)
             rsync_cmd = ['rsync', '-q']  # Quiet mode for XML files
             rsync_cmd.extend(self.rsync_options.split())
             if self.host_config.rsync_path:
                 rsync_cmd.extend(['--rsync-path', self.host_config.rsync_path])
-            
+
             # Add dry-run flag in debug mode
             if self.debug:
                 rsync_cmd.append('--dry-run')
-            
+
             rsync_cmd.extend([xml_src, f"{self.remote_host}:{self.kvm_conf_dst_dir}/{vm}.xml"])
-            
+
             try:
                 subprocess.run(rsync_cmd, check=True)
             except subprocess.CalledProcessError:
@@ -771,7 +799,7 @@ class KVMReplicator:
                     logger.error(f"Failed to sync {xml_src}")
                     success = False
                     continue
-            
+
             # Handle domain definition
             if not self.host_config.skip_define:
                 if self.debug:
@@ -781,13 +809,13 @@ class KVMReplicator:
                         # Check if remote XML exists
                         remote_xml = f"{self.kvm_conf_dst_dir}/{vm}.xml"
                         result = self.run_ssh_command(f"PATH=/bin:/opt/bin test -f {remote_xml}", check=False)
-                        
+
                         if result.returncode != 0:
                             logger.info(f"Remote XML does not exist, copying {xml_src}...")
                             if not self.sync_file(xml_src, self.kvm_conf_dst_dir):
                                 success = False
                                 continue
-                        
+
                         # Edit remote file to fix machine types
                         sed_cmd = (
                             f"sed -i "
@@ -796,14 +824,14 @@ class KVMReplicator:
                             f"{remote_xml}"
                         )
                         self.run_ssh_command(sed_cmd)
-                        
+
                         # Define guest on remote machine
                         self.run_ssh_command(f"PATH=/bin:/opt/bin virsh define {remote_xml}")
-                        
+
                     except subprocess.CalledProcessError as e:
                         logger.error(f"Failed to define domain {vm}: {e}")
                         success = False
-        
+
         return success
 
     def main(self):
@@ -813,7 +841,7 @@ class KVMReplicator:
             description='Replicate KVM virtual machines to remote hypervisor',
             formatter_class=argparse.RawDescriptionHelpFormatter
         )
-        
+
         parser.add_argument('-c', '--checksum', action='store_true',
                            help='Force checksumming')
         parser.add_argument('-d', '--debug', action='store_true',
@@ -828,20 +856,22 @@ class KVMReplicator:
                            help="Don't copy, only perform a check test")
         parser.add_argument('-u', '--update', action='store_true',
                            help='Only update if newer files')
+        parser.add_argument('--host', '--dest-host', dest='host', 
+                           help='Override destination host (default: auto-detect from script name)')
         parser.add_argument('-V', '--version', action='version',
                            version=__version__,
                            help='Show version information and exit')
         parser.add_argument('vm_list', nargs='*',
                            help='List of VMs to replicate (default: all configured VMs)')
-        
+
         args = parser.parse_args()
-        
+
         # Check if running as root (after parsing args so --version works)
         if os.getuid() != 0:
             logger.error("This script must be run as root")
             logger.error("Please run: sudo " + " ".join(sys.argv))
             sys.exit(1)
-        
+
         # Set options from arguments
         self.force_checksum = args.checksum
         self.debug = args.debug
@@ -850,64 +880,70 @@ class KVMReplicator:
         self.vxfs_snapshots = not args.novxsnap
         self.test_only = args.test
         self.update_only = args.update
-        
-        # Get remote host from script name
-        remote_host = self.get_remote_host_from_script_name()
+
+        # Determine remote host: CLI override or auto-detect from script name
+        if args.host:
+            remote_host = self.validate_remote_host(args.host)
+            logger.info(f"Using CLI-specified destination host: {remote_host}")
+        else:
+            remote_host = self.get_remote_host_from_script_name()
+            logger.info(f"Auto-detected destination host from script name: {remote_host}")
+
         self.setup_host_config(remote_host)
-        
+
         # Test SSH connectivity first (fail fast) - critical even in debug mode
         self.test_ssh_connectivity()
-        
+
         # Test stat availability on both systems (unless we're skipping stat checks)
         if not self.host_config.skip_stat_check:
             self.test_stat_availability()
-        
+
         # Check remote mount points
         self.check_remote_mount_points()
-        
+
         # Process VM list
         vm_list = self.process_vm_list(args.vm_list)
         logger.info(f"Final VM List: {' '.join(vm_list)}")
-        
+
         if not vm_list:
             logger.warning("No VMs to process")
             return 0
-        
+
         # Main processing loop
         success = True
         for i, src_dir in enumerate(self.kvm_images_src_dirs):
             if not os.path.isdir(src_dir):
                 logger.warning(f"VM Directory: {src_dir} not found!")
                 continue
-            
+
             # Lists to track files to sync
             vms_to_sync = []
             disk_files = []
             nvram_files = []
             snapshot_info = None
-            
+
             try:
                 # Process each VM
                 for vm in vm_list:
                     if self.should_skip_vm(vm):
                         continue
-                    
+
                     xml_file = f"{self.kvm_conf_src_dir}/{vm}.xml"
                     if not os.path.exists(xml_file):
                         continue
-                    
+
                     # Parse VM XML to get disk and NVRAM files
                     vm_disks, vm_nvrams = self.parse_vm_xml(xml_file)
-                    
+
                     vm_needs_sync = False
-                    
+
                     # Check disk files
                     for disk_file in vm_disks:
                         if not os.path.exists(disk_file):
                             continue
-                        
+
                         dst_file = f"{self.host_config.kvm_images_dst_dirs[i]}/{os.path.basename(disk_file)}"
-                        
+
                         if self.force_action or self.host_config.skip_stat_check or not self.stat_available:
                             if not self.stat_available and not self.host_config.skip_stat_check:
                                 logger.debug(f"Stat not available on both systems, syncing {disk_file}")
@@ -917,21 +953,21 @@ class KVMReplicator:
                         else:
                             local_mtime = self.get_file_mtime(disk_file)
                             remote_mtime = self.get_file_mtime(dst_file, remote=True)
-                            
+
                             if local_mtime > remote_mtime:
                                 logger.info(f"*** Will rsync ({vm}) {disk_file} to {self.remote_host}:{self.host_config.kvm_images_dst_dirs[i]}")
                                 disk_files.append(disk_file)
                                 vm_needs_sync = True
                             elif local_mtime == remote_mtime:
                                 logger.info(f"stat() times on {vm} ({disk_file}) are identical, skipping...")
-                    
+
                     # Check NVRAM files
                     for nvram_file in vm_nvrams:
                         if not os.path.exists(nvram_file):
                             continue
-                        
+
                         dst_file = f"{self.host_config.kvm_nvram_dst_dirs[i]}/{os.path.basename(nvram_file)}"
-                        
+
                         if self.force_action or self.host_config.skip_stat_check or not self.stat_available:
                             if not self.stat_available and not self.host_config.skip_stat_check:
                                 logger.debug(f"Stat not available on both systems, syncing {nvram_file}")
@@ -941,28 +977,28 @@ class KVMReplicator:
                         else:
                             local_mtime = self.get_file_mtime(nvram_file)
                             remote_mtime = self.get_file_mtime(dst_file, remote=True)
-                            
+
                             if local_mtime > remote_mtime:
                                 logger.info(f"*** Will rsync ({vm}) {nvram_file} to {self.remote_host}:{self.host_config.kvm_nvram_dst_dirs[i]}")
                                 nvram_files.append(nvram_file)
                                 vm_needs_sync = True
                             elif local_mtime == remote_mtime:
                                 logger.info(f"stat() times on {vm} ({nvram_file}) are identical, skipping...")
-                    
+
                     if vm_needs_sync:
                         vms_to_sync.append(vm)
-                
+
                 logger.info(f"Final VM List: {' '.join(vms_to_sync)}")
                 if disk_files:
                     logger.info(f"Final Disk List: {' '.join(disk_files)}")
                 if nvram_files:
                     logger.info(f"Final NVRAM List: {' '.join(nvram_files)}")
-                
+
                 # Sync VM configurations
                 if vms_to_sync:
                     if not self.sync_vm_configs(vms_to_sync):
                         success = False
-                
+
                 # Create snapshot if needed
                 if (disk_files or nvram_files) and self.vxfs_snapshots:
                     snapshot_info = self.create_vxfs_snapshot(src_dir)
@@ -975,19 +1011,19 @@ class KVMReplicator:
                             kvm_fs_mnt = self.run_command(['df', '--output=target', src_dir]).stdout.strip().split('\n')[1]
                             disk_files = [f.replace(kvm_fs_mnt, vxsnap_mnt) for f in disk_files]
                             nvram_files = [f.replace(kvm_fs_mnt, vxsnap_mnt) for f in nvram_files]
-                
+
                 # Sync disk files with parallel rsync processes
                 if disk_files:
                     logger.info(f"Starting parallel rsync for {len(disk_files)} disk files...")
                     if not self.sync_files_parallel(disk_files, self.host_config.kvm_images_dst_dirs[i]):
                         success = False
-                
+
                 # Sync NVRAM files
                 if nvram_files:
                     for nvram_file in nvram_files:
                         if not self.sync_file(nvram_file, self.host_config.kvm_nvram_dst_dirs[i]):
                             success = False
-                
+
                 # Copy tools (entire script directory like the bash version)
                 script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))  # Get directory of executed script
                 dst_dir = os.path.dirname(self.host_config.kvm_images_dst_dirs[i])
@@ -1000,19 +1036,19 @@ class KVMReplicator:
                     if self.host_config.rsync_path:
                         rsync_cmd.extend(['--rsync-path', self.host_config.rsync_path])
                     rsync_cmd.extend([script_dir, f"{self.remote_host}:{dst_dir}/"])
-                    
+
                     try:
                         subprocess.run(rsync_cmd, check=True)
                     except subprocess.CalledProcessError:
                         logger.error(f"Failed to copy tools to {self.remote_host}:{dst_dir}")
                         success = False
-            
+
             finally:
                 # Clean up snapshot
                 if snapshot_info:
                     vxdg, vxlv, vxsnap_lv, vxsnap_mnt = snapshot_info
                     self.destroy_vxfs_snapshot(vxdg, vxlv, vxsnap_lv, vxsnap_mnt)
-        
+
         # Handle poweroff option
         if self.poweroff:
             if self.debug:
@@ -1025,13 +1061,13 @@ class KVMReplicator:
                     self.run_ssh_command("sync;/opt/VRTSvcs/bin/hastop -local 2>/dev/null", check=False)
                 except:
                     pass
-                
+
                 logger.info(f"Running /sbin/poweroff on remote host {self.remote_host}")
                 try:
                     self.run_ssh_command("sync;/sbin/poweroff", check=False)
                 except:
                     pass
-        
+
         return 0 if success else 1
 
 
