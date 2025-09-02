@@ -1258,7 +1258,10 @@ class RAIDParser:
             elif match := RegexPatterns.FIRMWARE_STATE.match(line):
                 current_disk["state"] = match.group(1).strip()
             elif match := RegexPatterns.INQUIRY_DATA.match(line):
-                current_disk["model"] = match.group(1).strip()
+                # Normalize whitespace in inquiry data immediately
+                raw_model = match.group(1).strip()
+                normalized_model = re.sub(r'\s{2,}', ' ', raw_model)
+                current_disk["model"] = normalized_model
                 current_disk.update(RAIDParser._parse_drive_model(current_disk["model"]))
             elif match := RegexPatterns.MEDIA_TYPE.match(line):
                 media_type = match.group(1).strip()
@@ -1337,7 +1340,9 @@ class RAIDParser:
                             if len(parts) > model_start:
                                 # Combine remaining parts as model, excluding last 2 (Sp Type)
                                 model_parts = parts[model_start:-2] if len(parts) > model_start+2 else parts[model_start:]
-                                current_disk["model"] = " ".join(model_parts)
+                                raw_model = " ".join(model_parts)
+                                # Normalize whitespace in model
+                                current_disk["model"] = re.sub(r'\s{2,}', ' ', raw_model.strip())
 
                             # State - convert perccli abbreviations to full status
                             state_raw = parts[2]
@@ -1371,7 +1376,9 @@ class RAIDParser:
 
                 # Device attributes section
                 elif line_stripped.startswith("Model Number ="):
-                    current_disk["model"] = line_stripped.split("=")[1].strip()
+                    raw_model = line_stripped.split("=")[1].strip()
+                    # Normalize whitespace in model number
+                    current_disk["model"] = re.sub(r'\s{2,}', ' ', raw_model)
                 elif line_stripped.startswith("Coerced size ="):
                     # "Coerced size = 1.818 TB [0xe8d00000 Sectors]"
                     size_part = line_stripped.split("=")[1].split("[")[0].strip()
@@ -1407,6 +1414,8 @@ class RAIDParser:
         # Format: "model firmware serial" (more readable)
         model_parts = []
         if base_model and base_model != "Unknown":
+            # Normalize whitespace in base model
+            base_model = re.sub(r'\s{2,}', ' ', base_model.strip())
             model_parts.append(base_model)
         if firmware:
             model_parts.append(firmware)
@@ -1414,6 +1423,8 @@ class RAIDParser:
             model_parts.append(serial)
 
         model = " ".join(model_parts) if model_parts else "Unknown"
+        # Final normalization to ensure no excessive whitespace
+        model = re.sub(r'\s{2,}', ' ', model.strip())
 
         # If media_type is still generic, try to detect from model name
         if media_type == "HDD":  # Only override if it's the default
@@ -1447,13 +1458,16 @@ class RAIDParser:
 
             # Look for common patterns in inquiry data
             if "Samsung" in ascii_str and "model" not in disk_data:
-                disk_data["model"] = ascii_str.strip()
+                normalized_model = re.sub(r'\s{2,}', ' ', ascii_str.strip())
+                disk_data["model"] = normalized_model
                 disk_data["manufacturer"] = "Samsung"
             elif "WDC" in ascii_str and "model" not in disk_data:
-                disk_data["model"] = ascii_str.strip()
+                normalized_model = re.sub(r'\s{2,}', ' ', ascii_str.strip())
+                disk_data["model"] = normalized_model
                 disk_data["manufacturer"] = "Western Digital"
             elif len(ascii_str.strip()) > 10 and "model" not in disk_data:
-                disk_data["model"] = ascii_str.strip()
+                normalized_model = re.sub(r'\s{2,}', ' ', ascii_str.strip())
+                disk_data["model"] = normalized_model
         except:
             pass  # Ignore parsing errors
 
@@ -1512,8 +1526,10 @@ class RAIDParser:
             elif line.startswith("Inquiry Data:"):
                 # Parse: "S753NS0W812677Y     Samsung SSD 870 EVO 2TB                 SVT03B6Q"
                 inquiry_data = line.split(":", 1)[1].strip()
-                current_disk["model"] = inquiry_data
-                current_disk.update(RAIDParser._parse_drive_model(inquiry_data))
+                # Normalize whitespace in inquiry data immediately
+                normalized_inquiry = re.sub(r'\s{2,}', ' ', inquiry_data)
+                current_disk["model"] = normalized_inquiry
+                current_disk.update(RAIDParser._parse_drive_model(normalized_inquiry))
 
             elif line.startswith("Media Type:"):
                 media_type = line.split(":", 1)[1].strip()
@@ -1553,6 +1569,11 @@ class RAIDParser:
     @staticmethod
     def _create_disk_info(disk_data: dict, controller_id: int, array_id: str, disk_id: str) -> DiskInfo:
         """Create DiskInfo object from parsed data."""
+        # Normalize model whitespace
+        model = disk_data.get("model", "Unknown")
+        if model != "Unknown":
+            model = re.sub(r'\s{2,}', ' ', model.strip())
+
         return DiskInfo(
             controller_id=controller_id,
             array_id=array_id,
@@ -1561,7 +1582,7 @@ class RAIDParser:
             slot_id=disk_data.get("slot_id", ""),
             lsi_id=disk_data.get("lsi_id", "Unknown"),
             media_type=disk_data.get("media_type", "Unknown"),
-            model=disk_data.get("model", "Unknown"),
+            model=model,
             size=disk_data.get("size", "Unknown"),
             state=disk_data.get("state", "Unknown"),
             speed=disk_data.get("speed", "Unknown"),
@@ -1573,6 +1594,11 @@ class RAIDParser:
     @staticmethod
     def _create_pdlist_disk_info(disk_data: dict, controller_id: int) -> DiskInfo:
         """Create DiskInfo object from -PDList parsed data."""
+        # Normalize model whitespace
+        model = disk_data.get("model", "Unknown")
+        if model != "Unknown":
+            model = re.sub(r'\s{2,}', ' ', model.strip())
+
         return DiskInfo(
             controller_id=controller_id,
             array_id=disk_data.get("array_id", "Unknown"),
@@ -1581,7 +1607,7 @@ class RAIDParser:
             slot_id=disk_data.get("slot_id", "Unknown"),
             lsi_id=disk_data.get("lsi_id", "Unknown"),
             media_type=disk_data.get("media_type", "Unknown"),
-            model=disk_data.get("model", "Unknown"),
+            model=model,
             size=disk_data.get("size", "Unknown"),
             state=disk_data.get("state", "Unknown"),
             speed=disk_data.get("speed", "Unknown"),
@@ -1594,7 +1620,8 @@ class RAIDParser:
     def _parse_drive_model(model: str) -> dict:
         """Parse manufacturer and serial from drive model string."""
         original_model = model
-        model = re.sub(r" +", " ", model)
+        # Normalize all whitespace (not just spaces)
+        model = re.sub(r'\s{2,}', ' ', model.strip())
 
         # Handle Seagate drives specially
         seagate_match = re.match(r"(\w{8})(ST\w+)(?:-(\w{6}))?(?:\s+(\w+))", model)
