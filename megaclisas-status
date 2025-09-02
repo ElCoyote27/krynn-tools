@@ -9,12 +9,21 @@ Modernized Python implementation
 A tool to monitor RAID controller status using MegaCLI, perccli, or storcli.
 """
 
-# $Id: megaclisas-status,v 2.14 2025/08/28 16:00:00 flexible-args Exp $
-__version__ = "megaclisas-status,v 2.14 2025/08/28 16:00:00 flexible-args Exp"
+# $Id: megaclisas-status,v 2.15 2025/09/02 12:00:00 whitespace-fix Exp $
+__version__ = "megaclisas-status,v 2.15 2025/09/02 12:00:00 whitespace-fix Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v2.15 (2025-09-02): Drive model whitespace normalization fix
+#   - Fixed excessive whitespace in Drive Model column reported by community users
+#   - Added comprehensive whitespace normalization using re.sub(r'\s{2,}', ' ') across all parsing paths
+#   - Normalizes whitespace in inquiry data, model numbers, and combined model fields
+#   - Handles firmware-reported fields with inconsistent padding and spacing
+#   - Ensures consistent Drive Model display formatting across all controller types
+#   - Code cleanup: replaced whitespace-only lines with proper blank lines
+#   - Tested and validated on multiple systems (daltigoth, palanthas)
 #
 # v2.14 (2025-08-28): Flexible tool path arguments and improved help text
 #   - Added support for --perccli-path and --tool-path as aliases for --megacli-path
