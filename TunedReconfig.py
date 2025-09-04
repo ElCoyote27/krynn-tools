@@ -7,12 +7,18 @@ A utility to quickly switch between common tuned profiles:
 - virtual-host intel-sst
 """
 
-# $Id: TunedReconfig.py 1.00 2025/01/27 00:00:00 initial-release Exp $
-__version__ = "TunedReconfig.py 1.00 2025/01/27 00:00:00 initial-release Exp"
+# $Id: TunedReconfig.py 1.01 2025/01/27 00:00:00 cron-compatibility Exp $
+__version__ = "TunedReconfig.py 1.01 2025/01/27 00:00:00 cron-compatibility Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.01 (2025-01-27): Cron compatibility fixes
+#   - Fixed PATH issues by using full path detection for tuned-adm
+#   - Conditional sudo usage - skip sudo when already running as root
+#   - Enhanced error messages with path information
+#   - Improved cron environment compatibility
 #
 # v1.00 (2025-01-27): Initial release
 #   - Simple profile switching between powersave and virtual-host intel-sst
@@ -25,6 +31,8 @@ __version__ = "TunedReconfig.py 1.00 2025/01/27 00:00:00 initial-release Exp"
 import subprocess
 import sys
 import argparse
+import os
+import shutil
 
 PROFILES = {
     'p': 'powersave',
@@ -36,10 +44,44 @@ PROFILES = {
     'intel': 'virtual-host intel-sst'
 }
 
+def find_tuned_adm():
+    """Find the full path to tuned-adm binary"""
+    # First try shutil.which with current PATH
+    tuned_path = shutil.which('tuned-adm')
+    if tuned_path:
+        return tuned_path
+    
+    # If not found, check common locations
+    common_paths = ['/usr/sbin/tuned-adm', '/sbin/tuned-adm', '/usr/bin/tuned-adm']
+    for path in common_paths:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    
+    # Last resort: return the name and hope it's in PATH
+    return 'tuned-adm'
+
+def is_root():
+    """Check if running as root"""
+    return os.getuid() == 0
+
+def setup_cron_environment():
+    """Set up minimal environment for cron execution"""
+    # Ensure basic PATH is available for cron
+    if 'PATH' not in os.environ or os.environ['PATH'] == '':
+        os.environ['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+    
+    # Add common sbin directories if not present
+    current_path = os.environ.get('PATH', '')
+    sbin_paths = ['/usr/sbin', '/sbin', '/usr/local/sbin']
+    for sbin_path in sbin_paths:
+        if sbin_path not in current_path:
+            os.environ['PATH'] = f"{sbin_path}:{os.environ['PATH']}"
+
 def get_current_profile():
     """Get the currently active tuned profile"""
+    tuned_adm = find_tuned_adm()
     try:
-        result = subprocess.run(['tuned-adm', 'active'], 
+        result = subprocess.run([tuned_adm, 'active'], 
                               capture_output=True, text=True, check=True)
         # Output format: "Current active profile: <profile>"
         if 'Current active profile:' in result.stdout:
@@ -48,25 +90,37 @@ def get_current_profile():
     except subprocess.CalledProcessError:
         return "unknown"
     except FileNotFoundError:
-        print("Error: tuned-adm not found. Is tuned installed?")
+        print(f"Error: tuned-adm not found at {tuned_adm}. Is tuned installed?")
         sys.exit(1)
 
 def set_profile(profile, quiet=False):
-    """Set the tuned profile using sudo"""
+    """Set the tuned profile, using sudo only if not already root"""
+    tuned_adm = find_tuned_adm()
+    
+    # Build command - use sudo only if not already root
+    if is_root():
+        cmd = [tuned_adm, 'profile', profile]
+    else:
+        cmd = ['sudo', tuned_adm, 'profile', profile]
+    
     try:
-        subprocess.run(['sudo', 'tuned-adm', 'profile', profile], check=True)
+        subprocess.run(cmd, check=True)
         if not quiet:
             print(f"Successfully switched to profile: {profile}")
     except subprocess.CalledProcessError as e:
         print(f"Error switching to profile '{profile}': {e}")
         sys.exit(1)
     except FileNotFoundError:
-        print("Error: sudo or tuned-adm not found")
+        missing_cmd = 'sudo' if not is_root() else tuned_adm
+        print(f"Error: {missing_cmd} not found")
         sys.exit(1)
 
 def main():
+    # Set up environment for cron compatibility
+    setup_cron_environment()
+    
     parser = argparse.ArgumentParser(
-        description='Switch between tuned profiles',
+        description='Switch between tuned profiles (cron-compatible)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Available profiles:
@@ -78,6 +132,10 @@ Examples:
   TunedReconfig.py v      Switch to virtual-host intel-sst
   TunedReconfig.py -q p   Switch to powersave silently
   TunedReconfig.py        Show current profile and toggle options
+
+Cron usage:
+  15 8 * * * /usr/local/sbin/TunedReconfig.py -q v  # Virtual-host at 8:15 AM
+  05 23 * * * /usr/local/sbin/TunedReconfig.py -q p # Powersave at 11:05 PM
         """)
     parser.add_argument('profile', nargs='?', 
                        help='Profile to switch to (p/v or full name)')
