@@ -7,20 +7,20 @@ A utility to quickly switch between common tuned profiles:
 - virtual-host intel-sst
 """
 
-# $Id: TunedReconfig.py 1.01 2025/01/27 00:00:00 cron-compatibility Exp $
-__version__ = "TunedReconfig.py 1.01 2025/01/27 00:00:00 cron-compatibility Exp"
+# $Id: TunedReconfig.py 1.01 2025/09/04 00:00:00 cron-compatibility Exp $
+__version__ = "TunedReconfig.py 1.01 2025/09/04 00:00:00 cron-compatibility Exp"
 
 #
 # VERSION HISTORY:
 # ================
 #
-# v1.01 (2025-01-27): Cron compatibility fixes
+# v1.01 (2025-09-04): Cron compatibility fixes
 #   - Fixed PATH issues by using full path detection for tuned-adm
 #   - Conditional sudo usage - skip sudo when already running as root
 #   - Enhanced error messages with path information
 #   - Improved cron environment compatibility
 #
-# v1.00 (2025-01-27): Initial release
+# v1.00 (2025-09-04): Initial release
 #   - Simple profile switching between powersave and virtual-host intel-sst
 #   - Support for short aliases (p/v) and full profile names
 #   - Uses sudo for privilege escalation with tuned-adm
