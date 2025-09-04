@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
 #
-# $Id: lsPCISpeeds.py,v 1.05 2025/01/27 05:00:00 added-downgraded-filter Exp $
+# $Id: lsPCISpeeds.py,v 1.07 2025/01/27 07:00:00 fixed-piped-output Exp $
 #
 # PCI Device Speed Analyzer
 # Shows PCI devices with max speeds, negotiated speeds, and lane configuration
 # Uses lspci -vvv output to extract PCI Express capability information
 
-__version__ = "lsPCISpeeds.py 1.05 2025/01/27 05:00:00 added-downgraded-filter Exp"
+__version__ = "lsPCISpeeds.py 1.07 2025/01/27 07:00:00 fixed-piped-output Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.07 (2025-01-27): Fixed piped output truncation
+#   - Detected when output is piped/redirected and use generous width (200 chars)
+#   - Prevents description truncation when using grep, less, or other pipe commands
+#   - Terminal output still uses actual terminal width for optimal display
+#
+# v1.06 (2025-01-27): Code cleanup and whitespace normalization
+#   - Cleaned up any lines containing only whitespace characters
+#   - Replaced whitespace-only lines with proper blank lines for consistency
+#   - Improved code formatting standards matching other tools in the suite
 #
 # v1.05 (2025-01-27): Added downgraded device filtering
 #   - Added --downgraded option to show only devices running slower than max speed
@@ -276,7 +286,12 @@ class PCISpeedAnalyzer:
         return downgraded
 
     def get_terminal_width(self) -> int:
-        """Get terminal width, default to 120 if unable to detect"""
+        """Get terminal width, with intelligent defaults for piped output"""
+        # Check if stdout is connected to a terminal
+        if not sys.stdout.isatty():
+            # Output is being piped/redirected, use a generous width
+            return 200
+
         try:
             return shutil.get_terminal_size().columns
         except:
@@ -287,7 +302,7 @@ class PCISpeedAnalyzer:
                     return int(cols)
             except:
                 pass
-        return 120  # Default fallback
+        return 120  # Default fallback for terminal
 
     def display_devices(self, devices: List[Dict], show_all: bool = False, show_downgraded: bool = False):
         """Display PCI devices in a formatted table"""
