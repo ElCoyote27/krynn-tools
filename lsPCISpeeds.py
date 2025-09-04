@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 #
-# $Id: lsPCISpeeds.py,v 1.07 2025/01/27 07:00:00 fixed-piped-output Exp $
+# $Id: lsPCISpeeds.py,v 1.08 2025/01/27 08:00:00 enhanced-downgrade-detection Exp $
 #
 # PCI Device Speed Analyzer
 # Shows PCI devices with max speeds, negotiated speeds, and lane configuration
 # Uses lspci -vvv output to extract PCI Express capability information
 
-__version__ = "lsPCISpeeds.py 1.07 2025/01/27 07:00:00 fixed-piped-output Exp"
+__version__ = "lsPCISpeeds.py 1.08 2025/01/27 08:00:00 enhanced-downgrade-detection Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.08 (2025-01-27): Enhanced downgrade detection
+#   - Added lane downgrade detection (x16 max running at x8/x4, etc.)
+#   - Added lspci verification by checking for explicit downgrade indicators
+#   - Stores raw lspci output per device for pattern matching
+#   - More accurate identification of performance bottlenecks
 #
 # v1.07 (2025-01-27): Fixed piped output truncation
 #   - Detected when output is piped/redirected and use generous width (200 chars)
@@ -162,6 +168,7 @@ class PCISpeedAnalyzer:
         devices = []
         current_device = None
         in_express_capability = False
+        current_device_lines = []
 
         lines = lspci_output.split('\n')
 
@@ -173,6 +180,7 @@ class PCISpeedAnalyzer:
             if device_match:
                 # Save previous device if it exists
                 if current_device:
+                    current_device['raw_output'] = '\n'.join(current_device_lines)
                     devices.append(current_device)
 
                 # Start new device
@@ -186,10 +194,16 @@ class PCISpeedAnalyzer:
                     'max_lanes': 'N/A', 
                     'cur_speed': 'N/A',
                     'cur_lanes': 'N/A',
-                    'has_express': False
+                    'has_express': False,
+                    'raw_output': ''
                 }
+                current_device_lines = [line]
                 in_express_capability = False
                 continue
+
+            # Store all lines for this device
+            if current_device:
+                current_device_lines.append(line)
 
             if not current_device:
                 continue
@@ -223,6 +237,7 @@ class PCISpeedAnalyzer:
 
         # Don't forget the last device
         if current_device:
+            current_device['raw_output'] = '\n'.join(current_device_lines)
             devices.append(current_device)
 
         return devices
@@ -268,8 +283,38 @@ class PCISpeedAnalyzer:
             return float(match.group(1))
         return 0.0
 
+    def parse_lane_value(self, lane_str: str) -> int:
+        """Parse lane string to numeric value for comparison (e.g., 'x16' -> 16)"""
+        if lane_str == 'N/A':
+            return 0
+        # Extract numeric part from strings like "x16", "x8", "x4", "x1"
+        import re
+        match = re.match(r'x(\d+)', lane_str)
+        if match:
+            return int(match.group(1))
+        return 0
+
+    def check_lspci_downgrade_indicators(self, raw_output: str) -> bool:
+        """Check if lspci output contains indicators of downgrading"""
+        # Look for common downgrade indicators in lspci output
+        downgrade_patterns = [
+            r'downgraded',
+            r'Width.*downgraded',
+            r'Speed.*downgraded', 
+            r'training.*failed',
+            r'link.*train.*error',
+            r'negotiat.*fail',
+            r'Width.*x\d+.*\(downgraded\)',
+            r'Speed.*GT/s.*\(downgraded\)'
+        ]
+
+        for pattern in downgrade_patterns:
+            if re.search(pattern, raw_output, re.IGNORECASE):
+                return True
+        return False
+
     def filter_downgraded_devices(self, devices: List[Dict]) -> List[Dict]:
-        """Filter to only include devices where negotiated speed < max speed"""
+        """Filter to only include devices where negotiated < max (speed or lanes) or lspci indicates downgrade"""
         downgraded = []
         for device in devices:
             # Skip devices without speed information
@@ -278,9 +323,24 @@ class PCISpeedAnalyzer:
 
             max_speed = self.parse_speed_value(device['max_speed'])
             cur_speed = self.parse_speed_value(device['cur_speed'])
+            max_lanes = self.parse_lane_value(device['max_lanes'])
+            cur_lanes = self.parse_lane_value(device['cur_lanes'])
 
-            # Consider device downgraded if current speed is less than max speed
+            is_downgraded = False
+
+            # Check speed downgrading
             if max_speed > 0 and cur_speed > 0 and cur_speed < max_speed:
+                is_downgraded = True
+
+            # Check lane downgrading
+            if max_lanes > 0 and cur_lanes > 0 and cur_lanes < max_lanes:
+                is_downgraded = True
+
+            # Check if lspci explicitly mentions downgrading
+            if self.check_lspci_downgrade_indicators(device.get('raw_output', '')):
+                is_downgraded = True
+
+            if is_downgraded:
                 downgraded.append(device)
 
         return downgraded
@@ -393,7 +453,7 @@ def main():
 Examples:
   %(prog)s                    # Show PCI Express devices with speed info
   %(prog)s --all              # Show all PCI devices (including non-Express and N/A speeds)
-  %(prog)s --downgraded       # Show only devices running slower than max speed
+  %(prog)s --downgraded       # Show only devices with speed/lane downgrades
   %(prog)s --debug            # Show with debug information
 
 Note: By default, only PCI Express devices with speed information are shown.
