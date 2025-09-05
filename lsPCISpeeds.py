@@ -1,67 +1,67 @@
 #!/usr/bin/env python3
 #
-# $Id: lsPCISpeeds.py,v 1.09 2025/01/27 12:00:00 python36-compatibility-fix Exp $
+# $Id: lsPCISpeeds.py,v 1.09 2025/09/05 12:00:00 python36-compatibility-fix Exp $
 #
 # PCI Device Speed Analyzer
 # Shows PCI devices with max speeds, negotiated speeds, and lane configuration
 # Uses lspci -vvv output to extract PCI Express capability information
 
-__version__ = "lsPCISpeeds.py 1.09 2025/01/27 12:00:00 python36-compatibility-fix Exp"
+__version__ = "lsPCISpeeds.py 1.09 2025/09/05 12:00:00 python36-compatibility-fix Exp"
 
 #
 # VERSION HISTORY:
 # ================
 #
-# v1.09 (2025-01-27): Python 3.6+ compatibility fix
+# v1.09 (2025-09-05): Python 3.6+ compatibility fix
 #   - Fixed subprocess.run() capture_output parameter for Python 3.6 compatibility
 #   - Fixed subprocess.run() text=True parameter (replaced with universal_newlines=True)
 #   - Replaced capture_output=True with stdout/stderr=subprocess.PIPE for RHEL8 support
 #   - Now fully compatible with Python 3.6+ (tested on RHEL8 Python 3.6)
 #
-# v1.08 (2025-01-27): Enhanced downgrade detection
+# v1.08 (2025-09-02): Enhanced downgrade detection
 #   - Added lane downgrade detection (x16 max running at x8/x4, etc.)
 #   - Added lspci verification by checking for explicit downgrade indicators
 #   - Stores raw lspci output per device for pattern matching
 #   - More accurate identification of performance bottlenecks
 #
-# v1.07 (2025-01-27): Fixed piped output truncation
+# v1.07 (2025-09-02): Fixed piped output truncation
 #   - Detected when output is piped/redirected and use generous width (200 chars)
 #   - Prevents description truncation when using grep, less, or other pipe commands
 #   - Terminal output still uses actual terminal width for optimal display
 #
-# v1.06 (2025-01-27): Code cleanup and whitespace normalization
+# v1.06 (2025-09-02): Code cleanup and whitespace normalization
 #   - Cleaned up any lines containing only whitespace characters
 #   - Replaced whitespace-only lines with proper blank lines for consistency
 #   - Improved code formatting standards matching other tools in the suite
 #
-# v1.05 (2025-01-27): Added downgraded device filtering
+# v1.05 (2025-09-02): Added downgraded device filtering
 #   - Added --downgraded option to show only devices running slower than max speed
 #   - Implemented speed parsing and comparison logic for performance analysis
 #   - Perfect for identifying bottlenecks where devices aren't reaching full potential
 #   - Enhanced help text with performance troubleshooting guidance
 #
-# v1.04 (2025-01-27): Simplified command-line options
+# v1.04 (2025-09-02): Simplified command-line options
 #   - Removed redundant --full option
 #   - Made --all truly show everything (all device types and N/A speeds)
 #   - Cleaner, less confusing interface with only two modes: default and --all
 #
-# v1.03 (2025-01-27): Added full device filtering option
+# v1.03 (2025-09-02): Added full device filtering option
 #   - Added --full option to show devices with N/A speeds
 #   - Enhanced filtering logic for better control over output
 #   - Improved help documentation with clearer examples
 #
-# v1.02 (2025-01-27): Clean device descriptions
+# v1.02 (2025-09-02): Clean device descriptions
 #   - Fixed parsing of revision and prog-if information
 #   - Removes clutter like "(rev 11)" and "(prog-if 00 [Normal decode])"
 #   - Cleaner, more readable device descriptions
 #
-# v1.01 (2025-01-27): Improved output formatting
+# v1.01 (2025-09-02): Improved output formatting
 #   - Added device type abbreviations (VGA, NVMe, Bridge, Ethernet, etc.)
 #   - Enhanced terminal width detection and dynamic column sizing
 #   - Better handling of long device descriptions
 #   - Reduced output truncation issues
 #
-# v1.00 (2025-01-27): Initial release
+# v1.00 (2025-09-02): Initial release
 #   - PCI Express speed and lane analysis from lspci -vvv output
 #   - Automatic privilege escalation when needed
 #   - Extracts max speeds, negotiated speeds, and lane widths
