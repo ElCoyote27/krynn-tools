@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 #
-# $Id: lsPCISpeeds.py,v 1.08 2025/01/27 08:00:00 enhanced-downgrade-detection Exp $
+# $Id: lsPCISpeeds.py,v 1.09 2025/01/27 12:00:00 python36-compatibility-fix Exp $
 #
 # PCI Device Speed Analyzer
 # Shows PCI devices with max speeds, negotiated speeds, and lane configuration
 # Uses lspci -vvv output to extract PCI Express capability information
 
-__version__ = "lsPCISpeeds.py 1.08 2025/01/27 08:00:00 enhanced-downgrade-detection Exp"
+__version__ = "lsPCISpeeds.py 1.09 2025/01/27 12:00:00 python36-compatibility-fix Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.09 (2025-01-27): Python 3.6+ compatibility fix
+#   - Fixed subprocess.run() capture_output parameter for Python 3.6 compatibility
+#   - Fixed subprocess.run() text=True parameter (replaced with universal_newlines=True)
+#   - Replaced capture_output=True with stdout/stderr=subprocess.PIPE for RHEL8 support
+#   - Now fully compatible with Python 3.6+ (tested on RHEL8 Python 3.6)
 #
 # v1.08 (2025-01-27): Enhanced downgrade detection
 #   - Added lane downgrade detection (x16 max running at x8/x4, etc.)
@@ -133,7 +139,7 @@ class PCISpeedAnalyzer:
         self.debug_print("Trying lspci without elevated privileges...")
         try:
             result = subprocess.run([self.lspci_path, '-vvv'], 
-                                  capture_output=True, text=True, timeout=30)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=30)
             if result.returncode == 0:
                 # Check if we got PCI Express capability information
                 if 'LnkCap:' in result.stdout and 'LnkSta:' in result.stdout:
@@ -147,7 +153,7 @@ class PCISpeedAnalyzer:
 
                     try:
                         result = subprocess.run(['sudo', self.lspci_path, '-vvv'], 
-                                              capture_output=True, text=True, timeout=60)  # Allow more time for sudo password
+                                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=60)  # Allow more time for sudo password
                         if result.returncode == 0:
                             self.debug_print("Got enhanced PCI data with sudo")
                             return result.stdout
@@ -356,7 +362,7 @@ class PCISpeedAnalyzer:
             return shutil.get_terminal_size().columns
         except:
             try:
-                result = subprocess.run(['stty', 'size'], capture_output=True, text=True)
+                result = subprocess.run(['stty', 'size'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
                 if result.returncode == 0:
                     _, cols = result.stdout.strip().split()
                     return int(cols)
