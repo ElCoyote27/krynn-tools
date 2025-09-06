@@ -43,7 +43,7 @@ start() {
 	RETVAL=0
 	dellfancommon 2>&1 |sed -e '/^\r.*$/d' -e '/^$/d' -e '/Exit Code:/d'
 
-	
+
 	GOOD_MSG="(II) Enabled Manual fan Control on host $(uname -n)"
 	case "$(uname -n)" in
 		thorbardin)
@@ -215,17 +215,17 @@ case "$1" in
 	    start
 	    RETVAL=$?
 	    ;;
-	
+
 	stop)
 	    stop
 	    RETVAL=$?
 	    ;;
-	
+
 	auto)
 	    auto
 	    RETVAL=$?
 	    ;;
-	
+
 	status)
 	    status
 	    RETVAL=$?
@@ -242,7 +242,7 @@ case "$1" in
 	    stop
 	    start
 	    ;;
-	
+
 	*)
 	    echo $"Usage: $0 {start|stop|auto|restart|status}"
 	    exit 1

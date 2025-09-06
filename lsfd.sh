@@ -25,16 +25,16 @@ FDC_SCRIPT="$0"
 
 
 findfullpath () {
- 
+
     # Calling function without bin to find
     [ $# -ne 1 ] && return 1
- 
+
     MYBIN="$1"
-     
+
     # If var MYPATH not defined, use default PATH
     MYPATH=${MYPATH:-$PATH}
     BINPATH=""
- 
+
     OIFS="$IFS"
     IFS=":"
     for path in $MYPATH; do
@@ -45,10 +45,10 @@ findfullpath () {
         }
     done
     IFS="$OIFS"
-     
+
     # didnt find the binary
     [ -z "$BINPATH" ] && return 1
-     
+
     # Binary found. echo the path and return success
     echo $BINPATH
     return 0
@@ -75,7 +75,7 @@ MYOS=$($BIN_UNAME);
     BIN_PLIMIT="$(findfullpath plimit)" || MYERR="$MYERR plimit"
 	# Nawk for replacement on solaris
 	BIN_AWK="$(findfullpath nawk)" || MYERR="$MYERR nawk"
-    
+
 	# Non mandatory binary : pargs
 	BIN_PARGS="$(findfullpath pargs)"
 
@@ -102,7 +102,7 @@ getuid () {
 	# Query the base for user data. return if not found
 	STR="$($BIN_GETENT passwd $USER 2>/dev/null)"
 	[ $? -ne 0 ] && return $?
-	
+
 	echo $STR|$BIN_AWK 'BEGIN{FS=":";}{print $3}'
 	return $?
 }
@@ -116,7 +116,7 @@ getusername () {
 	# Query the base for user data. return if not found
 	STR="$($BIN_GETENT passwd $USER 2>/dev/null)"
 	[ $? -ne 0 ] && return $?
-	
+
 	echo $STR|$BIN_AWK 'BEGIN{FS=":";}{print $1}'
 	return $?
 }
@@ -163,7 +163,7 @@ typeset -i RETURN=0
 typeset -i DISP_THRESHOLD=30
 
 usage () {
-	
+
 	echo "Unix Filedescriptor usage checker v$FDC_VERSION"
 	echo
 	echo "Usage : $FDC_SCRIPT [options]"
@@ -194,7 +194,7 @@ usage () {
 # Options parsing
 while getopts ":t:u:mrdhq" opt; do
 	case $opt in
-		
+
 		# Set threshold value
 		t)
 			# Check argument presence
@@ -202,20 +202,20 @@ while getopts ":t:u:mrdhq" opt; do
 				ERR="${ERR}Threshold value is mandatory\n"
 				continue
 			}
-			
+
 			# Check integer validity
 			typeset -i TMP="$OPTARG"
 			[ "$OPTARG" != "$TMP" ] && {
 				ERR="${ERR}Threshold value must be a number\n"
 				continue
 			}
-			
+
 			# Check range value
 			[ $TMP -gt 100 -o $TMP -lt 0 ] && {
 				ERR="${ERR}Threshold must be in range 0-100\n"
 				continue
 			}
-			
+
 			# All test ok, set the value
 			DISP_THRESHOLD=$TMP
 			;;
@@ -243,7 +243,7 @@ while getopts ":t:u:mrdhq" opt; do
 		d)
 			MODE_DETAILED=1
 			;;
-		
+
 		# Return mode
 		r)
 			MODE_RETURN=1
@@ -303,7 +303,7 @@ typeset -i NB_LINES=0
 
 # Display user mode 
 [ $MODE_USER -ne 0 ] && {
-	
+
 	BLKAWK_BIN_PS="$BIN_PS -o args= -p"
 	BLKAWK_LIM_SUNOS=""
 	BLKAWK_LIM_LINUX=""
@@ -341,8 +341,8 @@ typeset -i NB_LINES=0
 				close(file);
 				';
 	}
-	
-	
+
+
 	getuserprocess $USER | $BIN_AWK \
 		-v mdet=$MODE_DETAILED 		\
 		-v mret=$MODE_RETURN 		\
@@ -365,7 +365,7 @@ typeset -i NB_LINES=0
 				tfdcnt[$3]++;
 			close(cmd);
 			FS=" ";
-			
+
 			# If in multi lines modes, get all processes in one cmd
 			if (!mmax) {
 				cmd="'"$BIN_PS"' -ed -o pid= -o args="
@@ -375,7 +375,7 @@ typeset -i NB_LINES=0
 					targs[pid]=$0
 				}
 			}
-			
+
 			# Under SunOS, the plimit block will go here
 			'"$BLKAWK_LIM_SUNOS"'
 			# End SunOS plimit block
@@ -396,17 +396,17 @@ typeset -i NB_LINES=0
 				# Under Linux, the ulimit block will go here
 				'"$BLKAWK_LIM_LINUX"'
 				# End Linux ulimit block
-				
+
 				cnt=tfdcnt[pid];
 				lims=tlims[pid];
 				limh=tlimh[pid];
 				# Rewrite for unlimited values
 				if(lims+0==0) lims=2147483647;
 				if(limh+0==0) limh=2147483647;
-				
+
 				pct=int(cnt/lims*100);
-				
-				
+
+
 				# Max mode, bufferize
 				if (mmax) {
 					if(pct>=maxpct && cnt>maxcnt) {
@@ -417,17 +417,17 @@ typeset -i NB_LINES=0
 						maxlimh=limh;
 					}
 				}
-				
+
 				# Display all (detailed) or threshold reached
 				else if (mdet || pct >= thres) {
 					printf "%5d %6d %6d %6d %3d%% %s\n", pid,cnt,lims,limh,pct"%",targs[pid];
-				
+
 					# Increment the ps counter
 					pcnt++;
 				}
 
 			}
-			
+
 			# Max mode, display only the biggest process
 			if (mmax) {
 				cmd="'"$BLKAWK_BIN_PS"' "maxpid;
@@ -439,14 +439,14 @@ typeset -i NB_LINES=0
 			if (!pcnt && !quiet) {
 				print "No process has a FD usage higher than "thres;
 			}
-			
+
 			# Return mode, return the number of lines
 			if (mret) {
 				exit(pcnt);
 			}
 
 		}';
-	
+
 	exit $?
 
 }

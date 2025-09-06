@@ -66,12 +66,12 @@ class NVMeHealthAnalyzer:
         """Locate nvme and smartctl tools"""
         # Find nvme tool
         common_nvme_paths = ['/usr/sbin/nvme', '/usr/bin/nvme', '/sbin/nvme']
-        
+
         for path in common_nvme_paths:
             if os.path.exists(path) and os.access(path, os.X_OK):
                 self.nvme_path = path
                 break
-        
+
         if not self.nvme_path:
             nvme_path = shutil.which('nvme')
             if nvme_path:
@@ -79,12 +79,12 @@ class NVMeHealthAnalyzer:
 
         # Find smartctl tool
         common_smartctl_paths = ['/usr/sbin/smartctl', '/usr/bin/smartctl', '/sbin/smartctl']
-        
+
         for path in common_smartctl_paths:
             if os.path.exists(path) and os.access(path, os.X_OK):
                 self.smartctl_path = path
                 break
-        
+
         if not self.smartctl_path:
             smartctl_path = shutil.which('smartctl')
             if smartctl_path:
@@ -112,11 +112,11 @@ class NVMeHealthAnalyzer:
     def discover_nvme_devices(self) -> List[str]:
         """Discover NVMe devices in the system"""
         devices = []
-        
+
         # Look for NVMe devices in /dev
         nvme_pattern = '/dev/nvme[0-9]*n[0-9]*'
         potential_devices = glob.glob(nvme_pattern)
-        
+
         for device in potential_devices:
             # Only include namespace devices (nvme0n1, nvme1n1, etc.), not controllers
             if re.match(r'/dev/nvme\d+n\d+$', device):
@@ -126,12 +126,12 @@ class NVMeHealthAnalyzer:
                     self.debug_print(f"Found NVMe device: {device}")
                 elif not os.path.exists(device):
                     self.debug_print(f"Device {device} does not exist, skipping")
-        
+
         # Sort devices naturally
         devices.sort(key=lambda x: [int(n) if n.isdigit() else n for n in re.split(r'(\d+)', x)])
-        
+
         self.debug_print(f"Discovered {len(devices)} total NVMe devices: {devices}")
-        
+
         if not devices:
             self.debug_print("No NVMe devices found. Checking /dev/ directory...")
             # Debug: Show what's actually in /dev that looks NVMe-related
@@ -143,22 +143,22 @@ class NVMeHealthAnalyzer:
                     self.debug_print("No /dev/nvme* entries found at all")
             except Exception as e:
                 self.debug_print(f"Error checking /dev directory: {e}")
-        
+
         return devices
 
     def run_nvme_smart_log(self, device: str) -> Optional[str]:
         """Run nvme smart-log on a device"""
         if not self.nvme_path:
             return None
-            
+
         self.debug_print(f"Running nvme smart-log on {device}")
-        
+
         try:
             # Try without sudo first
             result = subprocess.run([self.nvme_path, 'smart-log', device],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
                                   universal_newlines=True, timeout=30)
-            
+
             if result.returncode == 0:
                 self.debug_print(f"Got nvme smart-log data for {device}")
                 return result.stdout
@@ -171,10 +171,10 @@ class NVMeHealthAnalyzer:
                 if result.returncode == 0:
                     self.debug_print(f"Got nvme smart-log data with sudo for {device}")
                     return result.stdout
-        
+
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
             pass
-        
+
         self.debug_print(f"Failed to get nvme smart-log data for {device}")
         return None
 
@@ -182,15 +182,15 @@ class NVMeHealthAnalyzer:
         """Run nvme id-ctrl on a device to get controller information including firmware"""
         if not self.nvme_path:
             return None
-            
+
         self.debug_print(f"Running nvme id-ctrl on {device}")
-        
+
         try:
             # Try without sudo first
             result = subprocess.run([self.nvme_path, 'id-ctrl', device],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
                                   universal_newlines=True, timeout=30)
-            
+
             if result.returncode == 0:
                 self.debug_print(f"Got nvme id-ctrl data for {device}")
                 return result.stdout
@@ -203,10 +203,10 @@ class NVMeHealthAnalyzer:
                 if result.returncode == 0:
                     self.debug_print(f"Got nvme id-ctrl data with sudo for {device}")
                     return result.stdout
-        
+
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
             pass
-        
+
         self.debug_print(f"Failed to get nvme id-ctrl data for {device}")
         return None
 
@@ -214,15 +214,15 @@ class NVMeHealthAnalyzer:
         """Run nvme id-ns -H on a device to get namespace information including LBA size"""
         if not self.nvme_path:
             return None
-            
+
         self.debug_print(f"Running nvme id-ns -H on {device}")
-        
+
         try:
             # Try without sudo first (with -H for human readable format)
             result = subprocess.run([self.nvme_path, 'id-ns', '-H', device],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
                                   universal_newlines=True, timeout=30)
-            
+
             if result.returncode == 0:
                 self.debug_print(f"Got nvme id-ns -H data for {device}")
                 return result.stdout
@@ -235,10 +235,10 @@ class NVMeHealthAnalyzer:
                 if result.returncode == 0:
                     self.debug_print(f"Got nvme id-ns -H data with sudo for {device}")
                     return result.stdout
-        
+
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
             pass
-        
+
         self.debug_print(f"Failed to get nvme id-ns -H data for {device}")
         return None
 
@@ -246,15 +246,15 @@ class NVMeHealthAnalyzer:
         """Run smartctl on a device"""
         if not self.smartctl_path:
             return None
-            
+
         self.debug_print(f"Running smartctl on {device}")
-        
+
         try:
             # Try without sudo first
             result = subprocess.run([self.smartctl_path, '-a', device],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                   universal_newlines=True, timeout=30)
-            
+
             if result.returncode == 0 or result.returncode == 4:  # 4 is warning, still usable
                 self.debug_print(f"Got smartctl data for {device}")
                 return result.stdout
@@ -267,27 +267,27 @@ class NVMeHealthAnalyzer:
                 if result.returncode == 0 or result.returncode == 4:
                     self.debug_print(f"Got smartctl data with sudo for {device}")
                     return result.stdout
-        
+
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
             pass
-        
+
         self.debug_print(f"Failed to get smartctl data for {device}")
         return None
 
     def parse_nvme_smart_log(self, smart_output: str) -> Dict[str, str]:
         """Parse nvme smart-log output"""
         data = {}
-        
+
         if not smart_output:
             return data
-        
+
         self.debug_print("Parsing nvme smart-log output for wear information")
-        
+
         # Parse temperature
         temp_match = re.search(r'temperature\s*:\s*(\d+)\s*Celsius', smart_output, re.IGNORECASE)
         if temp_match:
             data['temperature'] = f"{temp_match.group(1)}°C"
-        
+
         # Parse percentage used (wear level) - try multiple formats
         wear_patterns = [
             r'percentage_used\s*:\s*(\d+)%',  # percentage_used : X%
@@ -295,7 +295,7 @@ class NVMeHealthAnalyzer:
             r'percentage_used\s*:\s*(\d+)\s*%',  # percentage_used : X %
             r'percentage\s+used\s*:\s*(\d+)\s*%',  # percentage used : X %
         ]
-        
+
         wear_found = False
         for pattern in wear_patterns:
             wear_match = re.search(pattern, smart_output, re.IGNORECASE)
@@ -305,67 +305,67 @@ class NVMeHealthAnalyzer:
                 self.debug_print(f"Found wear level {wear_value}% using pattern: {pattern}")
                 wear_found = True
                 break
-        
+
         if not wear_found:
             self.debug_print("No wear level found in nvme smart-log output")
-        
+
         # Parse data units written
         written_match = re.search(r'data_units_written\s*:\s*([\d,]+)', smart_output, re.IGNORECASE)
         if written_match:
             data['data_written'] = written_match.group(1)
-        
+
         # Parse critical warnings
         warning_match = re.search(r'critical_warning\s*:\s*0x([0-9a-fA-F]+)', smart_output, re.IGNORECASE)
         if warning_match:
             warning_val = int(warning_match.group(1), 16)
             data['critical_warning'] = f"0x{warning_val:02x}"
-        
+
         # Parse power on hours
         power_match = re.search(r'power_on_hours\s*:\s*([\d,]+)', smart_output, re.IGNORECASE)
         if power_match:
             data['power_hours'] = power_match.group(1)
-        
+
         return data
 
     def parse_smartctl_output(self, smartctl_output: str) -> Dict[str, str]:
         """Parse smartctl output"""
         data = {}
-        
+
         if not smartctl_output:
             return data
-        
+
         self.debug_print("Parsing smartctl output for sector size information")
-        
+
         # Parse overall health
         health_match = re.search(r'SMART overall-health self-assessment test result:\s*(.+)', smartctl_output, re.IGNORECASE)
         if health_match:
             data['health'] = health_match.group(1).strip()
-        
+
         # Parse firmware version
         firmware_patterns = [
             r'Firmware Version:\s*(.+)',
             r'Revision:\s*(.+)'
         ]
-        
+
         for pattern in firmware_patterns:
             firmware_match = re.search(pattern, smartctl_output, re.IGNORECASE)
             if firmware_match:
                 data['firmware'] = firmware_match.group(1).strip()
                 break
-        
+
         # Parse temperature (multiple possible formats)
         temp_patterns = [
             r'Temperature:\s*(\d+)\s*Celsius',
             r'Current Drive Temperature:\s*(\d+)\s*C',
             r'Temperature_Celsius\s*\S+\s*\S+\s*\S+\s*\S+\s*\S+\s*\S+\s*(\d+)'
         ]
-        
+
         for pattern in temp_patterns:
             temp_match = re.search(pattern, smartctl_output, re.IGNORECASE)
             if temp_match:
                 data['temperature'] = f"{temp_match.group(1)}°C"
                 break
-        
+
         # Parse wear leveling
         wear_patterns = [
             r'Percentage Used:\s*(\d+)%',
@@ -374,7 +374,7 @@ class NVMeHealthAnalyzer:
             r'Wear Leveling Count:\s*(\d+)',
             r'Available Spare:\s*(\d+)%'
         ]
-        
+
         wear_found = False
         for pattern in wear_patterns:
             wear_match = re.search(pattern, smartctl_output, re.IGNORECASE)
@@ -384,39 +384,39 @@ class NVMeHealthAnalyzer:
                 self.debug_print(f"Found wear level {wear_value}% using smartctl pattern: {pattern}")
                 wear_found = True
                 break
-        
+
         if not wear_found:
             self.debug_print("No wear level found in smartctl output")
-        
+
         # Parse power on hours
         power_patterns = [
             r'Power On Hours:\s*([\d,]+)',
             r'Power_On_Hours\s*\S+\s*\S+\s*\S+\s*\S+\s*\S+\s*\S+\s*([\d,]+)'
         ]
-        
+
         for pattern in power_patterns:
             power_match = re.search(pattern, smartctl_output, re.IGNORECASE)
             if power_match:
                 data['power_hours'] = power_match.group(1)
                 break
-        
+
         # Parse error count
         error_patterns = [
             r'Media and Data Integrity Errors:\s*(\d+)',
             r'Reallocated_Sector_Ct\s*\S+\s*\S+\s*\S+\s*\S+\s*\S+\s*\S+\s*(\d+)'
         ]
-        
+
         for pattern in error_patterns:
             error_match = re.search(pattern, smartctl_output, re.IGNORECASE)
             if error_match:
                 data['error_count'] = error_match.group(1)
                 break
-        
+
         # Parse sector size / LBA size - current active size
         current_sector = 'N/A'
         supports_4k = 'N/A'
         supported_sizes = set()
-        
+
         # First try to parse the "Supported LBA Sizes" table from smartctl
         # Look for lines like: " 1 +    4096       0         0"
         lba_table_section = False
@@ -432,7 +432,7 @@ class NVMeHealthAnalyzer:
                     format_id, current_marker, data_size = lba_table_match.groups()
                     lba_size = int(data_size)
                     self.debug_print(f"LBA format {format_id}: {lba_size} bytes, current={current_marker == '+'}")
-                    
+
                     # Add to supported sizes
                     if lba_size == 512:
                         supported_sizes.add('512B')
@@ -442,7 +442,7 @@ class NVMeHealthAnalyzer:
                         supported_sizes.add('520B')
                     else:
                         supported_sizes.add(f'{lba_size}B')
-                    
+
                     # Check if this is the current format (marked with +)
                     if current_marker == '+':
                         if lba_size == 512:
@@ -461,7 +461,7 @@ class NVMeHealthAnalyzer:
                     # If we encounter a non-matching line, we might be past the table
                     if line.strip() and not re.match(r'\s*Id\s+Fmt\s+Data', line):
                         lba_table_section = False
-        
+
         # If we didn't find the LBA table, try standard patterns
         if current_sector == 'N/A':
             self.debug_print("LBA sizes table not found, trying standard sector size patterns")
@@ -475,7 +475,7 @@ class NVMeHealthAnalyzer:
                 r'Physical Sector Size:\s*(\d+)\s*bytes',
                 r'User Capacity:.*\[(\d+)\s*bytes per sector\]'
             ]
-            
+
             for pattern in lba_patterns:
                 lba_match = re.search(pattern, smartctl_output, re.IGNORECASE)
                 if lba_match:
@@ -494,10 +494,10 @@ class NVMeHealthAnalyzer:
                         current_sector = f'{lba_size}B'
                         supported_sizes.add(f'{lba_size}B')
                     break
-        
+
         if current_sector == 'N/A':
             self.debug_print("No sector size found in smartctl output with any patterns")
-        
+
         # Determine 4K support based on what we found
         if '4K' in supported_sizes:
             supports_4k = 'Yes'
@@ -511,49 +511,49 @@ class NVMeHealthAnalyzer:
                 supports_4k = 'Yes'
             elif current_sector in ['512B', '520B']:
                 supports_4k = 'No'  # If only legacy sizes found, likely no 4K support
-        
+
         data['supports_4k'] = supports_4k
         data['current_sector'] = current_sector
-        
+
         return data
 
     def parse_nvme_id_ctrl(self, id_ctrl_output: str) -> Dict[str, str]:
         """Parse nvme id-ctrl output"""
         data = {}
-        
+
         if not id_ctrl_output:
             return data
-        
+
         # Parse firmware revision
         firmware_match = re.search(r'fr\s*:\s*(.+)', id_ctrl_output, re.IGNORECASE)
         if firmware_match:
             data['firmware'] = firmware_match.group(1).strip()
-        
+
         # Parse model number
         model_match = re.search(r'mn\s*:\s*(.+)', id_ctrl_output, re.IGNORECASE)
         if model_match:
             data['model'] = model_match.group(1).strip()
-        
+
         return data
 
     def parse_nvme_id_ns(self, id_ns_output: str) -> Dict[str, str]:
         """Parse nvme id-ns output"""
         data = {}
-        
+
         if not id_ns_output:
             self.debug_print("No nvme id-ns output to parse")
             return data
-        
+
         self.debug_print("Parsing nvme id-ns output for LBA format information")
-        
+
         # Parse LBA formats to find what's supported and what's currently active
         # NVMe id-ns -H output shows formats like:
         # "LBA Format  0 : Metadata Size: 0   bytes - Data Size: 512 bytes - Relative Performance: 0x2 Good"
         # "LBA Format  1 : Metadata Size: 0   bytes - Data Size: 4096 bytes - Relative Performance: 0 Best (in use)"
-        
+
         supported_sizes = set()
         current_sector_size = 'N/A'
-        
+
         # Find all supported LBA formats using the -H (human readable) format
         lba_format_matches = re.findall(r'LBA Format\s+(\d+)\s*:.*Data Size:\s*(\d+)\s*bytes(.*)$', id_ns_output, re.MULTILINE | re.IGNORECASE)
         if lba_format_matches:
@@ -561,7 +561,7 @@ class NVMeHealthAnalyzer:
             for format_num, data_size, extra_info in lba_format_matches:
                 lba_size = int(data_size)
                 self.debug_print(f"LBA format {format_num}: {lba_size} bytes - {extra_info.strip()}")
-                
+
                 # Add to supported sizes
                 if lba_size == 512:
                     supported_sizes.add('512B')
@@ -571,7 +571,7 @@ class NVMeHealthAnalyzer:
                     supported_sizes.add('520B')  # Some enterprise drives use 520
                 else:
                     supported_sizes.add(f'{lba_size}B')
-                
+
                 # Check if this is the current format (marked with "in use")
                 if '(in use)' in extra_info.lower():
                     if lba_size == 512:
@@ -583,7 +583,7 @@ class NVMeHealthAnalyzer:
                     else:
                         current_sector_size = f'{lba_size}B'
                     self.debug_print(f"Current format {format_num} uses {lba_size} bytes per sector")
-        
+
         else:
             # Fallback to old format parsing (raw nvme id-ns without -H)
             self.debug_print("Human readable format not found, trying raw format")
@@ -601,13 +601,13 @@ class NVMeHealthAnalyzer:
                         supported_sizes.add('520B')
                     else:
                         supported_sizes.add(f'{lba_size}B')
-                
+
                 # Look for the currently active LBA format
                 current_lba_match = re.search(r'in use.*:\s*(\d+)', id_ns_output, re.IGNORECASE)
                 if current_lba_match:
                     current_format = int(current_lba_match.group(1))
                     self.debug_print(f"Current LBA format in use: {current_format}")
-                    
+
                     # Find the corresponding lbaf entry with the LBA data size
                     lba_format_pattern = rf'lbaf\s*{current_format}\s*:.*lbads:(\d+)'
                     lbads_match = re.search(lba_format_pattern, id_ns_output, re.IGNORECASE)
@@ -615,7 +615,7 @@ class NVMeHealthAnalyzer:
                         lbads = int(lbads_match.group(1))
                         lba_size = 2 ** lbads  # LBA data size is 2^lbads bytes
                         self.debug_print(f"Current format {current_format} uses {lba_size} bytes per sector")
-                        
+
                         if lba_size == 512:
                             current_sector_size = '512B'
                         elif lba_size == 4096:
@@ -630,11 +630,11 @@ class NVMeHealthAnalyzer:
                     self.debug_print("Could not find 'in use' format indicator")
             else:
                 self.debug_print("No LBA format entries found in raw format either")
-        
+
         # Set data fields
         data['supports_4k'] = 'Yes' if '4K' in supported_sizes else 'No'
         data['current_sector'] = current_sector_size
-        
+
         # Alternative parsing for different output formats if we didn't get the info above
         if current_sector_size == 'N/A':
             # Look for more direct LBA size mentions
@@ -642,7 +642,7 @@ class NVMeHealthAnalyzer:
                 r'LBA Format.*:\s*(\d+)\s*bytes',
                 r'Block Size:\s*(\d+)\s*bytes'
             ]
-            
+
             for pattern in lba_direct_patterns:
                 lba_match = re.search(pattern, id_ns_output, re.IGNORECASE)
                 if lba_match:
@@ -654,7 +654,7 @@ class NVMeHealthAnalyzer:
                     else:
                         data['current_sector'] = f'{lba_size}B'
                     break
-        
+
         return data
 
     def get_device_info(self, device: str) -> Dict[str, str]:
@@ -671,25 +671,25 @@ class NVMeHealthAnalyzer:
             'current_sector': 'N/A',
             'model': 'N/A'
         }
-        
+
         # Get nvme smart-log data
         nvme_data = {}
         smart_output = self.run_nvme_smart_log(device)
         if smart_output:
             nvme_data = self.parse_nvme_smart_log(smart_output)
-        
+
         # Get nvme id-ctrl data
         nvme_id_data = {}
         id_ctrl_output = self.run_nvme_id_ctrl(device)
         if id_ctrl_output:
             nvme_id_data = self.parse_nvme_id_ctrl(id_ctrl_output)
-        
+
         # Get nvme id-ns data (namespace information including LBA size)
         nvme_ns_data = {}
         id_ns_output = self.run_nvme_id_ns(device)
         if id_ns_output:
             nvme_ns_data = self.parse_nvme_id_ns(id_ns_output)
-        
+
         # Get smartctl data
         smartctl_data = {}
         smartctl_output = self.run_smartctl(device)
@@ -700,44 +700,44 @@ class NVMeHealthAnalyzer:
                 model_match = re.search(r'Device Model:\s*(.+)|Model Number:\s*(.+)', smartctl_output)
                 if model_match:
                     info['model'] = (model_match.group(1) or model_match.group(2)).strip()
-        
+
         # Merge data (priority: nvme id-ctrl > nvme smart-log > smartctl)
         for key in ['temperature', 'wear_level', 'power_hours']:
             if key in smartctl_data:
                 info[key] = smartctl_data[key]
             if key in nvme_data:  # nvme smart-log data overrides smartctl
                 info[key] = nvme_data[key]
-        
+
         # Health status from smartctl
         if 'health' in smartctl_data:
             info['health'] = smartctl_data['health']
-        
+
         # Error count from smartctl
         if 'error_count' in smartctl_data:
             info['error_count'] = smartctl_data['error_count']
-        
+
         # Model and firmware from nvme id-ctrl (highest priority) or smartctl
         if 'model' in nvme_id_data:
             info['model'] = nvme_id_data['model']
         elif 'model' in smartctl_data:
             info['model'] = smartctl_data['model']
-        
+
         if 'firmware' in nvme_id_data:
             info['firmware'] = nvme_id_data['firmware']
         elif 'firmware' in smartctl_data:
             info['firmware'] = smartctl_data['firmware']
-        
+
         # 4K support and current sector size from nvme id-ns (highest priority) or smartctl
         if 'supports_4k' in nvme_ns_data:
             info['supports_4k'] = nvme_ns_data['supports_4k']
         elif 'supports_4k' in smartctl_data:
             info['supports_4k'] = smartctl_data['supports_4k']
-        
+
         if 'current_sector' in nvme_ns_data:
             info['current_sector'] = nvme_ns_data['current_sector']
         elif 'current_sector' in smartctl_data:
             info['current_sector'] = smartctl_data['current_sector']
-        
+
         return info
 
     def get_terminal_width(self) -> int:
@@ -766,11 +766,11 @@ class NVMeHealthAnalyzer:
 
     def display_devices(self, devices_info: List[Dict], show_all: bool = False):
         """Display NVMe devices in a formatted table"""
-        
+
         if not devices_info:
             print("No NVMe devices found.")
             return
-        
+
         # Filter devices if not showing all
         if not show_all:
             # Filter out devices with no useful information
@@ -779,14 +779,14 @@ class NVMeHealthAnalyzer:
                           d['wear_level'] != 'N/A' or d['model'] != 'N/A' or 
                           d['firmware'] != 'N/A' or d['supports_4k'] != 'N/A' or 
                           d['current_sector'] != 'N/A']
-        
+
         if not devices_info:
             print("No NVMe devices found with health information.")
             return
-        
+
         # Get terminal width and calculate description width
         terminal_width = self.get_terminal_width()
-        
+
         # Calculate column widths
         max_widths = {
             'device': max(len('Device'), max(len(d['device']) for d in devices_info)),
@@ -799,11 +799,11 @@ class NVMeHealthAnalyzer:
             'error_count': max(len('Errors'), max(len(str(d['error_count'])) for d in devices_info)),
             'firmware': max(len('Firmware'), max(len(str(d['firmware'])) for d in devices_info)),
         }
-        
+
         # Calculate remaining space for model
         used_width = sum(max_widths.values()) + 18  # 18 for spacing between columns
         model_width = max(20, terminal_width - used_width - 5)  # Minimum 20 chars for model
-        
+
         # Create format string
         format_str = (f"%-{max_widths['device']}s  "
                      f"%-{max_widths['temperature']}s  "
@@ -815,17 +815,17 @@ class NVMeHealthAnalyzer:
                      f"%-{max_widths['error_count']}s  "
                      f"%-{max_widths['firmware']}s  "
                      f"%s")
-        
+
         # Print header
         print(f"\n{format_str}" % ("Device", "Temp", "Current", "4K?", "Health", "Wear", "PowerHrs", "Errors", "Firmware", "Model"))
         print("-" * min(terminal_width - 1, sum(max_widths.values()) + model_width + 18))
-        
+
         # Print devices
         for device in devices_info:
             model = device['model']
             if len(model) > model_width:
                 model = model[:model_width-2] + '..'
-            
+
             output = format_str % (
                 device['device'],
                 device['temperature'],
@@ -843,16 +843,16 @@ class NVMeHealthAnalyzer:
     def run(self, show_all: bool = False):
         """Main execution function"""
         self.debug_print("Starting NVMe health analysis")
-        
+
         # Discover NVMe devices
         devices = self.discover_nvme_devices()
-        
+
         if not devices:
             print("No NVMe devices found in the system.")
             return
-        
+
         self.debug_print(f"Analyzing {len(devices)} NVMe devices")
-        
+
         # Check if we need elevated privileges and inform user (only if no sudo token)
         if not self.is_root():
             # Check if any devices are not readable
@@ -860,14 +860,14 @@ class NVMeHealthAnalyzer:
             for device in devices:
                 if not os.access(device, os.R_OK):
                     unreadable_devices.append(device)
-            
+
             if unreadable_devices:
                 self.debug_print(f"Non-root user cannot read {len(unreadable_devices)} devices: {unreadable_devices}")
-                
+
                 # Only show privilege escalation messages if user doesn't have sudo token
                 has_token = self.has_sudo_token()
                 self.debug_print(f"Sudo token available: {has_token}")
-                
+
                 if not has_token:
                     print("# NVMe health information requires elevated privileges for device access.")
                     print("# Will request sudo access when needed for nvme and smartctl commands...")
@@ -877,16 +877,16 @@ class NVMeHealthAnalyzer:
                 self.debug_print("All devices are readable by current user")
         else:
             self.debug_print("Running as root - full device access available")
-        
+
         # Get device information
         devices_info = []
         for device in devices:
             info = self.get_device_info(device)
             devices_info.append(info)
-        
+
         # Display results
         self.display_devices(devices_info, show_all)
-        
+
         self.debug_print("NVMe health analysis completed")
 
 def main():
@@ -902,7 +902,7 @@ Examples:
 Column Information:
   Current   - Current sector size in use (512B, 4K, 520B, etc.)
   4K?       - Whether drive supports 4K sectors (Yes/No)
-  
+
 Note: By default, only NVMe devices with available health information are shown.
 Use --all to show all discovered NVMe devices regardless of data availability.
 This script will automatically request sudo privileges if needed to access
