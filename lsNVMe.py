@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 #
-# $Id: lsNVMe.py,v 1.03 2025/09/06 16:00:00 add-lba-size Exp $
+# $Id: lsNVMe.py,v 1.04 2025/09/06 18:00:00 serials-by-default Exp $
 #
 # NVMe Device Health and Temperature Monitor
 # Shows NVMe devices with temperature, health status, and SMART attributes
 # Uses nvme smart-log and smartctl commands to extract comprehensive health data
 
-__version__ = "lsNVMe.py 1.03 2025/09/06 16:00:00 add-lba-size Exp"
+__version__ = "lsNVMe.py 1.04 2025/09/06 18:00:00 serials-by-default Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.04 (2025-09-06): Serial numbers by default and enhanced UX
+#   - Serial numbers now shown by default for complete device identification
+#   - Added --noserials option to hide serial numbers when not needed (replaces --serials)
+#   - Reordered columns logically: Model → Firmware → Serial (general to specific)
+#   - Enhanced help text with clear column explanations and usage examples
+#   - Improved enterprise usability with serial numbers included by default
 #
 # v1.03 (2025-09-06): Added LBA size display
 #   - Added LBA size column to show logical block address size (512B, 4K, etc.)
@@ -353,6 +360,18 @@ class NVMeHealthAnalyzer:
                 data['firmware'] = firmware_match.group(1).strip()
                 break
 
+        # Parse serial number
+        serial_patterns = [
+            r'Serial Number:\s*(.+)',
+            r'Serial number:\s*(.+)'
+        ]
+
+        for pattern in serial_patterns:
+            serial_match = re.search(pattern, smartctl_output, re.IGNORECASE)
+            if serial_match:
+                data['serial'] = serial_match.group(1).strip()
+                break
+
         # Parse temperature (multiple possible formats)
         temp_patterns = [
             r'Temperature:\s*(\d+)\s*Celsius',
@@ -534,6 +553,11 @@ class NVMeHealthAnalyzer:
         if model_match:
             data['model'] = model_match.group(1).strip()
 
+        # Parse serial number
+        serial_match = re.search(r'sn\s*:\s*(.+)', id_ctrl_output, re.IGNORECASE)
+        if serial_match:
+            data['serial'] = serial_match.group(1).strip()
+
         return data
 
     def parse_nvme_id_ns(self, id_ns_output: str) -> Dict[str, str]:
@@ -669,7 +693,8 @@ class NVMeHealthAnalyzer:
             'firmware': 'N/A',
             'supports_4k': 'N/A',
             'current_sector': 'N/A',
-            'model': 'N/A'
+            'model': 'N/A',
+            'serial': 'N/A'
         }
 
         # Get nvme smart-log data
@@ -716,7 +741,7 @@ class NVMeHealthAnalyzer:
         if 'error_count' in smartctl_data:
             info['error_count'] = smartctl_data['error_count']
 
-        # Model and firmware from nvme id-ctrl (highest priority) or smartctl
+        # Model, firmware, and serial from nvme id-ctrl (highest priority) or smartctl
         if 'model' in nvme_id_data:
             info['model'] = nvme_id_data['model']
         elif 'model' in smartctl_data:
@@ -726,6 +751,11 @@ class NVMeHealthAnalyzer:
             info['firmware'] = nvme_id_data['firmware']
         elif 'firmware' in smartctl_data:
             info['firmware'] = smartctl_data['firmware']
+
+        if 'serial' in nvme_id_data:
+            info['serial'] = nvme_id_data['serial']
+        elif 'serial' in smartctl_data:
+            info['serial'] = smartctl_data['serial']
 
         # 4K support and current sector size from nvme id-ns (highest priority) or smartctl
         if 'supports_4k' in nvme_ns_data:
@@ -764,7 +794,7 @@ class NVMeHealthAnalyzer:
         """Format current sector size display"""
         return current_sector
 
-    def display_devices(self, devices_info: List[Dict], show_all: bool = False):
+    def display_devices(self, devices_info: List[Dict], show_all: bool = False, show_serials: bool = False):
         """Display NVMe devices in a formatted table"""
 
         if not devices_info:
@@ -778,7 +808,7 @@ class NVMeHealthAnalyzer:
                           d['temperature'] != 'N/A' or d['health'] != 'N/A' or 
                           d['wear_level'] != 'N/A' or d['model'] != 'N/A' or 
                           d['firmware'] != 'N/A' or d['supports_4k'] != 'N/A' or 
-                          d['current_sector'] != 'N/A']
+                          d['current_sector'] != 'N/A' or d['serial'] != 'N/A']
 
         if not devices_info:
             print("No NVMe devices found with health information.")
@@ -787,7 +817,7 @@ class NVMeHealthAnalyzer:
         # Get terminal width and calculate description width
         terminal_width = self.get_terminal_width()
 
-        # Calculate column widths
+        # Calculate column widths (swapped model and firmware order, added serial if requested)
         max_widths = {
             'device': max(len('Device'), max(len(d['device']) for d in devices_info)),
             'temperature': max(len('Temp'), max(len(str(d['temperature'])) for d in devices_info)),
@@ -797,50 +827,79 @@ class NVMeHealthAnalyzer:
             'wear_level': max(len('Wear'), max(len(str(d['wear_level'])) for d in devices_info)),
             'power_hours': max(len('PowerHrs'), max(len(str(d['power_hours'])) for d in devices_info)),
             'error_count': max(len('Errors'), max(len(str(d['error_count'])) for d in devices_info)),
+            'model': max(len('Model'), max(len(str(d['model'])) for d in devices_info)),
             'firmware': max(len('Firmware'), max(len(str(d['firmware'])) for d in devices_info)),
         }
 
-        # Calculate remaining space for model
-        used_width = sum(max_widths.values()) + 18  # 18 for spacing between columns
-        model_width = max(20, terminal_width - used_width - 5)  # Minimum 20 chars for model
+        if show_serials:
+            max_widths['serial'] = max(len('Serial'), max(len(str(d['serial'])) for d in devices_info))
 
-        # Create format string
-        format_str = (f"%-{max_widths['device']}s  "
-                     f"%-{max_widths['temperature']}s  "
-                     f"%-{max_widths['current_sector']}s  "
-                     f"%-{max_widths['supports_4k']}s  "
-                     f"%-{max_widths['health']}s  "
-                     f"%-{max_widths['wear_level']}s  "
-                     f"%-{max_widths['power_hours']}s  "
-                     f"%-{max_widths['error_count']}s  "
-                     f"%-{max_widths['firmware']}s  "
-                     f"%s")
+        # No remaining space calculation needed now - all columns are fixed width
+        column_spacing = 2 * (len(max_widths) - 1)  # 2 spaces between each column
+
+        # Create format string (swapped model and firmware order)
+        if show_serials:
+            format_str = (f"%-{max_widths['device']}s  "
+                         f"%-{max_widths['temperature']}s  "
+                         f"%-{max_widths['current_sector']}s  "
+                         f"%-{max_widths['supports_4k']}s  "
+                         f"%-{max_widths['health']}s  "
+                         f"%-{max_widths['wear_level']}s  "
+                         f"%-{max_widths['power_hours']}s  "
+                         f"%-{max_widths['error_count']}s  "
+                         f"%-{max_widths['model']}s  "
+                         f"%-{max_widths['firmware']}s  "
+                         f"%-{max_widths['serial']}s")
+            header_args = ("Device", "Temp", "Current", "4K?", "Health", "Wear", "PowerHrs", "Errors", "Model", "Firmware", "Serial")
+        else:
+            format_str = (f"%-{max_widths['device']}s  "
+                         f"%-{max_widths['temperature']}s  "
+                         f"%-{max_widths['current_sector']}s  "
+                         f"%-{max_widths['supports_4k']}s  "
+                         f"%-{max_widths['health']}s  "
+                         f"%-{max_widths['wear_level']}s  "
+                         f"%-{max_widths['power_hours']}s  "
+                         f"%-{max_widths['error_count']}s  "
+                         f"%-{max_widths['model']}s  "
+                         f"%-{max_widths['firmware']}s")
+            header_args = ("Device", "Temp", "Current", "4K?", "Health", "Wear", "PowerHrs", "Errors", "Model", "Firmware")
 
         # Print header
-        print(f"\n{format_str}" % ("Device", "Temp", "Current", "4K?", "Health", "Wear", "PowerHrs", "Errors", "Firmware", "Model"))
-        print("-" * min(terminal_width - 1, sum(max_widths.values()) + model_width + 18))
+        print(f"\n{format_str}" % header_args)
+        print("-" * min(terminal_width - 1, sum(max_widths.values()) + column_spacing))
 
         # Print devices
         for device in devices_info:
-            model = device['model']
-            if len(model) > model_width:
-                model = model[:model_width-2] + '..'
-
-            output = format_str % (
-                device['device'],
-                device['temperature'],
-                self.format_current_sector(device['current_sector']),
-                device['supports_4k'],
-                device['health'],
-                device['wear_level'],
-                device['power_hours'],
-                device['error_count'],
-                device['firmware'],
-                model
-            )
+            if show_serials:
+                output = format_str % (
+                    device['device'],
+                    device['temperature'],
+                    self.format_current_sector(device['current_sector']),
+                    device['supports_4k'],
+                    device['health'],
+                    device['wear_level'],
+                    device['power_hours'],
+                    device['error_count'],
+                    device['model'],
+                    device['firmware'],
+                    device['serial']
+                )
+            else:
+                output = format_str % (
+                    device['device'],
+                    device['temperature'],
+                    self.format_current_sector(device['current_sector']),
+                    device['supports_4k'],
+                    device['health'],
+                    device['wear_level'],
+                    device['power_hours'],
+                    device['error_count'],
+                    device['model'],
+                    device['firmware']
+                )
             print(output)
 
-    def run(self, show_all: bool = False):
+    def run(self, show_all: bool = False, show_serials: bool = False):
         """Main execution function"""
         self.debug_print("Starting NVMe health analysis")
 
@@ -885,7 +944,7 @@ class NVMeHealthAnalyzer:
             devices_info.append(info)
 
         # Display results
-        self.display_devices(devices_info, show_all)
+        self.display_devices(devices_info, show_all, show_serials)
 
         self.debug_print("NVMe health analysis completed")
 
@@ -895,16 +954,22 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s                    # Show NVMe devices with health information
+  %(prog)s                    # Show NVMe devices with health information (includes serials)
   %(prog)s --all              # Show all NVMe devices (including those without health data)
+  %(prog)s --noserials        # Hide serial numbers (removes Serial column)
   %(prog)s --debug            # Show with debug information
 
 Column Information:
   Current   - Current sector size in use (512B, 4K, 520B, etc.)
   4K?       - Whether drive supports 4K sectors (Yes/No)
+  Model     - Drive model (general product identification)  
+  Firmware  - Firmware version (specific version identification)
+  Serial    - Serial number (unique device identification, shown by default)
 
 Note: By default, only NVMe devices with available health information are shown.
+Serial numbers are included by default for device identification.
 Use --all to show all discovered NVMe devices regardless of data availability.
+Use --noserials to hide serial numbers if not needed.
 This script will automatically request sudo privileges if needed to access
 device health information through nvme and smartctl commands.
         """
@@ -914,6 +979,8 @@ device health information through nvme and smartctl commands.
                        help='Enable debug output showing analysis details')
     parser.add_argument('--all', action='store_true', 
                        help='Show all NVMe devices (including those without health data)')
+    parser.add_argument('--noserials', action='store_true',
+                       help='Hide device serial numbers (removes Serial column)')
     parser.add_argument('--version', action='version', version=__version__,
                        help='Show program version and exit')
 
@@ -924,7 +991,7 @@ device health information through nvme and smartctl commands.
     analyzer.debug = args.debug
 
     # Run analysis
-    analyzer.run(show_all=args.all)
+    analyzer.run(show_all=args.all, show_serials=not args.noserials)
 
 if __name__ == "__main__":
     main()
