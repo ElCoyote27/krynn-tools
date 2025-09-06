@@ -9,12 +9,21 @@ Modernized Python implementation
 A tool to monitor RAID controller status using MegaCLI, perccli, or storcli.
 """
 
-# $Id: megaclisas-status,v 2.16 2025/09/06 21:30:00 notemp-regression-fix Exp $
-__version__ = "megaclisas-status,v 2.16 2025/09/06 21:30:00 notemp-regression-fix Exp"
+# $Id: megaclisas-status,v 2.17 2025/09/06 22:00:00 foreign-disk-detection Exp $
+__version__ = "megaclisas-status,v 2.17 2025/09/06 22:00:00 foreign-disk-detection Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v2.17 (2025-09-06): Foreign disk detection feature from community contribution
+#   - Added foreign disk detection capability for unconfigured drives
+#   - Implemented get_foreign_disks() method with support for both MegaCLI and perccli syntax
+#   - Added parse_foreign_disks() parser to extract foreign disk slot numbers from tool output
+#   - Foreign drives now display as "State (Foreign)" in unconfigured disk section
+#   - Based on community contribution: https://github.com/eLvErDe/hwraid/pull/132/files
+#   - Enhanced debugging output shows detected foreign disk slots per controller
+#   - Gracefully handles systems without foreign configurations (no errors)
 #
 # v2.16 (2025-09-06): Fixed --notemp regression bug
 #   - Fixed regression where --notemp argument was parsed but not applied to temperature display
@@ -921,6 +930,21 @@ class MegaCLIInterface:
             cmd = f"{self.megacli_path} -AdpBbuCmd -GetBbuStatus -a{controller_id} -NoLog"
             return self.execute_command(cmd)
 
+    def get_foreign_disks(self, controller_id: int) -> List[str]:
+        """Get foreign disk slot numbers for controller."""
+        if self.active_tool and self.active_tool.tool_type in [ToolType.PERCCLI_LEGACY, ToolType.PERCCLI_NATIVE]:
+            if self.active_tool.supports_legacy_syntax:
+                # Legacy perccli supports MegaCLI syntax
+                cmd = f"{self.megacli_path} -CfgForeign -Dsply -a{controller_id} -NoLog"
+            else:
+                # Native perccli syntax - try foreign configuration show
+                cmd = f"{self.megacli_path} /c{controller_id}/fall show"
+            return self.execute_command(cmd)
+        else:
+            # MegaCLI syntax
+            cmd = f"{self.megacli_path} -CfgForeign -Dsply -a{controller_id} -NoLog"
+            return self.execute_command(cmd)
+
 
 class RAIDParser:
     """Parser for MegaCLI output."""
@@ -1635,6 +1659,34 @@ class RAIDParser:
         )
 
     @staticmethod
+    def parse_foreign_disks(output: List[str]) -> List[str]:
+        """Parse foreign disk slot numbers from MegaCLI/perccli foreign config output."""
+        foreign_slots = []
+
+        for line in output:
+            line = line.strip()
+
+            # MegaCLI and legacy perccli format: "Slot Number: X"
+            slot_match = re.search(r"Slot Number:\s*(\d+)", line)
+            if slot_match:
+                foreign_slots.append(slot_match.group(1))
+                continue
+
+            # Native perccli might use different format - look for slot patterns
+            # This is a fallback for any other slot identification patterns
+            # Format might be like "EID:Slt" in foreign config tables
+            if "foreign" in line.lower() or "cfg" in line.lower():
+                # Look for EID:Slot patterns like "64:0"
+                eid_slot_match = re.search(r"(\d+):(\d+)", line)
+                if eid_slot_match:
+                    # Use the slot part (second number)
+                    slot_number = eid_slot_match.group(2)
+                    if slot_number not in foreign_slots:
+                        foreign_slots.append(slot_number)
+
+        return foreign_slots
+
+    @staticmethod
     def _parse_drive_model(model: str) -> dict:
         """Parse manufacturer and serial from drive model string."""
         original_model = model
@@ -2036,12 +2088,29 @@ class RAIDStatusChecker:
                         disk_output = self.megacli.get_physical_drives_info(controller_id)
                         disk_list = self.parser.parse_disk_info(disk_output, controller_id)
 
+                        # Get foreign disk slot numbers
+                        try:
+                            foreign_output = self.megacli.get_foreign_disks(controller_id)
+                            foreign_slots = self.parser.parse_foreign_disks(foreign_output)
+                            if self.config.debug and foreign_slots:
+                                self.megacli._debug_print(f"Controller {controller_id} foreign disk slots: {foreign_slots}")
+                        except Exception as e:
+                            if self.config.debug:
+                                self.megacli._debug_print(f"Could not get foreign disk info for controller {controller_id}: {e}")
+                            foreign_slots = []
+
                         # Separate configured and unconfigured drives
                         for disk in disk_list:
                             # Override temperature if --notemp flag is set
                             if self.config.no_temp:
                                 from dataclasses import replace
                                 disk = replace(disk, temperature="N/A")
+
+                            # Mark foreign disks for unconfigured drives
+                            if (self._is_disk_unconfigured(disk.state) and 
+                                disk.slot_id in foreign_slots):
+                                from dataclasses import replace
+                                disk = replace(disk, state=f"{disk.state} (Foreign)")
 
                             disk_name = f"{controller_id}{disk.enclosure_id}{disk.slot_id}"
                             if self.config.debug:
