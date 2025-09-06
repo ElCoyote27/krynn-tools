@@ -50,13 +50,13 @@ def find_tuned_adm():
     tuned_path = shutil.which('tuned-adm')
     if tuned_path:
         return tuned_path
-    
+
     # If not found, check common locations
     common_paths = ['/usr/sbin/tuned-adm', '/sbin/tuned-adm', '/usr/bin/tuned-adm']
     for path in common_paths:
         if os.path.isfile(path) and os.access(path, os.X_OK):
             return path
-    
+
     # Last resort: return the name and hope it's in PATH
     return 'tuned-adm'
 
@@ -69,7 +69,7 @@ def setup_cron_environment():
     # Ensure basic PATH is available for cron
     if 'PATH' not in os.environ or os.environ['PATH'] == '':
         os.environ['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
-    
+
     # Add common sbin directories if not present
     current_path = os.environ.get('PATH', '')
     sbin_paths = ['/usr/sbin', '/sbin', '/usr/local/sbin']
@@ -96,13 +96,13 @@ def get_current_profile():
 def set_profile(profile, quiet=False):
     """Set the tuned profile, using sudo only if not already root"""
     tuned_adm = find_tuned_adm()
-    
+
     # Build command - use sudo only if not already root
     if is_root():
         cmd = [tuned_adm, 'profile', profile]
     else:
         cmd = ['sudo', tuned_adm, 'profile', profile]
-    
+
     try:
         subprocess.run(cmd, check=True)
         if not quiet:
@@ -118,7 +118,7 @@ def set_profile(profile, quiet=False):
 def main():
     # Set up environment for cron compatibility
     setup_cron_environment()
-    
+
     parser = argparse.ArgumentParser(
         description='Switch between tuned profiles (cron-compatible)',
         formatter_class=argparse.RawDescriptionHelpFormatter,

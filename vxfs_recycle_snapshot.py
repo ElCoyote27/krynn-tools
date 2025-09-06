@@ -72,16 +72,16 @@ VXFS_PATHS = [
 
 class VXFSSnapshotRecycler:
     """Class to handle VXFS snapshot recycling operations."""
-    
+
     def __init__(self, debug=False):
         self.debug = debug
-        
+
         # Use configuration constants
         self.vxsnap_prefix = VXSNAP_PREFIX
         self.vxsnap_opts = VXSNAP_OPTIONS
         self.kvm_fs_mnt = VXFS_MOUNT_POINT
         self.sync_wait_time = SYNC_WAIT_TIME
-        
+
         # Set up PATH using configuration
         current_path = os.environ.get('PATH', '')
         new_path = ':'.join(VXFS_PATHS + [current_path])
@@ -91,7 +91,7 @@ class VXFSSnapshotRecycler:
         """Run a command without error handling - let failures happen naturally."""
         # Show command with clean prefix
         print(f"# {' '.join(command)}")
-        
+
         if self.debug:
             # In debug mode, just show the command but don't execute (dry-run)
             from unittest.mock import Mock
@@ -100,7 +100,7 @@ class VXFSSnapshotRecycler:
             mock_result.stdout = ""
             mock_result.stderr = ""
             return mock_result
-        
+
         # Always use check=False - no error handling like the bash script
         if capture_output:
             result = subprocess.run(
@@ -125,12 +125,12 @@ class VXFSSnapshotRecycler:
             result = self.run_command(['findmnt', '-n', '-o', 'SOURCE', self.kvm_fs_mnt])
             source = result.stdout.strip()
             parts = source.split('/')
-            
+
             if len(parts) < 6:
                 raise ValueError(f"Unexpected source format: {source}")
-            
+
             vxlv = parts[5]  # Last part is the logical volume
-            
+
             # Get disk group using vxprint
             result = self.run_command(['vxprint', '-r', vxlv])
             for line in result.stdout.split('\n'):
@@ -139,9 +139,9 @@ class VXFSSnapshotRecycler:
                     break
             else:
                 raise ValueError(f"Could not find disk group for volume {vxlv}")
-            
+
             return vxdg, vxlv
-            
+
         except Exception as e:
             logger.error(f"Failed to get VXFS info: {e}")
             raise
@@ -150,7 +150,7 @@ class VXFSSnapshotRecycler:
         """Create VXFS snapshot - no error handling like bash script."""
         # Prepare volume - let it fail naturally
         self.run_command(['vxsnap', '-g', vxdg, 'prepare', vxlv], capture_output=False)
-        
+
         # Create snapshot - let it fail naturally  
         self.run_command([
             'vxsnap', '-g', vxdg, 'make',
@@ -163,10 +163,10 @@ class VXFSSnapshotRecycler:
         if not self.debug and not os.path.exists(vxsnap_mnt):
             print(f"# Creating directory {vxsnap_mnt}")
             os.makedirs(vxsnap_mnt, exist_ok=True)
-        
+
         # Check if already mounted
         result = self.run_command(['findmnt', '-o', 'FSTYPE', vxsnap_mnt])
-        
+
         # Check result
         fs_type = ""
         if not self.debug and result.returncode == 0 and result.stdout.strip():
@@ -175,7 +175,7 @@ class VXFSSnapshotRecycler:
                 fs_type = lines[1].strip()
                 if fs_type == 'vxfs':
                     print(f"# {vxsnap_mnt} already mounted as vxfs")
-        
+
         # Always try to mount - bash script doesn't have early return
         self.run_command([
             'mount', '-t', 'vxfs', '-o', 'ro,noatime,largefiles',
@@ -186,21 +186,21 @@ class VXFSSnapshotRecycler:
         """Clean up the VXFS snapshot - no error handling like bash script."""        
         # Sync and wait - let it fail naturally
         self.run_command(['sync'], capture_output=False)
-        
+
         # Sleep for filesystem sync
         print(f"# Waiting {self.sync_wait_time} seconds for filesystem sync")
         if not self.debug:
             time.sleep(self.sync_wait_time)
-        
+
         # Unmount - let it fail naturally
         self.run_command(['umount', vxsnap_mnt], capture_output=False)
-        
+
         # Destroy snapshot - let it fail naturally
         self.run_command(['vxsnap', '-g', vxdg, 'dis', vxsnap_lv], capture_output=False)
-        
+
         # Remove snapshot volume - let it fail naturally
         self.run_command(['vxedit', '-g', vxdg, '-fr', 'rm', vxsnap_lv], capture_output=False)
-        
+
         # Unprepare volume - let it fail naturally
         self.run_command(['vxsnap', '-g', vxdg, 'unprepare', vxlv], capture_output=False)
 
@@ -211,7 +211,7 @@ class VXFSSnapshotRecycler:
             logger.error("This script must be run as root")
             logger.error("Please run: sudo " + " ".join(sys.argv))
             return 1
-        
+
         # Get VXFS information
         try:
             if not self.debug:
@@ -224,25 +224,25 @@ class VXFSSnapshotRecycler:
                 # Mock values for debug mode
                 vxdg = "nvm01dg"
                 vxlv = "kvm0_lv"
-            
+
             vxsnap_lv = f"{vxlv}_snapshot"
             vxsnap_mnt = f"{self.vxsnap_prefix}/{vxsnap_lv}"
-            
+
             print(f"# VXFS Configuration:")
             print(f"#   Disk Group: {vxdg}")
             print(f"#   Logical Volume: {vxlv}")
             print(f"#   Snapshot Volume: {vxsnap_lv}")
             print(f"#   Mount Point: {vxsnap_mnt}")
-            
+
         except Exception as e:
             logger.error(f"Failed to get VXFS info: {e}")
             return 1
-        
+
         # Run all commands like bash script - no error handling
         self.create_snapshot(vxdg, vxlv, vxsnap_lv)
         self.mount_snapshot(vxdg, vxsnap_lv, vxsnap_mnt)
         self.cleanup_snapshot(vxdg, vxlv, vxsnap_lv, vxsnap_mnt)
-        
+
         return 0
 
     def main(self):
@@ -251,16 +251,16 @@ class VXFSSnapshotRecycler:
             description='Test VXFS snapshot creation and cleanup',
             formatter_class=argparse.RawDescriptionHelpFormatter
         )
-        
+
         parser.add_argument('-d', '--debug', action='store_true',
                            help='Debug mode - show commands without executing (dry-run)')
         parser.add_argument('-V', '--version', action='version',
                            version=__version__,
                            help='Show version information and exit')
-        
+
         args = parser.parse_args()
         self.debug = args.debug
-        
+
         return self.run_test()
 
 
