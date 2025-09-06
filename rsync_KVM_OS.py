@@ -61,6 +61,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
 import logging
+import psutil
 
 # Configure logging
 logging.basicConfig(
@@ -179,6 +180,9 @@ class KVMReplicator:
         self.host_config = None
         self.stat_available = True  # Track if stat works on both source and destination
 
+        # Process tracking for proper cleanup
+        self.child_processes = []  # Track child processes for cleanup
+
     def _init_host_configs(self) -> Dict[str, HostConfig]:
         """Initialize host-specific configurations."""
         configs = {}
@@ -280,6 +284,60 @@ class KVMReplicator:
             sys.exit(127)
 
         return hostname
+
+    def cleanup_child_processes(self):
+        """Clean up only child processes spawned by this script."""
+        if not self.child_processes:
+            return
+
+        logger.info("Cleaning up child processes...")
+        for process in self.child_processes[:]:  # Create a copy to iterate over
+            try:
+                if process.poll() is None:  # Process is still running
+                    logger.debug(f"Terminating child process {process.pid}")
+
+                    # Try to get the process and its children
+                    try:
+                        parent = psutil.Process(process.pid)
+                        children = parent.children(recursive=True)
+
+                        # Terminate children first
+                        for child in children:
+                            try:
+                                child.terminate()
+                            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                pass
+
+                        # Terminate the parent
+                        parent.terminate()
+
+                        # Wait for graceful termination
+                        try:
+                            parent.wait(timeout=3)
+                        except psutil.TimeoutExpired:
+                            # Force kill if necessary
+                            try:
+                                parent.kill()
+                                for child in children:
+                                    try:
+                                        child.kill()
+                                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                        pass
+                            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                pass
+
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        # Process already gone or no access
+                        pass
+
+                    # Remove from our tracking list
+                    self.child_processes.remove(process)
+
+            except Exception as e:
+                logger.debug(f"Error cleaning up process: {e}")
+                # Remove it anyway to avoid keeping dead references
+                if process in self.child_processes:
+                    self.child_processes.remove(process)
 
     def get_remote_host_from_script_name(self) -> str:
         """Extract remote host name from script basename."""
@@ -664,10 +722,26 @@ class KVMReplicator:
 
         try:
             # Use parent's stdout/stderr so we can see rsync progress
-            subprocess.run(rsync_cmd, stdout=None, stderr=None, check=True)
+            process = subprocess.Popen(rsync_cmd, stdout=None, stderr=None)
+
+            # Track this process for cleanup
+            self.child_processes.append(process)
+
+            # Wait for completion
+            returncode = process.wait()
+
+            # Remove from tracking list when done
+            if process in self.child_processes:
+                self.child_processes.remove(process)
+
+            if returncode != 0:
+                raise subprocess.CalledProcessError(returncode, rsync_cmd)
+
             return True
         except KeyboardInterrupt:
             logger.warning("Interrupted by user during file sync")
+            # Clean up child processes
+            self.cleanup_child_processes()
             raise
         except subprocess.CalledProcessError:
             if not self.debug:
@@ -727,19 +801,31 @@ class KVMReplicator:
                 sys.stdout.flush()  # Ensure output is flushed
 
             # Execute with direct stdout/stderr so we can see rsync progress
-            result = subprocess.run(
+            process = subprocess.Popen(
                 ['bash', '-c', bash_cmd],
                 stdout=None,  # Use parent's stdout
-                stderr=None,  # Use parent's stderr
-                check=True
+                stderr=None   # Use parent's stderr
             )
+
+            # Track this process for cleanup
+            self.child_processes.append(process)
+
+            # Wait for completion
+            returncode = process.wait()
+
+            # Remove from tracking list when done
+            if process in self.child_processes:
+                self.child_processes.remove(process)
+
+            if returncode != 0:
+                raise subprocess.CalledProcessError(returncode, bash_cmd)
 
             return True
 
         except KeyboardInterrupt:
             logger.warning("Interrupted by user during parallel rsync")
-            # Try to kill any remaining rsync processes
-            subprocess.run(['pkill', '-f', f'rsync.*{self.remote_host}'], check=False)
+            # Clean up only our child processes, not all rsync processes
+            self.cleanup_child_processes()
             raise
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to sync files in parallel: {e}")
@@ -793,7 +879,25 @@ class KVMReplicator:
             rsync_cmd.extend([xml_src, f"{self.remote_host}:{self.kvm_conf_dst_dir}/{vm}.xml"])
 
             try:
-                subprocess.run(rsync_cmd, check=True)
+                process = subprocess.Popen(rsync_cmd)
+
+                # Track this process for cleanup
+                self.child_processes.append(process)
+
+                # Wait for completion
+                returncode = process.wait()
+
+                # Remove from tracking list when done
+                if process in self.child_processes:
+                    self.child_processes.remove(process)
+
+                if returncode != 0:
+                    raise subprocess.CalledProcessError(returncode, rsync_cmd)
+
+            except KeyboardInterrupt:
+                logger.warning("Interrupted by user during XML sync")
+                self.cleanup_child_processes()
+                raise
             except subprocess.CalledProcessError:
                 if not self.debug:
                     logger.error(f"Failed to sync {xml_src}")
@@ -1038,7 +1142,25 @@ class KVMReplicator:
                     rsync_cmd.extend([script_dir, f"{self.remote_host}:{dst_dir}/"])
 
                     try:
-                        subprocess.run(rsync_cmd, check=True)
+                        process = subprocess.Popen(rsync_cmd)
+
+                        # Track this process for cleanup
+                        self.child_processes.append(process)
+
+                        # Wait for completion
+                        returncode = process.wait()
+
+                        # Remove from tracking list when done
+                        if process in self.child_processes:
+                            self.child_processes.remove(process)
+
+                        if returncode != 0:
+                            raise subprocess.CalledProcessError(returncode, rsync_cmd)
+
+                    except KeyboardInterrupt:
+                        logger.warning("Interrupted by user during tools copy")
+                        self.cleanup_child_processes()
+                        raise
                     except subprocess.CalledProcessError:
                         logger.error(f"Failed to copy tools to {self.remote_host}:{dst_dir}")
                         success = False
@@ -1072,13 +1194,15 @@ class KVMReplicator:
 
 
 if __name__ == '__main__':
+    replicator = None
     try:
         replicator = KVMReplicator()
         sys.exit(replicator.main())
     except KeyboardInterrupt:
         logger.warning("Interrupted by user")
-        # Try to kill any rsync processes
-        subprocess.run(['pkill', '-f', 'rsync'], check=False)
+        # Clean up only our child processes, not all rsync processes
+        if replicator:
+            replicator.cleanup_child_processes()
         sys.exit(130)
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
