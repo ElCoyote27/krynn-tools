@@ -9,12 +9,19 @@ Modernized Python implementation
 A tool to monitor RAID controller status using MegaCLI, perccli, or storcli.
 """
 
-# $Id: megaclisas-status,v 2.15 2025/09/02 12:00:00 whitespace-fix Exp $
-__version__ = "megaclisas-status,v 2.15 2025/09/02 12:00:00 whitespace-fix Exp"
+# $Id: megaclisas-status,v 2.16 2025/09/06 21:30:00 notemp-regression-fix Exp $
+__version__ = "megaclisas-status,v 2.16 2025/09/06 21:30:00 notemp-regression-fix Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v2.16 (2025-09-06): Fixed --notemp regression bug
+#   - Fixed regression where --notemp argument was parsed but not applied to temperature display
+#   - Added temperature override logic in check_system_status() for both controller and disk temperatures
+#   - Now properly shows "N/A" for all temperatures when --notemp flag is used
+#   - Matches legacy script behavior: temperatures suppressed at display time, not parsing time
+#   - Applied fix to both configured and unconfigured disk temperature display
 #
 # v2.15 (2025-09-02): Drive model whitespace normalization and cache property parsing fix
 #   - Fixed excessive whitespace in Drive Model column reported by community users
@@ -1983,6 +1990,11 @@ class RAIDStatusChecker:
                             logger.warning(f"Could not get BBU status for controller {controller_id}: {e}")
                             controller_info.bbu_status = "Unknown"
 
+                    # Override temperature if --notemp flag is set
+                    if self.config.no_temp:
+                        from dataclasses import replace
+                        controller_info = replace(controller_info, temperature="N/A")
+
                     controllers.append(controller_info)
 
                 # Get array info
@@ -2026,6 +2038,11 @@ class RAIDStatusChecker:
 
                         # Separate configured and unconfigured drives
                         for disk in disk_list:
+                            # Override temperature if --notemp flag is set
+                            if self.config.no_temp:
+                                from dataclasses import replace
+                                disk = replace(disk, temperature="N/A")
+
                             disk_name = f"{controller_id}{disk.enclosure_id}{disk.slot_id}"
                             if self.config.debug:
                                 self.megacli._debug_print(f"Disk c{disk_name} status : {disk.state}")
