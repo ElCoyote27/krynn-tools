@@ -9,12 +9,20 @@ Modernized Python implementation
 A tool to monitor RAID controller status using MegaCLI, perccli, or storcli.
 """
 
-# $Id: megaclisas-status,v 2.17 2025/09/06 22:00:00 foreign-disk-detection Exp $
-__version__ = "megaclisas-status,v 2.17 2025/09/06 22:00:00 foreign-disk-detection Exp"
+# $Id: megaclisas-status,v 2.18 2025/09/08 19:00:00 regression-fixes Exp $
+__version__ = "megaclisas-status,v 2.18 2025/09/08 19:00:00 regression-fixes Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v2.18 (2025-09-08): Fixed v2.16 regressions reported by community users
+#   - Fixed BBU status detection regression: controllers now properly show "Good" instead of "N/A"
+#   - Enhanced BBU detection logic to recognize any valid BBU status (not just "Present")
+#   - Fixed hotspare disk classification: hotspares now appear in Unconfigured section again
+#   - Restored original disk ordering by logical ID (c0u0p0, c0u0p1, c0u1p0...) for better readability
+#   - Improved array-based disk grouping instead of slot-based sorting
+#   - Community feedback: https://github.com/eLvErDe/hwraid/issues/148#issuecomment-3267036072
 #
 # v2.17 (2025-09-06): Foreign disk detection feature from community contribution
 #   - Added foreign disk detection capability for unconfigured drives
@@ -981,7 +989,8 @@ class RAIDParser:
                     temperature = f"{temp_value}C"
                 elif line_stripped.startswith("BBU ="):
                     bbu_present = line_stripped.split("=", 1)[1].strip()
-                    bbu_status = "Present" if bbu_present == "Present" else "N/A"
+                    # If any BBU value is found (not just "Present"), consider BBU present for further checking
+                    bbu_status = "Present" if bbu_present and bbu_present.lower() not in ["no", "absent", "n/a", "none"] else "N/A"
             else:
                 # Legacy MegaCLI format: "Field : Value"
                 if match := RegexPatterns.PRODUCT_NAME.match(line_stripped):
@@ -995,7 +1004,8 @@ class RAIDParser:
                     temperature = re.sub(r" +.*$", "", temp_str) + "C"
                 elif match := RegexPatterns.BBU_PRESENT.match(line_stripped):
                     bbu_present = line_stripped.split(":")[1].strip()
-                    bbu_status = "Present" if bbu_present == "Present" else "N/A"
+                    # If any BBU value is found (not just "Present"), consider BBU present for further checking
+                    bbu_status = "Present" if bbu_present and bbu_present.lower() not in ["no", "absent", "n/a", "none"] else "N/A"
 
         return ControllerInfo(
             controller_id=controller_id,
@@ -2088,6 +2098,13 @@ class RAIDStatusChecker:
                         disk_output = self.megacli.get_physical_drives_info(controller_id)
                         disk_list = self.parser.parse_disk_info(disk_output, controller_id)
 
+                        # Sort disks by logical ID (c0u0p0, c0u0p1, c0u1p0, etc.) for better readability
+                        disk_list.sort(key=lambda d: (
+                            d.controller_id,
+                            999 if d.array_id == "X" else int(d.array_id) if d.array_id.isdigit() else 0,
+                            int(d.disk_id) if d.disk_id.isdigit() else 0
+                        ))
+
                         # Get foreign disk slot numbers
                         try:
                             foreign_output = self.megacli.get_foreign_disks(controller_id)
@@ -2288,7 +2305,8 @@ class RAIDStatusChecker:
         """Check if disk is unconfigured (good but not part of array)."""
         unconfigured_states = [
             "Unconfigured(good), Spun Up", "Unconfigured(good), Spun down",
-            "UGood"  # perccli format for unconfigured good drives
+            "UGood",  # perccli format for unconfigured good drives
+            "Hotspare, Spun Up", "Hotspare, Spun down"  # hotspares should be in unconfigured section
         ]
         return state in unconfigured_states
 
