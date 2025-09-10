@@ -9,12 +9,22 @@ hypervisor-specific configurations.
 Author: Converted from bash script
 """
 
-# $Id: rsync_KVM_OS.py,v 1.02 2025/09/02 18:30:00 python-conversion Exp $
-__version__ = "rsync_KVM_OS.py,v 1.02 2025/09/02 18:30:00 python-conversion Exp"
+# $Id: rsync_KVM_OS.py,v 1.03 2025/09/10 19:00:00 python-conversion Exp $
+__version__ = "rsync_KVM_OS.py,v 1.03 2025/09/10 19:00:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.03 (2025-09-10): Snapshot detection and parallel replication fixes
+#   - BUGFIX: Fixed regression where existing VXFS snapshots weren't detected for parallel replication
+#   - Enhanced existing snapshot detection to support multiple concurrent script instances
+#   - Fixed -s (--novxsnap) flag to properly disable all snapshot usage including existing mounts
+#   - BUGFIX: Fixed tool copy destination to always use /scripts/ directory regardless of source location
+#   - Improved parallel replication workflow: multiple scripts can share same snapshot mount
+#   - Enhanced snapshot cleanup logic: only cleanup snapshots created by current script instance
+#   - Added proper snapshot path replacement for both disk and NVRAM files
+#   - Maintains full compatibility with shell script parallel replication design
 #
 # v1.02 (2025-09-02): CLI host override and validation enhancements
 #   - Added --host and --dest-host arguments to override destination host from CLI
@@ -582,6 +592,51 @@ class KVMReplicator:
 
         return False
 
+    def check_existing_snapshot(self, src_dir: str) -> Optional[Tuple[str, str, str, str]]:
+        """Check if there's an existing VXFS snapshot mount for the source directory."""
+        try:
+            # Check if vxsnap command exists
+            if not shutil.which('vxsnap'):
+                return None
+
+            # Get filesystem mount point
+            result = self.run_command(['df', '--output=target', src_dir])
+            kvm_fs_mnt = result.stdout.strip().split('\n')[1]
+
+            # Check if it's vxfs
+            result = self.run_command(['findmnt', '-o', 'FSTYPE', kvm_fs_mnt])
+            fs_type = result.stdout.strip().split('\n')[1]
+
+            if fs_type != 'vxfs':
+                return None
+
+            # Get volume group and logical volume
+            result = self.run_command(['findmnt', '-n', '-o', 'SOURCE', kvm_fs_mnt])
+            source = result.stdout.strip()
+            parts = source.split('/')
+            if len(parts) < 6:
+                return None
+
+            vxdg = parts[4]
+            vxlv = parts[5]
+            vxsnap_lv = f"{vxlv}_snapshot"
+            vxsnap_mnt = f"{self.vxsnap_prefix}/{vxsnap_lv}"
+
+            # Check if snapshot is already mounted
+            result = self.run_command(['findmnt', '-o', 'FSTYPE', vxsnap_mnt], check=False)
+            if hasattr(result, 'returncode') and result.returncode == 0 and result.stdout.strip():
+                lines = result.stdout.strip().split('\n')
+                if len(lines) > 1:
+                    fs_type = lines[1].strip()
+                    if fs_type == 'vxfs':
+                        logger.info(f"Found existing VXFS snapshot mount: {vxsnap_mnt}")
+                        return vxdg, vxlv, vxsnap_lv, vxsnap_mnt
+
+            return None
+
+        except subprocess.CalledProcessError:
+            return None
+
     def create_vxfs_snapshot(self, src_dir: str) -> Optional[Tuple[str, str, str, str]]:
         """Create VXFS snapshot if supported."""
         if not self.vxfs_snapshots or not self.host_config.vxfs_snapshots:
@@ -1020,6 +1075,21 @@ class KVMReplicator:
                 logger.warning(f"VM Directory: {src_dir} not found!")
                 continue
 
+            # Check for existing snapshot mount only if VXFS snapshots are not disabled by -s flag
+            existing_snapshot_info = None
+            if self.vxfs_snapshots:
+                existing_snapshot_info = self.check_existing_snapshot(src_dir)
+            else:
+                logger.info("VXFS snapshots disabled (-s flag) - using live file paths")
+            active_snapshot_info = existing_snapshot_info  # Track the active snapshot (existing or newly created)
+            actual_src_dir = src_dir
+            if existing_snapshot_info:
+                vxdg, vxlv, vxsnap_lv, vxsnap_mnt = existing_snapshot_info
+                # Get the filesystem mount point to replace in paths
+                kvm_fs_mnt = self.run_command(['df', '--output=target', src_dir]).stdout.strip().split('\n')[1]
+                actual_src_dir = src_dir.replace(kvm_fs_mnt, vxsnap_mnt)
+                logger.info(f"Using existing VXFS snapshot: {actual_src_dir}")
+
             # Lists to track files to sync
             vms_to_sync = []
             disk_files = []
@@ -1043,51 +1113,65 @@ class KVMReplicator:
 
                     # Check disk files
                     for disk_file in vm_disks:
-                        if not os.path.exists(disk_file):
+                        # Use actual source file path (may be in snapshot)
+                        actual_disk_file = disk_file
+                        if existing_snapshot_info:
+                            kvm_fs_mnt = self.run_command(['df', '--output=target', src_dir]).stdout.strip().split('\n')[1]
+                            actual_disk_file = disk_file.replace(kvm_fs_mnt, existing_snapshot_info[3])
+
+                        # Check if the file exists in the actual location (original or snapshot)
+                        if not os.path.exists(actual_disk_file):
                             continue
 
                         dst_file = f"{self.host_config.kvm_images_dst_dirs[i]}/{os.path.basename(disk_file)}"
 
                         if self.force_action or self.host_config.skip_stat_check or not self.stat_available:
                             if not self.stat_available and not self.host_config.skip_stat_check:
-                                logger.debug(f"Stat not available on both systems, syncing {disk_file}")
-                            logger.info(f"*** Will rsync ({vm}) {disk_file} to {self.remote_host}:{self.host_config.kvm_images_dst_dirs[i]}")
-                            disk_files.append(disk_file)
+                                logger.debug(f"Stat not available on both systems, syncing {actual_disk_file}")
+                            logger.info(f"*** Will rsync ({vm}) {actual_disk_file} to {self.remote_host}:{self.host_config.kvm_images_dst_dirs[i]}")
+                            disk_files.append(actual_disk_file)
                             vm_needs_sync = True
                         else:
-                            local_mtime = self.get_file_mtime(disk_file)
+                            local_mtime = self.get_file_mtime(actual_disk_file)
                             remote_mtime = self.get_file_mtime(dst_file, remote=True)
 
                             if local_mtime > remote_mtime:
-                                logger.info(f"*** Will rsync ({vm}) {disk_file} to {self.remote_host}:{self.host_config.kvm_images_dst_dirs[i]}")
-                                disk_files.append(disk_file)
+                                logger.info(f"*** Will rsync ({vm}) {actual_disk_file} to {self.remote_host}:{self.host_config.kvm_images_dst_dirs[i]}")
+                                disk_files.append(actual_disk_file)
                                 vm_needs_sync = True
                             elif local_mtime == remote_mtime:
-                                logger.info(f"stat() times on {vm} ({disk_file}) are identical, skipping...")
+                                logger.info(f"stat() times on {vm} ({actual_disk_file}) are identical, skipping...")
 
                     # Check NVRAM files
                     for nvram_file in vm_nvrams:
-                        if not os.path.exists(nvram_file):
+                        # Use actual source file path (may be in snapshot)
+                        actual_nvram_file = nvram_file
+                        if existing_snapshot_info:
+                            kvm_fs_mnt = self.run_command(['df', '--output=target', src_dir]).stdout.strip().split('\n')[1]
+                            actual_nvram_file = nvram_file.replace(kvm_fs_mnt, existing_snapshot_info[3])
+
+                        # Check if the file exists in the actual location (original or snapshot)
+                        if not os.path.exists(actual_nvram_file):
                             continue
 
                         dst_file = f"{self.host_config.kvm_nvram_dst_dirs[i]}/{os.path.basename(nvram_file)}"
 
                         if self.force_action or self.host_config.skip_stat_check or not self.stat_available:
                             if not self.stat_available and not self.host_config.skip_stat_check:
-                                logger.debug(f"Stat not available on both systems, syncing {nvram_file}")
-                            logger.info(f"*** Will rsync ({vm}) {nvram_file} to {self.remote_host}:{self.host_config.kvm_nvram_dst_dirs[i]}")
-                            nvram_files.append(nvram_file)
+                                logger.debug(f"Stat not available on both systems, syncing {actual_nvram_file}")
+                            logger.info(f"*** Will rsync ({vm}) {actual_nvram_file} to {self.remote_host}:{self.host_config.kvm_nvram_dst_dirs[i]}")
+                            nvram_files.append(actual_nvram_file)
                             vm_needs_sync = True
                         else:
-                            local_mtime = self.get_file_mtime(nvram_file)
+                            local_mtime = self.get_file_mtime(actual_nvram_file)
                             remote_mtime = self.get_file_mtime(dst_file, remote=True)
 
                             if local_mtime > remote_mtime:
-                                logger.info(f"*** Will rsync ({vm}) {nvram_file} to {self.remote_host}:{self.host_config.kvm_nvram_dst_dirs[i]}")
-                                nvram_files.append(nvram_file)
+                                logger.info(f"*** Will rsync ({vm}) {actual_nvram_file} to {self.remote_host}:{self.host_config.kvm_nvram_dst_dirs[i]}")
+                                nvram_files.append(actual_nvram_file)
                                 vm_needs_sync = True
                             elif local_mtime == remote_mtime:
-                                logger.info(f"stat() times on {vm} ({nvram_file}) are identical, skipping...")
+                                logger.info(f"stat() times on {vm} ({actual_nvram_file}) are identical, skipping...")
 
                     if vm_needs_sync:
                         vms_to_sync.append(vm)
@@ -1103,16 +1187,18 @@ class KVMReplicator:
                     if not self.sync_vm_configs(vms_to_sync):
                         success = False
 
-                # Create snapshot if needed
-                if (disk_files or nvram_files) and self.vxfs_snapshots:
+                # Create snapshot if needed (only if no existing snapshot and snapshots are enabled)
+                if (disk_files or nvram_files) and not existing_snapshot_info and self.vxfs_snapshots:
                     snapshot_info = self.create_vxfs_snapshot(src_dir)
                     if snapshot_info:
-                        # Update file paths to use snapshot
+                        active_snapshot_info = snapshot_info
+                        # Update file paths to use newly created snapshot
                         vxdg, vxlv, vxsnap_lv, vxsnap_mnt = snapshot_info
                         if self.debug:
                             logger.info(f"DEBUG: Would update file paths to use snapshot mount {vxsnap_mnt}")
                         else:
                             kvm_fs_mnt = self.run_command(['df', '--output=target', src_dir]).stdout.strip().split('\n')[1]
+                            # Update disk and nvram file lists to use snapshot paths
                             disk_files = [f.replace(kvm_fs_mnt, vxsnap_mnt) for f in disk_files]
                             nvram_files = [f.replace(kvm_fs_mnt, vxsnap_mnt) for f in nvram_files]
 
@@ -1128,18 +1214,28 @@ class KVMReplicator:
                         if not self.sync_file(nvram_file, self.host_config.kvm_nvram_dst_dirs[i]):
                             success = False
 
-                # Copy tools (entire script directory like the bash version)
-                script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))  # Get directory of executed script
-                dst_dir = os.path.dirname(self.host_config.kvm_images_dst_dirs[i])
-                logger.info(f"Copying tools to {self.remote_host}:{dst_dir}...")
+                # Copy tools to scripts directory (always use canonical location)
+                dst_base_dir = os.path.dirname(self.host_config.kvm_images_dst_dirs[i])
+                src_scripts_dir = f"{dst_base_dir}/scripts"
+                dst_scripts_dir = f"{dst_base_dir}/scripts"
+
+                # Prefer canonical location, fallback to current script directory
+                if os.path.isdir(src_scripts_dir):
+                    tools_src_dir = src_scripts_dir
+                else:
+                    tools_src_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+                    logger.warning(f"Canonical tools directory {src_scripts_dir} not found, using {tools_src_dir}")
+
+                logger.info(f"Copying tools to {self.remote_host}:{dst_scripts_dir}...")
                 if self.debug:
-                    logger.info(f"DEBUG: Would copy {script_dir} to {self.remote_host}:{dst_dir}")
+                    logger.info(f"DEBUG: Would copy {tools_src_dir}/* to {self.remote_host}:{dst_scripts_dir}")
                 else:
                     rsync_cmd = ['rsync']
                     rsync_cmd.extend(self.rsync_options.split())
                     if self.host_config.rsync_path:
                         rsync_cmd.extend(['--rsync-path', self.host_config.rsync_path])
-                    rsync_cmd.extend([script_dir, f"{self.remote_host}:{dst_dir}/"])
+                    # Copy contents of tools directory to scripts/ on remote host
+                    rsync_cmd.extend([f"{tools_src_dir}/", f"{self.remote_host}:{dst_scripts_dir}/"])
 
                     try:
                         process = subprocess.Popen(rsync_cmd)
@@ -1162,13 +1258,13 @@ class KVMReplicator:
                         self.cleanup_child_processes()
                         raise
                     except subprocess.CalledProcessError:
-                        logger.error(f"Failed to copy tools to {self.remote_host}:{dst_dir}")
+                        logger.error(f"Failed to copy tools to {self.remote_host}:{dst_scripts_dir}")
                         success = False
 
             finally:
-                # Clean up snapshot
-                if snapshot_info:
-                    vxdg, vxlv, vxsnap_lv, vxsnap_mnt = snapshot_info
+                # Clean up snapshot (only if we created it, not if it was pre-existing)
+                if not existing_snapshot_info and active_snapshot_info:
+                    vxdg, vxlv, vxsnap_lv, vxsnap_mnt = active_snapshot_info
                     self.destroy_vxfs_snapshot(vxdg, vxlv, vxsnap_lv, vxsnap_mnt)
 
         # Handle poweroff option
