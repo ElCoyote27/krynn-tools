@@ -7,12 +7,17 @@ A utility to quickly switch between common tuned profiles:
 - virtual-host intel-sst
 """
 
-# $Id: TunedReconfig.py 1.01 2025/09/04 00:00:00 cron-compatibility Exp $
-__version__ = "TunedReconfig.py 1.01 2025/09/04 00:00:00 cron-compatibility Exp"
+# $Id: TunedReconfig.py 1.02 2025/09/11 00:00:00 add-throughput-profile Exp $
+__version__ = "TunedReconfig.py 1.02 2025/09/11 00:00:00 add-throughput-profile Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.02 (2025-09-11): Added throughput-performance profile
+#   - Added support for throughput-performance profile with 't' alias
+#   - Enhanced auto-suggestion logic to handle three profiles
+#   - Updated help text and examples
 #
 # v1.01 (2025-09-04): Cron compatibility fixes
 #   - Fixed PATH issues by using full path detection for tuned-adm
@@ -41,7 +46,11 @@ PROFILES = {
     'v': 'virtual-host intel-sst',
     'virtual': 'virtual-host intel-sst',
     'virtual-host': 'virtual-host intel-sst',
-    'intel': 'virtual-host intel-sst'
+    'intel': 'virtual-host intel-sst',
+    't': 'throughput-performance',
+    'throughput': 'throughput-performance',
+    'throughput-performance': 'throughput-performance',
+    'perf': 'throughput-performance'
 }
 
 def find_tuned_adm():
@@ -126,16 +135,19 @@ def main():
 Available profiles:
   p, power, powersave     -> powersave
   v, virtual, intel       -> virtual-host intel-sst
+  t, throughput, perf     -> throughput-performance
 
 Examples:
   TunedReconfig.py p      Switch to powersave
   TunedReconfig.py v      Switch to virtual-host intel-sst
+  TunedReconfig.py t      Switch to throughput-performance
   TunedReconfig.py -q p   Switch to powersave silently
   TunedReconfig.py        Show current profile and toggle options
 
 Cron usage:
   15 8 * * * /usr/local/sbin/TunedReconfig.py -q v  # Virtual-host at 8:15 AM
   05 23 * * * /usr/local/sbin/TunedReconfig.py -q p # Powersave at 11:05 PM
+  30 9 * * 1-5 /usr/local/sbin/TunedReconfig.py -q t # Throughput on weekdays at 9:30 AM
         """)
     parser.add_argument('profile', nargs='?', 
                        help='Profile to switch to (p/v or full name)')
@@ -161,19 +173,28 @@ Cron usage:
             print("\nAvailable options:")
             print("  p/power     -> powersave")
             print("  v/virtual   -> virtual-host intel-sst")
+            print("  t/throughput -> throughput-performance")
 
-            # Auto-suggest toggle
+            # Auto-suggest alternatives
             if current == 'powersave':
-                print(f"\nSuggestion: TunedReconfig.py v  (switch to virtual-host intel-sst)")
+                print(f"\nSuggestions:")
+                print(f"  TunedReconfig.py v  (switch to virtual-host intel-sst)")
+                print(f"  TunedReconfig.py t  (switch to throughput-performance)")
             elif current == 'virtual-host intel-sst':
-                print(f"\nSuggestion: TunedReconfig.py p  (switch to powersave)")
+                print(f"\nSuggestions:")
+                print(f"  TunedReconfig.py p  (switch to powersave)")
+                print(f"  TunedReconfig.py t  (switch to throughput-performance)")
+            elif current == 'throughput-performance':
+                print(f"\nSuggestions:")
+                print(f"  TunedReconfig.py p  (switch to powersave)")
+                print(f"  TunedReconfig.py v  (switch to virtual-host intel-sst)")
         return
 
     # Look up the profile
     profile_key = args.profile.lower()
     if profile_key not in PROFILES:
         print(f"Unknown profile: {args.profile}")
-        print("Valid options: p, power, powersave, v, virtual, intel")
+        print("Valid options: p, power, powersave, v, virtual, intel, t, throughput, perf")
         sys.exit(1)
 
     target_profile = PROFILES[profile_key]
