@@ -9,12 +9,19 @@ hypervisor-specific configurations.
 Author: Converted from bash script
 """
 
-# $Id: rsync_KVM_OS.py,v 1.03 2025/09/10 19:00:00 python-conversion Exp $
-__version__ = "rsync_KVM_OS.py,v 1.03 2025/09/10 19:00:00 python-conversion Exp"
+# $Id: rsync_KVM_OS.py,v 1.04 2025/09/10 20:00:00 python-conversion Exp $
+__version__ = "rsync_KVM_OS.py,v 1.04 2025/09/10 20:00:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.04 (2025-09-10): Snapshot cleanup edge case fix
+#   - BUGFIX: Fixed orphaned snapshots when original creating script was interrupted
+#   - Enhanced cleanup logic: all scripts attempt snapshot cleanup (unmount determines safety)
+#   - Improved last-script-cleans-up behavior matching shell script design
+#   - Updated cleanup message for clarity: "Attempting umount of vxfs snapshot"
+#   - Ensures proper snapshot hygiene in all parallel execution scenarios
 #
 # v1.03 (2025-09-10): Snapshot detection and parallel replication fixes
 #   - BUGFIX: Fixed regression where existing VXFS snapshots weren't detected for parallel replication
@@ -1262,9 +1269,11 @@ class KVMReplicator:
                         success = False
 
             finally:
-                # Clean up snapshot (only if we created it, not if it was pre-existing)
-                if not existing_snapshot_info and active_snapshot_info:
+                # Always attempt to cleanup snapshot if we used one (like bash script)
+                # The unmount will fail safely if other processes are still using it
+                if active_snapshot_info:
                     vxdg, vxlv, vxsnap_lv, vxsnap_mnt = active_snapshot_info
+                    logger.info(f"Attempting umount of vxfs snapshot (last script running cleans up)")
                     self.destroy_vxfs_snapshot(vxdg, vxlv, vxsnap_lv, vxsnap_mnt)
 
         # Handle poweroff option
