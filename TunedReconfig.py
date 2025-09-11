@@ -58,7 +58,10 @@ PROFILES = {
     'perf': 'throughput-performance',
     'l': 'latency-performance',
     'latency': 'latency-performance',
-    'latency-performance': 'latency-performance'
+    'latency-performance': 'latency-performance',
+    'a': 'accelerator-performance',
+    'accelerator': 'accelerator-performance',
+    'accelerator-performance': 'accelerator-performance'
 }
 
 def find_tuned_adm():
@@ -145,12 +148,14 @@ Available profiles:
   v, virtual              -> virtual-host intel-sst
   t, throughput, perf     -> throughput-performance
   l, latency              -> latency-performance
+  a, accelerator          -> accelerator-performance
 
 Examples:
   TunedReconfig.py p      Switch to powersave
   TunedReconfig.py v      Switch to virtual-host intel-sst
   TunedReconfig.py t      Switch to throughput-performance
   TunedReconfig.py l      Switch to latency-performance
+  TunedReconfig.py a      Switch to accelerator-performance
   TunedReconfig.py -q p   Switch to powersave silently
   TunedReconfig.py        Show current profile and toggle options
 
@@ -159,6 +164,7 @@ Cron usage:
   05 23 * * * /usr/local/sbin/TunedReconfig.py -q p # Powersave at 11:05 PM
   30 9 * * 1-5 /usr/local/sbin/TunedReconfig.py -q t # Throughput on weekdays at 9:30 AM
   45 7 * * * /usr/local/sbin/TunedReconfig.py -q l # Latency at 7:45 AM
+  00 10 * * * /usr/local/sbin/TunedReconfig.py -q a # Accelerator at 10:00 AM
         """)
     parser.add_argument('profile', nargs='?', 
                        help='Profile to switch to (p/v or full name)')
@@ -182,10 +188,11 @@ Cron usage:
         if not args.quiet:
             print(f"Current profile: {current}")
             print("\nAvailable options:")
-            print("  p/power     -> powersave")
-            print("  v/virtual   -> virtual-host intel-sst")
+            print("  p/power      -> powersave")
+            print("  v/virtual    -> virtual-host intel-sst")
             print("  t/throughput -> throughput-performance")
-            print("  l/latency   -> latency-performance")
+            print("  l/latency    -> latency-performance")
+            print("  a/accelerator -> accelerator-performance")
 
             # Auto-suggest alternatives
             if current == 'powersave':
@@ -193,28 +200,38 @@ Cron usage:
                 print(f"  TunedReconfig.py v  (switch to virtual-host intel-sst)")
                 print(f"  TunedReconfig.py t  (switch to throughput-performance)")
                 print(f"  TunedReconfig.py l  (switch to latency-performance)")
+                print(f"  TunedReconfig.py a  (switch to accelerator-performance)")
             elif current == 'virtual-host intel-sst':
                 print(f"\nSuggestions:")
                 print(f"  TunedReconfig.py p  (switch to powersave)")
                 print(f"  TunedReconfig.py t  (switch to throughput-performance)")
                 print(f"  TunedReconfig.py l  (switch to latency-performance)")
+                print(f"  TunedReconfig.py a  (switch to accelerator-performance)")
             elif current == 'throughput-performance':
                 print(f"\nSuggestions:")
                 print(f"  TunedReconfig.py p  (switch to powersave)")
                 print(f"  TunedReconfig.py v  (switch to virtual-host intel-sst)")
                 print(f"  TunedReconfig.py l  (switch to latency-performance)")
+                print(f"  TunedReconfig.py a  (switch to accelerator-performance)")
             elif current == 'latency-performance':
                 print(f"\nSuggestions:")
                 print(f"  TunedReconfig.py p  (switch to powersave)")
                 print(f"  TunedReconfig.py v  (switch to virtual-host intel-sst)")
                 print(f"  TunedReconfig.py t  (switch to throughput-performance)")
+                print(f"  TunedReconfig.py a  (switch to accelerator-performance)")
+            elif current == 'accelerator-performance':
+                print(f"\nSuggestions:")
+                print(f"  TunedReconfig.py p  (switch to powersave)")
+                print(f"  TunedReconfig.py v  (switch to virtual-host intel-sst)")
+                print(f"  TunedReconfig.py t  (switch to throughput-performance)")
+                print(f"  TunedReconfig.py l  (switch to latency-performance)")
         return
 
     # Look up the profile
     profile_key = args.profile.lower()
     if profile_key not in PROFILES:
         print(f"Unknown profile: {args.profile}")
-        print("Valid options: p, power, powersave, v, virtual, t, throughput, perf, l, latency")
+        print("Valid options: p, power, powersave, v, virtual, t, throughput, perf, l, latency, a, accelerator")
         sys.exit(1)
 
     target_profile = PROFILES[profile_key]
