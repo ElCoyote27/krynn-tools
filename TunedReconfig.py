@@ -7,12 +7,18 @@ A utility to quickly switch between common tuned profiles:
 - virtual-host intel-sst
 """
 
-# $Id: TunedReconfig.py 1.04 2025/09/11 00:00:00 add-latency-profile Exp $
-__version__ = "TunedReconfig.py 1.04 2025/09/11 00:00:00 add-latency-profile Exp"
+# $Id: TunedReconfig.py 1.05 2025/09/11 00:00:00 add-accelerator-profile Exp $
+__version__ = "TunedReconfig.py 1.05 2025/09/11 00:00:00 add-accelerator-profile Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.05 (2025-09-11): Added accelerator-performance profile
+#   - Added support for accelerator-performance profile with 'a' alias
+#   - Enhanced auto-suggestion logic to handle five profiles
+#   - Updated help text and examples with accelerator-performance
+#   - Added cron usage example for accelerator-performance
 #
 # v1.04 (2025-09-11): Added latency-performance profile
 #   - Added support for latency-performance profile with 'l' alias
