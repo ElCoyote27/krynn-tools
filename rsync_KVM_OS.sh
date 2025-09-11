@@ -14,6 +14,7 @@ PATH_SCRIPT="$(cd $(/usr/bin/dirname $(whence -- $0 || echo $0));pwd)"
 # -c|--checksum	: force checksumming
 # -f|--force	: overwrite even if files are more recent on destination..
 # -h|--help	: Show help
+# --host		: Override destination host (default: auto-detect from script name)
 # -p|--poweroff	: when sync is done, poweroff remote system
 # -t|--test	: don't copy, only perform a check test
 # -u|--update	: only update if newer files
@@ -65,7 +66,7 @@ DEFAULT_VM_LIST="${DEFAULT_VM_LIST} rhel3-x86 rhel4-x86 rhel5-x86 rhel5-x64 rhel
 DEFAULT_VM_LIST="${DEFAULT_VM_LIST} coreos-sno-0 coreos-sno-1 coreos-sno-2 coreos-sno-3 cirros"
 
 # getopt
-TEMP=$(getopt -o 'cdfhpstu' --long 'checksum,debug,force,help,poweroff,novxsnap,test,update' -n 'rsync_KVM_OS.sh' -- "$@")
+TEMP=$(getopt -o 'cdfhpstu' --long 'checksum,debug,force,help,host:,poweroff,novxsnap,test,update' -n 'rsync_KVM_OS.sh' -- "$@")
 
 if [[ $? != 0 ]]; then echo "Failed parsing options." >&2 ; exit 1 ; fi
 
@@ -73,26 +74,10 @@ if [[ $? != 0 ]]; then echo "Failed parsing options." >&2 ; exit 1 ; fi
 eval set -- "$TEMP"
 unset TEMP
 
-# Find remote host from basename
-REMOTE_HOST="$(/bin/basename $(whence -- $0 || echo $0)|sed -e 's/^rsync_KVM_//' -e 's/_OS\.sh$//' -e 's/.sh$//')"
+# Initialize variables
+CLI_HOST=""  # Will be set by --host argument if provided
+
 [ "root" != "$USER" ] && exec sudo $0 "$@"
-
-# Sanity Check
-if [[ -z ${REMOTE_HOST} ]]; then
-	echo "Unable to guess Remote host from $0! Exit!"
-	exit 127
-else
-	/usr/bin/getent hosts ${REMOTE_HOST} > /dev/null
-	if [[ $? -ne 0 ]]; then
-		echo "(EE) Unable to resolve host \"$REMOTE_HOST\""
-		exit 127
-	fi
-
-	if [[ "${REMOTE_HOST}" = "$(/bin/uname -n)" ]]; then
-		echo "(EE) Don't run this on ${REMOTE_HOST} to push files to ${REMOTE_HOST}!!!"
-		exit 127
-	fi
-fi
 
 case ${REMOTE_HOST} in
 	'daltigoth')
@@ -148,12 +133,13 @@ RSYNC_OPTIONS="${BASE_RSYNC_OPTIONS}"
 
 # Process args
 while true; do
-	case "$1" in
-		'-h'|'--help')
-			# Usage reminder:
-			echo "(II) Usage: $0 [-c|--checksum] [-f|--force] [-h|--help] [-p|--poweroff] [-s|--novxsnap] [-t|--test] [-u|--update] [VM_LIST]"
-			exit 1
-		;;
+		case "$1" in
+			'-h'|'--help')
+				# Usage reminder:
+				echo "(II) Usage: $0 [-c|--checksum] [-f|--force] [-h|--help] [--host HOST] [-p|--poweroff] [-s|--novxsnap] [-t|--test] [-u|--update] [VM_LIST]"
+				echo "(II)   --host HOST: Override destination host (default: auto-detect from script name)"
+				exit 1
+			;;
 		'-c'|'--checksum')
 			RSYNC_OPTIONS="${BASE_RSYNC_OPTIONS} -c"
 			FORCE_CHECKSUM=1
@@ -165,12 +151,17 @@ while true; do
 			shift
 			continue
 		;;
-		'-f'|'--force')
-			RSYNC_OPTIONS="${BASE_RSYNC_OPTIONS}"
-			FORCE_ACTION=1
-			shift
-			continue
-		;;
+			'-f'|'--force')
+				RSYNC_OPTIONS="${BASE_RSYNC_OPTIONS}"
+				FORCE_ACTION=1
+				shift
+				continue
+			;;
+			'--host')
+				CLI_HOST="$2"
+				shift 2
+				continue
+			;;
 		'-p'|'--poweroff')
 			RSYNC_OPTIONS="${BASE_RSYNC_OPTIONS}"
 			POWEROFF=1
@@ -205,6 +196,33 @@ while true; do
 		;;
 	esac
 done
+
+# Determine remote host: CLI override or auto-detect from script name
+if [[ -n ${CLI_HOST} ]]; then
+	REMOTE_HOST="${CLI_HOST}"
+	echo "(II) Using CLI-specified destination host: ${REMOTE_HOST}"
+else
+	# Find remote host from basename
+	REMOTE_HOST="$(/bin/basename $(whence -- $0 || echo $0)|sed -e 's/^rsync_KVM_//' -e 's/_OS\.sh$//' -e 's/.sh$//')"
+	echo "(II) Auto-detected destination host from script name: ${REMOTE_HOST}"
+fi
+
+# Sanity Check
+if [[ -z ${REMOTE_HOST} ]]; then
+	echo "(EE) Unable to determine Remote host! Exit!"
+	exit 127
+else
+	/usr/bin/getent hosts ${REMOTE_HOST} > /dev/null
+	if [[ $? -ne 0 ]]; then
+		echo "(EE) Unable to resolve host \"$REMOTE_HOST\""
+		exit 127
+	fi
+
+	if [[ "${REMOTE_HOST}" = "$(/bin/uname -n)" ]]; then
+		echo "(EE) Don't run this on ${REMOTE_HOST} to push files to ${REMOTE_HOST}!!!"
+		exit 127
+	fi
+fi
 
 
 # Sanity Check. Don't sync if not mounted.

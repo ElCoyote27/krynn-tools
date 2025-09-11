@@ -246,8 +246,8 @@ class KVMReplicator:
             'daltigoth-228': {**KVM_STD_CONFIG, 'remote_host': 'daltigoth-228', 'threads': 2},
             'palanthas': {**KVM_STD_CONFIG, 'remote_host': 'palanthas-228', 'threads': 2},
             'palanthas-228': {**KVM_STD_CONFIG, 'remote_host': 'palanthas-228', 'threads': 2},
-            'ravenvale': {**KVM_STD_CONFIG, 'remote_host': 'ravenvale-228', 'vxfs_snapshots': False},
-            'ravenvale-228': {**KVM_STD_CONFIG, 'remote_host': 'ravenvale-228', 'vxfs_snapshots': False},
+            'ravenvale': {**KVM_STD_CONFIG, 'remote_host': 'ravenvale-228'},
+            'ravenvale-228': {**KVM_STD_CONFIG, 'remote_host': 'ravenvale-228'},
 
             # Standard KVM hosts (only override VM lists)
             'solinari': {**KVM_STD_CONFIG,
@@ -646,7 +646,7 @@ class KVMReplicator:
 
     def create_vxfs_snapshot(self, src_dir: str) -> Optional[Tuple[str, str, str, str]]:
         """Create VXFS snapshot if supported."""
-        if not self.vxfs_snapshots or not self.host_config.vxfs_snapshots:
+        if not self.vxfs_snapshots:
             return None
 
         try:
@@ -1184,10 +1184,6 @@ class KVMReplicator:
                         vms_to_sync.append(vm)
 
                 logger.info(f"Final VM List: {' '.join(vms_to_sync)}")
-                if disk_files:
-                    logger.info(f"Final Disk List: {' '.join(disk_files)}")
-                if nvram_files:
-                    logger.info(f"Final NVRAM List: {' '.join(nvram_files)}")
 
                 # Sync VM configurations
                 if vms_to_sync:
@@ -1208,6 +1204,12 @@ class KVMReplicator:
                             # Update disk and nvram file lists to use snapshot paths
                             disk_files = [f.replace(kvm_fs_mnt, vxsnap_mnt) for f in disk_files]
                             nvram_files = [f.replace(kvm_fs_mnt, vxsnap_mnt) for f in nvram_files]
+
+                # Print final file lists after snapshot path replacement
+                if disk_files:
+                    logger.info(f"Final Disk List: {' '.join(disk_files)}")
+                if nvram_files:
+                    logger.info(f"Final NVRAM List: {' '.join(nvram_files)}")
 
                 # Sync disk files with parallel rsync processes
                 if disk_files:
