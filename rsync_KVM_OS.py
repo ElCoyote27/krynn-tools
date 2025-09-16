@@ -9,7 +9,7 @@ hypervisor-specific configurations.
 Author: Converted from bash script
 """
 
-# $Id: rsync_KVM_OS.py,v 1.04 2025/09/10 20:00:00 python-conversion Exp $
+# $Id: rsync_KVM_OS.py,v 1.04 2025/09/11 09:12:30 root Exp $
 __version__ = "rsync_KVM_OS.py,v 1.04 2025/09/10 20:00:00 python-conversion Exp"
 
 #
@@ -114,13 +114,12 @@ WAIT_TIME_BEFORE_SYNC = 2.5  # seconds
 
 # Default VM List - VMs to replicate by default
 DEFAULT_VM_LIST = [
-    "dc00", "dc01", "dc02", "dc03", "fedora-x64", "fedora-csb-x64", 
+    "dc00", "dc01", "dc02", "dc03", "fedora-x64", "fedora-csb-x64",
     "win10-x64", "win11-x64", "unifi", "gitlab",
-    "bdc416x", "bdc417x", "bdc418x", "bdc419x", "bdc420x", "bdc421x", 
-    "bdc422x", "bdc423x",
-    "sat6", "ca8", "idm00", "registry", "quay", "vxvom", "www8", 
+    "bdc416x", "bdc417x", "bdc418x", "bdc419x", "bdc420x", "bdc421x", "bdc422x", "bdc423x",
+    "sat6", "ca8", "idm00", "mailhost", "registry", "quay", "vxvom", "www8",
     "kali-x64", "freenas-11", "ubuntu-x64", "dsm7", "sno4",
-    "rhel3-x86", "rhel4-x86", "rhel5-x86", "rhel5-x64", "rhel6-x86", 
+    "rhel3-x86", "rhel4-x86", "rhel5-x86", "rhel5-x64", "rhel6-x86",
     "rhel6-x64", "rhel7-x64", "rhel8-x64", "rhel8-x64-eus", "rhel9-x64",
     "coreos-sno-0", "coreos-sno-1", "coreos-sno-2", "coreos-sno-3", "cirros"
 ]
