@@ -1,5 +1,15 @@
 #!/bin/bash
 
+# Enhanced ODF/Ceph Disk Wiping Tool
+# 
+# VERSION HISTORY:
+# v1.02 (2024) - Safety improvements: simulation by default, explicit destructive flag,
+#                centralized SSH configuration, improved output formatting, comprehensive
+#                input sanitization, auto-disk discovery with device type filtering
+# v1.01 (2024) - Enhanced ODF cleanup: added wipefs, targeted Ceph metadata wiping,
+#                command line options, debug mode, help system
+# v1.00 (orig) - Basic disk wiping with configurable block sizes
+
 #
 [ "$BASH" ] && function whence
 {
@@ -10,7 +20,7 @@ PATH_SCRIPT="$(cd $(/usr/bin/dirname $(whence -- $0 || echo $0));pwd)"
 cd ${PATH_SCRIPT}
 
 # Script version
-VERSION="1.01"
+VERSION="1.02"
 SCRIPT_NAME="$(basename $0)"
 
 # Function to show help
@@ -34,12 +44,15 @@ DESCRIPTION:
     Only targets standard storage devices: /dev/sd*, /dev/vd*, and /dev/nvme*
     
     The script connects as the 'core' user and executes sudo commands on OCP nodes.
+    
+    SAFETY: By default, operations are SIMULATED only. Use explicit flag for actual wiping.
 
 OPTIONS:
-    --debug           Simulate disk wipe operations without performing actual writes
-    --skip-rootdisk   Skip wiping root disks on all nodes (safety option)
-    --help            Show this help message and exit
-    --version         Show version information and exit
+    --debug                                        Simulate disk wipe operations (default behavior)
+    --yes-i-know-what-i-am-doing-please-wipe-the-disks  Perform actual disk wiping (DESTRUCTIVE!)
+    --skip-rootdisk                                Skip wiping root disks on all nodes (safety option)
+    --help                                         Show this help message and exit
+    --version                                      Show version information and exit
 
 CONFIGURATION:
     nodes.txt format: IP_ADDRESS [ignored_disk_column]
@@ -50,11 +63,10 @@ CONFIGURATION:
     - skip_rootdisk: Skip wiping root disks (default: 0 - includes rootdisks)
 
 EXAMPLES:
-    $SCRIPT_NAME                      # Normal operation (includes rootdisks)
-    $SCRIPT_NAME --debug              # Simulate operations (includes rootdisks)
-    $SCRIPT_NAME --skip-rootdisk      # Safe mode - skip rootdisks
-    $SCRIPT_NAME --debug --skip-rootdisk  # Simulate safe mode
-    $SCRIPT_NAME --help               # Show this help
+    $SCRIPT_NAME                                               # Simulate operations (default - safe)
+    $SCRIPT_NAME --yes-i-know-what-i-am-doing-please-wipe-the-disks  # Perform actual disk wiping
+    $SCRIPT_NAME --skip-rootdisk                               # Simulate with rootdisk protection
+    $SCRIPT_NAME --help                                        # Show this help
 
 EOF
 }
@@ -66,13 +78,19 @@ show_version() {
 }
 
 # Parse command line arguments
-debug_mode=0
+debug_mode=1     # Default to simulation mode for safety
 skip_rootdisk=0  # Default to include rootdisks - use --skip-rootdisk for safety
 while [[ $# -gt 0 ]]; do
     case $1 in
         --debug)
             debug_mode=1
             echo "DEBUG MODE: Simulating disk wipe operations (no actual writes will occur)"
+            echo "=========================================================================="
+            shift
+            ;;
+        --yes-i-know-what-i-am-doing-please-wipe-the-disks)
+            debug_mode=0
+            echo "LIVE MODE: Will perform ACTUAL DISK WIPING operations!"
             echo "=========================================================================="
             shift
             ;;
