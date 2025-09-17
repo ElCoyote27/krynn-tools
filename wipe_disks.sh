@@ -3,20 +3,20 @@
 # Enhanced ODF/Ceph Disk Wiping Tool
 # 
 # VERSION HISTORY:
-# v1.06 (2024) - LUKS handling restructure: separated LUKS cleanup into dedicated loop that runs
+# v1.06 (2025/09/17) - LUKS handling restructure: separated LUKS cleanup into dedicated loop that runs
 #                before disk wiping, improved ODF/OCS deviceset detection with deduplication
-# v1.05 (2024) - Disk size validation: skip GB offsets beyond disk capacity, consolidated
+# v1.05 (2025/09/17) - Disk size validation: skip GB offsets beyond disk capacity, consolidated
 #                end-of-disk wiping into main loop, intelligent offset filtering for small disks
-# v1.04 (2024) - LUKS/crypt handling optimization: efficient per-node LUKS discovery,
+# v1.04 (2025/09/17) - LUKS/crypt handling optimization: efficient per-node LUKS discovery,
 #                improved ODF/OCS deviceset detection, better crypt mapping management,
 #                enhanced debug output for encrypted devices
-# v1.03 (2024) - LUKS encryption support: automatic LUKS/crypt device detection,
+# v1.03 (2025/09/17) - LUKS encryption support: automatic LUKS/crypt device detection,
 #                cryptsetup integration with proper cleanup, ODF-aware encrypted mapping
 #                handling, seamless integration with live vs simulation modes
-# v1.02 (2024) - Safety improvements: simulation by default, explicit destructive flag,
+# v1.02 (2025/09/17) - Safety improvements: simulation by default, explicit destructive flag,
 #                centralized SSH configuration, improved output formatting, comprehensive
 #                input sanitization, auto-disk discovery with device type filtering  
-# v1.01 (2024) - Enhanced ODF cleanup: added wipefs, targeted Ceph metadata wiping,
+# v1.01 (2025/09/17) - Enhanced ODF cleanup: added wipefs, targeted Ceph metadata wiping,
 #                command line options, debug mode, help system
 # v1.00 (orig) - Basic disk wiping with configurable block sizes
 
