@@ -3,6 +3,10 @@
 # Enhanced ODF/Ceph Disk Wiping Tool
 # 
 # VERSION HISTORY:
+# v1.06 (2024) - LUKS handling restructure: separated LUKS cleanup into dedicated loop that runs
+#                before disk wiping, improved ODF/OCS deviceset detection with deduplication
+# v1.05 (2024) - Disk size validation: skip GB offsets beyond disk capacity, consolidated
+#                end-of-disk wiping into main loop, intelligent offset filtering for small disks
 # v1.04 (2024) - LUKS/crypt handling optimization: efficient per-node LUKS discovery,
 #                improved ODF/OCS deviceset detection, better crypt mapping management,
 #                enhanced debug output for encrypted devices
@@ -26,7 +30,7 @@ PATH_SCRIPT="$(cd $(/usr/bin/dirname $(whence -- $0 || echo $0));pwd)"
 cd ${PATH_SCRIPT}
 
 # Script version
-VERSION="1.04"
+VERSION="1.06"
 SCRIPT_NAME="$(basename $0)"
 
 # Function to show help
@@ -191,7 +195,8 @@ for ip in ${unique_ips}; do
     echo "  Found disks: ${discovered_disks}"
     echo "  Root disk: ${rootdisk}"
 
-    # Discover all LUKS/crypt mappings on this node (once per node)
+    # Step A: Handle all LUKS/crypt cleanup for this node (before disk wiping)
+    echo "################## LUKS/Crypt Cleanup for node: ${ip}"
     echo "  Exploring all LUKS/crypt mappings on node ${ip}..."
     all_luks_mappings=$(ssh ${ssh_opts} -qt ${ip} "sudo dmsetup ls --target crypt 2>/dev/null" 2>/dev/null || true)
     all_luks_mappings=$(sanitize_output "$all_luks_mappings")
@@ -199,35 +204,43 @@ for ip in ${unique_ips}; do
     if [[ -n "${all_luks_mappings}" ]]; then
         echo "  Found crypt/LUKS devices on node:"
         echo "    ${all_luks_mappings}"
+
+        # Filter for ODF/OCS devicesets and discovered disks
+        odf_luks_mappings=$(echo "${all_luks_mappings}" | grep -E "ocs-deviceset" | cut -d$'\t' -f1 2>/dev/null || true)
+        disk_luks_mappings=""
+        for disk in ${discovered_disks}; do
+            disk_specific=$(echo "${all_luks_mappings}" | grep -E "${disk}" | cut -d$'\t' -f1 2>/dev/null || true)
+            if [[ -n "${disk_specific}" ]]; then
+                disk_luks_mappings="${disk_luks_mappings} ${disk_specific}"
+            fi
+        done
+
+        # Combine and deduplicate all relevant LUKS mappings
+        relevant_luks_mappings=$(echo "${odf_luks_mappings} ${disk_luks_mappings}" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+        relevant_luks_mappings=$(sanitize_output "$relevant_luks_mappings")
+
+        if [[ -n "${relevant_luks_mappings}" ]]; then
+            echo "  Relevant LUKS mappings to close: ${relevant_luks_mappings}"
+            if [[ $debug_mode -eq 0 ]]; then
+                echo "  Closing LUKS mappings before disk wiping..."
+                for mapping in ${relevant_luks_mappings}; do
+                    echo "    Closing LUKS mapping: ${mapping}"
+                    ssh ${ssh_opts} -qt ${ip} sudo cryptsetup luksClose --debug --verbose ${mapping} || echo "    Warning: Could not close ${mapping} (may already be closed)"
+                done
+            else
+                echo "  [DEBUG MODE] Would close LUKS mappings: ${relevant_luks_mappings}"
+            fi
+        else
+            echo "  No ODF/OCS related LUKS mappings found to close"
+        fi
     else
         echo "  No crypt/LUKS devices found on this node"
     fi
 
-    # Process each discovered disk
+    # Step B: Process each discovered disk for wiping
+    echo "################## Disk Wiping for node: ${ip}"
     for disk in ${discovered_disks}; do
         echo "################## Host IP: ${ip}, Processing disk: /dev/${disk}"
-
-        # Check if any LUKS mappings are related to this specific disk
-        if [[ -n "${all_luks_mappings}" ]]; then
-            # Filter for devices related to this disk or OCS devicesets
-            disk_luks_mappings=$(echo "${all_luks_mappings}" | grep -E "(ocs-deviceset|${disk})" | cut -d$'\t' -f1 2>/dev/null || true)
-            disk_luks_mappings=$(sanitize_output "$disk_luks_mappings")
-
-            if [[ -n "${disk_luks_mappings}" ]]; then
-                echo "  Found LUKS mappings related to /dev/${disk}: ${disk_luks_mappings}"
-                if [[ $debug_mode -eq 0 ]]; then
-                    echo "  Attempting to close LUKS mappings before wiping..."
-                    for mapping in ${disk_luks_mappings}; do
-                        echo "    Closing LUKS mapping: ${mapping}"
-                        ssh ${ssh_opts} -qt ${ip} sudo cryptsetup luksClose --debug --verbose ${mapping} || echo "    Warning: Could not close ${mapping} (may already be closed)"
-                    done
-                else
-                    echo "  [DEBUG MODE] Would close LUKS mappings: ${disk_luks_mappings}"
-                fi
-            else
-                echo "  No LUKS mappings found related to /dev/${disk}"
-            fi
-        fi
 
         if [[ "${disk}" != "${rootdisk}" || "${skip_rootdisk}" -eq 0 ]]; then
             echo "################## Host IP: ${ip}, Wiping disk: /dev/${disk} (Enhanced ODF/Ceph cleanup)"
@@ -237,48 +250,71 @@ for ip in ${unique_ips}; do
             execute_or_simulate "ssh ${ssh_opts} -qt ${ip} sudo sgdisk -Z /dev/${disk} 2>/dev/null"
             execute_or_simulate "ssh ${ssh_opts} -qt ${ip} sudo wipefs -fa /dev/${disk}"
 
-            # Step 2: Wipe certain areas of the disk to remove Ceph Metadata which may be present
-            echo "Step 2: Wiping Ceph metadata locations (0, 1GB, 10GB, 100GB, 1000GB offsets) using ${block_size}K blocks..."
-            # Using precalculated metadata_count (~200KB) at each strategic location
-            for gb in 0 1 10 100 1000; do
-                if [[ $debug_mode -eq 1 ]]; then
-                    echo "  Wiping /dev/${disk} at ${gb}GB offset..."
-                    seek_blocks=$((gb * 1024 * 1024 / block_size))
-                    execute_or_simulate "ssh ${ssh_opts} -qt ${ip} sudo dd if=/dev/zero of=/dev/${disk} bs=${block_size}K count=${metadata_count} oflag=direct,dsync seek=${seek_blocks} 2>/dev/null"
-                else
-                    seek_blocks=$((gb * 1024 * 1024 / block_size))
-                    dd_output=$(ssh ${ssh_opts} -qt ${ip} sudo dd if=/dev/zero of=/dev/${disk} bs=${block_size}K count=${metadata_count} oflag=direct,dsync seek=${seek_blocks} 2>&1 | grep "copied" | head -1)
-                    printf "  Wiping /dev/%s at %4sGB offset : %s\n" "${disk}" "${gb}" "${dd_output}"
-                fi
-            done
-
-            # Step 3: Wipe end of disk (same amount as metadata locations)
-            echo "Step 3: Wiping end of disk (~200KB using ${block_size}K blocks)..."
+            # Step 2: Get disk size and prepare wipe locations
+            echo "Step 2: Getting disk size and calculating wipe locations..."
             sectors_raw=$(ssh ${ssh_opts} -qt ${ip} sudo blockdev --getsz /dev/${disk} 2>/dev/null | strings -a)
             sectors=$(sanitize_output "$sectors_raw")
             echo "  Disk /dev/${disk} has ${sectors} sectors"
-            # Calculate seek position using metadata_count
-            sectors_per_block=$(( block_size * 2 ))       # block_size KB = block_size * 2 sectors (512 bytes each)
+
+            # Calculate disk size in GB (sectors * 512 bytes / 1024^3) and end-of-disk position
             if [[ -n "${sectors}" && "${sectors}" -gt 0 ]]; then
-                seek=$(( (sectors / sectors_per_block) - metadata_count ))
-                echo "  Calculated seek position: ${seek} (sectors_per_block=${sectors_per_block}, metadata_count=${metadata_count})"
+                disk_gb=$(( sectors * 512 / 1024 / 1024 / 1024 ))
+                echo "  Disk size: approximately ${disk_gb}GB"
+
+                # Calculate end-of-disk seek position
+                sectors_per_block=$(( block_size * 2 ))       # block_size KB = block_size * 2 sectors (512 bytes each)
+                end_seek=$(( (sectors / sectors_per_block) - metadata_count ))
+
+                # Filter GB offsets to only include valid ones for this disk size, then add end-of-disk
+                valid_offsets=""
+                for gb in 0 1 10 100 1000; do
+                    if [[ $gb -lt $disk_gb ]]; then
+                        valid_offsets="${valid_offsets} ${gb}GB"
+                    else
+                        echo "  Skipping ${gb}GB offset - beyond disk size (${disk_gb}GB)"
+                    fi
+                done
+                # Add end-of-disk as special offset
+                valid_offsets="${valid_offsets} end"
+                echo "  Valid wipe locations: ${valid_offsets}"
             else
-                seek=-1
-                echo "  Could not determine disk size, skipping end-of-disk wipe"
-            fi
-            if [[ $seek -gt 0 ]]; then
-                if [[ $debug_mode -eq 1 ]]; then
-                    execute_or_simulate "ssh ${ssh_opts} -qt ${ip} sudo dd if=/dev/zero of=/dev/${disk} bs=${block_size}K count=${metadata_count} seek=${seek} oflag=direct,dsync"
-                    echo "  End-of-disk wipe completed"
-                else
-                    dd_output=$(ssh ${ssh_opts} -qt ${ip} sudo dd if=/dev/zero of=/dev/${disk} bs=${block_size}K count=${metadata_count} seek=${seek} oflag=direct,dsync 2>&1 | grep "copied" | head -1)
-                    printf "  Wiping /dev/%s at end-of-disk     : %s\n" "${disk}" "${dd_output}"
-                fi
-            else
-                echo "  Disk too small for end-of-disk wipe, skipping"
+                echo "  Warning: Could not determine disk size, using standard offsets only"
+                valid_offsets="0GB 1GB 10GB 100GB 1000GB"
+                end_seek=0
             fi
 
-            # Step 4: Attempt block discard (might not be supported on all devices)
+            # Step 3: Wipe Ceph metadata locations and end of disk using ${block_size}K blocks
+            echo "Step 3: Wiping Ceph metadata locations and end of disk using ${block_size}K blocks..."
+            for location in ${valid_offsets}; do
+                if [[ "${location}" == "end" ]]; then
+                    # Handle end-of-disk wipe
+                    if [[ ${end_seek} -gt 0 ]]; then
+                        if [[ $debug_mode -eq 1 ]]; then
+                            echo "  Wiping /dev/${disk} at end of disk (seek=${end_seek})..."
+                            execute_or_simulate "ssh ${ssh_opts} -qt ${ip} sudo dd if=/dev/zero of=/dev/${disk} bs=${block_size}K count=${metadata_count} oflag=direct,dsync seek=${end_seek} 2>/dev/null"
+                        else
+                            dd_output=$(ssh ${ssh_opts} -qt ${ip} sudo dd if=/dev/zero of=/dev/${disk} bs=${block_size}K count=${metadata_count} oflag=direct,dsync seek=${end_seek} 2>&1 | grep "copied" | head -1)
+                            printf "  Wiping /dev/%s at end of disk    : %s\n" "${disk}" "${dd_output}"
+                        fi
+                    else
+                        echo "  Skipping end-of-disk wipe - could not calculate position"
+                    fi
+                else
+                    # Handle GB offset wipes
+                    gb=$(echo "${location}" | sed 's/GB$//')
+                    if [[ $debug_mode -eq 1 ]]; then
+                        echo "  Wiping /dev/${disk} at ${gb}GB offset..."
+                        seek_blocks=$((gb * 1024 * 1024 / block_size))
+                        execute_or_simulate "ssh ${ssh_opts} -qt ${ip} sudo dd if=/dev/zero of=/dev/${disk} bs=${block_size}K count=${metadata_count} oflag=direct,dsync seek=${seek_blocks} 2>/dev/null"
+                    else
+                        seek_blocks=$((gb * 1024 * 1024 / block_size))
+                        dd_output=$(ssh ${ssh_opts} -qt ${ip} sudo dd if=/dev/zero of=/dev/${disk} bs=${block_size}K count=${metadata_count} oflag=direct,dsync seek=${seek_blocks} 2>&1 | grep "copied" | head -1)
+                        printf "  Wiping /dev/%s at %4sGB offset : %s\n" "${disk}" "${gb}" "${dd_output}"
+                    fi
+                fi
+            done
+
+            # Step 4: Attempt block discard (if supported by device)
             echo "Step 4: Attempting block discard (if supported by device)..."
             execute_or_simulate "ssh ${ssh_opts} -qt ${ip} sudo blkdiscard /dev/${disk} 2>/dev/null" && echo "  Block discard successful" || echo "  Block discard not supported or failed (this is normal for some devices)"
 
