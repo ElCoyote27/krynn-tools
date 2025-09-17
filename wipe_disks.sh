@@ -3,9 +3,15 @@
 # Enhanced ODF/Ceph Disk Wiping Tool
 # 
 # VERSION HISTORY:
+# v1.04 (2024) - LUKS/crypt handling optimization: efficient per-node LUKS discovery,
+#                improved ODF/OCS deviceset detection, better crypt mapping management,
+#                enhanced debug output for encrypted devices
+# v1.03 (2024) - LUKS encryption support: automatic LUKS/crypt device detection,
+#                cryptsetup integration with proper cleanup, ODF-aware encrypted mapping
+#                handling, seamless integration with live vs simulation modes
 # v1.02 (2024) - Safety improvements: simulation by default, explicit destructive flag,
 #                centralized SSH configuration, improved output formatting, comprehensive
-#                input sanitization, auto-disk discovery with device type filtering
+#                input sanitization, auto-disk discovery with device type filtering  
 # v1.01 (2024) - Enhanced ODF cleanup: added wipefs, targeted Ceph metadata wiping,
 #                command line options, debug mode, help system
 # v1.00 (orig) - Basic disk wiping with configurable block sizes
@@ -20,7 +26,7 @@ PATH_SCRIPT="$(cd $(/usr/bin/dirname $(whence -- $0 || echo $0));pwd)"
 cd ${PATH_SCRIPT}
 
 # Script version
-VERSION="1.02"
+VERSION="1.04"
 SCRIPT_NAME="$(basename $0)"
 
 # Function to show help
@@ -34,6 +40,7 @@ USAGE:
 DESCRIPTION:
     Wipes disks on remote nodes for ODF/Ceph cleanup. Auto-discovers disks on each
     node and performs comprehensive cleanup including:
+    - LUKS encrypted mapping detection and automatic closure
     - Partition table and filesystem signature removal (wipefs)
     - Targeted Ceph metadata wiping at strategic disk locations (0, 1GB, 10GB, 100GB, 1000GB)
     - End-of-disk metadata wiping (~200KB at end of disk)
@@ -42,9 +49,9 @@ DESCRIPTION:
     Reads unique IP addresses from nodes.txt (first column) and processes all
     discoverable disks on each node, INCLUDING root disks by default.
     Only targets standard storage devices: /dev/sd*, /dev/vd*, and /dev/nvme*
-    
+
     The script connects as the 'core' user and executes sudo commands on OCP nodes.
-    
+
     SAFETY: By default, operations are SIMULATED only. Use explicit flag for actual wiping.
 
 OPTIONS:
@@ -56,7 +63,7 @@ OPTIONS:
 
 CONFIGURATION:
     nodes.txt format: IP_ADDRESS [ignored_disk_column]
-    
+
     Configurable variables:
     - block_size: Block size in KB for operations (default: 4K)
     - metadata_count: Number of blocks for all metadata wiping operations (default: 50 blocks = 200KB)
@@ -64,7 +71,7 @@ CONFIGURATION:
 
 EXAMPLES:
     $SCRIPT_NAME                                               # Simulate operations (default - safe)
-    $SCRIPT_NAME --yes-i-know-what-i-am-doing-please-wipe-the-disks  # Perform actual disk wiping
+    $SCRIPT_NAME --yes-i-know-what-i-am-doing-please-wipe-the-disks  # Perform actual disk wiping with LUKS cleanup
     $SCRIPT_NAME --skip-rootdisk                               # Simulate with rootdisk protection
     $SCRIPT_NAME --help                                        # Show this help
 
@@ -163,9 +170,9 @@ for ip in ${unique_ips}; do
 
     # Find rootdisk for this node
     rootdisk_raw=$(ssh ${ssh_opts} -qt ${ip} sudo /usr/bin/findmnt -nv -o SOURCE / 2>/dev/null | \
-    strings -a|sed -e 's@[0-9]$@@' -e 's@/dev/@@')
+        strings -a|sed -e 's@[0-9]$@@' -e 's@/dev/@@')
     rootdisk=$(sanitize_output "$rootdisk_raw")
-    
+
     # Auto-discover available disks on this node (only sd*, vd*, and nvme* devices)
     echo "  Auto-discovering disks on ${ip}..."
     discovered_disks_raw=$(ssh ${ssh_opts} -qt ${ip} \
@@ -175,20 +182,52 @@ for ip in ${unique_ips}; do
          cut -d/ -f3 | \
          egrep -e '^(nvme|sd|vd)'" 2>/dev/null)
     discovered_disks=$(sanitize_output "$discovered_disks_raw")
-    
+
     if [[ -z "${discovered_disks}" ]]; then
         echo "  No disks discovered on ${ip}, skipping node"
         continue
     fi
-    
+
     echo "  Found disks: ${discovered_disks}"
     echo "  Root disk: ${rootdisk}"
-    
+
+    # Discover all LUKS/crypt mappings on this node (once per node)
+    echo "  Exploring all LUKS/crypt mappings on node ${ip}..."
+    all_luks_mappings=$(ssh ${ssh_opts} -qt ${ip} "sudo dmsetup ls --target crypt 2>/dev/null" 2>/dev/null || true)
+    all_luks_mappings=$(sanitize_output "$all_luks_mappings")
+
+    if [[ -n "${all_luks_mappings}" ]]; then
+        echo "  Found crypt/LUKS devices on node:"
+        echo "    ${all_luks_mappings}"
+    else
+        echo "  No crypt/LUKS devices found on this node"
+    fi
+
     # Process each discovered disk
     for disk in ${discovered_disks}; do
         echo "################## Host IP: ${ip}, Processing disk: /dev/${disk}"
-        
-        # Disk already verified by lsblk auto-discovery - no need for additional accessibility test
+
+        # Check if any LUKS mappings are related to this specific disk
+        if [[ -n "${all_luks_mappings}" ]]; then
+            # Filter for devices related to this disk or OCS devicesets
+            disk_luks_mappings=$(echo "${all_luks_mappings}" | grep -E "(ocs-deviceset|${disk})" | cut -d$'\t' -f1 2>/dev/null || true)
+            disk_luks_mappings=$(sanitize_output "$disk_luks_mappings")
+
+            if [[ -n "${disk_luks_mappings}" ]]; then
+                echo "  Found LUKS mappings related to /dev/${disk}: ${disk_luks_mappings}"
+                if [[ $debug_mode -eq 0 ]]; then
+                    echo "  Attempting to close LUKS mappings before wiping..."
+                    for mapping in ${disk_luks_mappings}; do
+                        echo "    Closing LUKS mapping: ${mapping}"
+                        ssh ${ssh_opts} -qt ${ip} sudo cryptsetup luksClose --debug --verbose ${mapping} || echo "    Warning: Could not close ${mapping} (may already be closed)"
+                    done
+                else
+                    echo "  [DEBUG MODE] Would close LUKS mappings: ${disk_luks_mappings}"
+                fi
+            else
+                echo "  No LUKS mappings found related to /dev/${disk}"
+            fi
+        fi
 
         if [[ "${disk}" != "${rootdisk}" || "${skip_rootdisk}" -eq 0 ]]; then
             echo "################## Host IP: ${ip}, Wiping disk: /dev/${disk} (Enhanced ODF/Ceph cleanup)"
