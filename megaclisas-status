@@ -9,12 +9,19 @@ Modernized Python implementation
 A tool to monitor RAID controller status using MegaCLI, perccli, or storcli.
 """
 
-# $Id: megaclisas-status,v 2.18 2025/09/08 19:00:00 regression-fixes Exp $
-__version__ = "megaclisas-status,v 2.18 2025/09/08 19:00:00 regression-fixes Exp"
+# $Id: megaclisas-status,v 2.19 2025/09/18 19:00:00 raid-conversion-fix Exp $
+__version__ = "megaclisas-status,v 2.19 2025/09/18 19:00:00 raid-conversion-fix Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v2.19 (2025-09-18): Fixed disk ID formatting during RAID conversions
+#   - Fixed disk ID display issue when DG (Drive Group) field shows "-" during RAID conversions
+#   - Disks in transitional state (e.g., being added to arrays) now show as "c0uXpY" instead of "c0u-pY"
+#   - Uses "X" marker like unconfigured drives since drive group parenthood cannot be determined
+#   - Safe for multi-drive-group systems - avoids assumptions about target drive group assignment
+#   - Discovered during live RAID-0 to RAID-1 conversion where second disk showed DG="-" in perccli
 #
 # v2.18 (2025-09-08): Fixed v2.16 regressions reported by community users
 #   - Fixed BBU status detection regression: controllers now properly show "Good" instead of "N/A"
@@ -1405,8 +1412,14 @@ class RAIDParser:
                             else:
                                 current_disk["state"] = state_raw
 
-                            # Array ID (DG)
-                            current_disk["array_id"] = parts[3]
+                            # Array ID (DG) - handle "-" case for drives in transition
+                            dg_value = parts[3]
+                            if dg_value == "-":
+                                # Drive not assigned to specific group yet (e.g., during RAID conversion)
+                                # Use "X" like unconfigured drives since parenthood cannot be determined
+                                current_disk["array_id"] = "X"
+                            else:
+                                current_disk["array_id"] = dg_value
 
                             in_device_table = False  # We've processed the table row
                         except (IndexError, ValueError):
