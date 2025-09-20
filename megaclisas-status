@@ -1115,7 +1115,9 @@ class RAIDParser:
                         if "/" in dg_vd:
                             vd_number = int(dg_vd.split("/")[1])
                             if vd_number == array_id:
-                                raid_type = parts[1]  # "RAID0", "RAID6"
+                                # Normalize RAID type format to include hyphen (RAID0 -> RAID-0)
+                                raw_raid_type = parts[1]  # "RAID0", "RAID6", etc.
+                                raid_type = raw_raid_type.replace("RAID", "RAID-") if raw_raid_type.startswith("RAID") else raw_raid_type
                                 state = "Optimal" if parts[2] == "Optl" else parts[2]
                                 # Size parsing: look for pattern like "1.818 TB" in the line
                                 # Format can be: "...OFF  1.818 TB boot" or "...OFF 43.656 TB"
