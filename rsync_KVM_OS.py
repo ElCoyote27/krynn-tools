@@ -9,8 +9,8 @@ hypervisor-specific configurations.
 Author: Converted from bash script
 """
 
-# $Id: rsync_KVM_OS.py,v 1.6 2025/09/25 18:25:12 root Exp root $
-__version__ = "rsync_KVM_OS.py,v 1.05 2025/09/10 20:00:00 python-conversion Exp"
+# $Id: rsync_KVM_OS.py,v 1.7 2025/09/25 21:04:44 root Exp root $
+__version__ = "rsync_KVM_OS.py,v 1.04 2025/09/10 20:00:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
@@ -250,10 +250,10 @@ class KVMReplicator:
 
             # Standard KVM hosts (only override VM lists)
             'solinari': {**KVM_STD_CONFIG,
-                'default_vm_list': "rhel3-x86 win10-x64 win11-x64 bdc420x dc00 dc01 idm00 fedora-x64 fedora-csb-x64 cirros ca8"
+                'default_vm_list': "rhel3-x86 win10-x64 win11-x64 bdc420x dc00 dc01 idm00 fedora-x64 fedora-csb-x64 cirros ca8 mailhost"
             },
             'solanthus': {**KVM_STD_CONFIG,
-                'default_vm_list': "rhel3-x86 rhel9-x64 ca8 fedora-x64 fedora-csb-x64 win10-x64 win11-x64 dc00 dc01 bdc420x idm00 cirros",
+                'default_vm_list': "rhel3-x86 rhel9-x64 ca8 fedora-x64 fedora-csb-x64 win10-x64 win11-x64 dc00 dc01 bdc420x idm00 cirros mailhost",
             },
             'lothlorien': {**KVM_STD_CONFIG,
                 'default_vm_list': "fedora-x64 cirros"
