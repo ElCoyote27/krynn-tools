@@ -255,7 +255,7 @@ class KVMReplicator:
             # KVM Hosts hosts with 100% VMs (use KVM standard + remote host override)
             'daltigoth': {**KVM_STD_CONFIG, 'remote_host': 'daltigoth-228', 'threads': 2 },
             'palanthas': {**KVM_STD_CONFIG, 'remote_host': 'palanthas-228', 'threads': 2 },
-            'ravenvale': {**KVM_STD_CONFIG, 'remote_host': 'ravenvale-228' },
+            'ravenvale': {**KVM_STD_CONFIG, 'remote_host': 'ravenvale-228', 'threads': 2 },
 
             # Standard KVM hosts (only override VM lists)
             'solinari': {**KVM_STD_CONFIG,
@@ -268,7 +268,7 @@ class KVMReplicator:
             'lothlorien': {**KVM_STD_CONFIG,
                 'default_vm_list': "fedora-x64 cirros"
             },
-            'thorbardin': {**KVM_STD_CONFIG, 'threads': 2 },
+            'thorbardin': {**KVM_STD_CONFIG },
 
             # NAS/Synology hosts (use NAS standard + thread overrides)
             'kalaman': {**NAS_STD_CONFIG, 'threads': 2 },
