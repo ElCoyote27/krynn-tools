@@ -10,11 +10,19 @@ Author: Converted from bash script
 """
 
 # $Id: rsync_KVM_OS.py,v 1.7 2025/09/25 21:04:44 root Exp root $
-__version__ = "rsync_KVM_OS.py,v 1.04 2025/09/10 20:00:00 python-conversion Exp"
+__version__ = "rsync_KVM_OS.py,v 1.05 2025/09/26 12:00:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.05 (2025-09-26): VXFS source host detection fix
+#   - BUGFIX: Fixed VXFS snapshot logic to use source host configuration instead of destination host
+#   - Added get_source_host_vxfs_capability() method to check current hostname against host configs
+#   - VXFS snapshots now properly disabled on source hosts that don't support them (e.g., solinari)
+#   - Enhanced VXFS decision priority: CLI flag (-s) > source host config > default setting
+#   - Eliminates VXFS mount errors when syncing from non-VXFS capable source hosts
+#   - Maintains backward compatibility and preserves all existing functionality
 #
 # v1.04 (2025-09-10): Snapshot cleanup edge case fix
 #   - BUGFIX: Fixed orphaned snapshots when original creating script was interrupted
@@ -250,7 +258,8 @@ class KVMReplicator:
 
             # Standard KVM hosts (only override VM lists)
             'solinari': {**KVM_STD_CONFIG,
-                'default_vm_list': "rhel3-x86 win10-x64 win11-x64 bdc420x dc00 dc01 idm00 fedora-x64 fedora-csb-x64 cirros ca8 mailhost"
+                'default_vm_list': "rhel3-x86 win10-x64 win11-x64 bdc420x dc00 dc01 idm00 fedora-x64 fedora-csb-x64 cirros ca8 mailhost",
+                'vxfs_snapshots': False
             },
             'solanthus': {**KVM_STD_CONFIG,
                 'default_vm_list': "rhel3-x86 rhel9-x64 ca8 fedora-x64 fedora-csb-x64 win10-x64 win11-x64 dc00 dc01 bdc420x idm00 cirros mailhost",
@@ -381,6 +390,20 @@ class KVMReplicator:
         self.remote_host = self.host_config.get_effective_remote_host(detected_hostname)
 
         logger.info(f"Remote destination: {self.remote_host}")
+
+    def get_source_host_vxfs_capability(self) -> bool:
+        """Determine VXFS snapshot capability based on the source (current) host."""
+        current_hostname = socket.gethostname()
+
+        # Check if we have a specific configuration for the current host
+        if current_hostname in self.host_configs:
+            source_config = self.host_configs[current_hostname]
+            logger.debug(f"Using source host ({current_hostname}) VXFS setting: {source_config.vxfs_snapshots}")
+            return source_config.vxfs_snapshots
+
+        # Default to enabled if no specific source host configuration
+        logger.debug(f"No specific config for source host ({current_hostname}), using default VXFS setting: {VXFS_SNAPSHOTS_ENABLED}")
+        return VXFS_SNAPSHOTS_ENABLED
 
     def test_stat_availability(self):
         """Test if stat command works on both local and remote systems."""
@@ -1043,9 +1066,17 @@ class KVMReplicator:
         self.debug = args.debug
         self.force_action = args.force
         self.poweroff = args.poweroff
-        self.vxfs_snapshots = not args.novxsnap
         self.test_only = args.test
         self.update_only = args.update
+
+        # VXFS snapshots: CLI flag overrides, otherwise use source host capability
+        if args.novxsnap:
+            self.vxfs_snapshots = False
+            logger.info("VXFS snapshots disabled by --novxsnap flag")
+        else:
+            self.vxfs_snapshots = self.get_source_host_vxfs_capability()
+            if not self.vxfs_snapshots:
+                logger.info("VXFS snapshots disabled by source host configuration")
 
         # Determine remote host: CLI override or auto-detect from script name
         if args.host:
