@@ -9,7 +9,7 @@ hypervisor-specific configurations.
 Author: Vincent S. Cojot
 """
 
-# $Id: rsync_KVM_OS.py,v 1.7 2025/09/25 21:04:44 root Exp root $
+# $Id: rsync_KVM_OS.py,v 1.8 2025/09/26 07:36:21 root Exp root $
 __version__ = "rsync_KVM_OS.py,v 1.05 2025/09/26 12:00:00 python-conversion Exp"
 
 #
