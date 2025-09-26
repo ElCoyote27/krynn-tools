@@ -6,7 +6,7 @@ This script replicates KVM virtual machines from one hypervisor to another.
 It supports VXFS snapshots for consistent backups and handles various
 hypervisor-specific configurations.
 
-Author: Converted from bash script
+Author: Vincent S. Cojot
 """
 
 # $Id: rsync_KVM_OS.py,v 1.7 2025/09/25 21:04:44 root Exp root $
@@ -213,7 +213,7 @@ class KVMReplicator:
         default_vm_list = " ".join(DEFAULT_VM_LIST)
 
         # =============================================================================
-        # HOST CONFIGURATION TABLE  
+        # HOST CONFIGURATION TABLE
         # =============================================================================
         # Only specify values that differ from defaults:
         # - remote_host: "" (defaults to detected hostname)
@@ -232,9 +232,11 @@ class KVMReplicator:
             'kvm_nvram_dst_dirs': ["/shared/kvm0/nvram"],
             'rsync_path': "",  # Use default rsync
             'stat_path': "",   # Use default stat (system PATH)
+            'vxfs_snapshots': True,
             'skip_define': False,
             'skip_mount_check': False,
-            'skip_stat_check': False
+            'skip_stat_check': False,
+            'threads': 1
         }
 
         NAS_STD_CONFIG = {
@@ -242,40 +244,39 @@ class KVMReplicator:
             'kvm_nvram_dst_dirs': ["/volume1/kvm0/nvram"], 
             'rsync_path': "/opt/bin/rsync",
             'stat_path': "/opt/bin/stat",  # NAS-specific stat binary
+            'vxfs_snapshots': True,
             'skip_define': True,
             'skip_mount_check': True,
-            'skip_stat_check': False  # Now we can do stat checks with correct path!
+            'skip_stat_check': False,  # Now we can do stat checks with correct path!
+            'threads': 1
         }
 
         host_configs_table = {
-            # -228 management interface hosts (use KVM standard + remote host override)
-            'daltigoth': {**KVM_STD_CONFIG, 'remote_host': 'daltigoth-228', 'threads': 2},
-            'daltigoth-228': {**KVM_STD_CONFIG, 'remote_host': 'daltigoth-228', 'threads': 2},
-            'palanthas': {**KVM_STD_CONFIG, 'remote_host': 'palanthas-228', 'threads': 2},
-            'palanthas-228': {**KVM_STD_CONFIG, 'remote_host': 'palanthas-228', 'threads': 2},
-            'ravenvale': {**KVM_STD_CONFIG, 'remote_host': 'ravenvale-228'},
-            'ravenvale-228': {**KVM_STD_CONFIG, 'remote_host': 'ravenvale-228'},
+            # KVM Hosts hosts with 100% VMs (use KVM standard + remote host override)
+            'daltigoth': {**KVM_STD_CONFIG, 'remote_host': 'daltigoth-228', 'threads': 2 },
+            'palanthas': {**KVM_STD_CONFIG, 'remote_host': 'palanthas-228', 'threads': 2 },
+            'ravenvale': {**KVM_STD_CONFIG, 'remote_host': 'ravenvale-228' },
 
             # Standard KVM hosts (only override VM lists)
             'solinari': {**KVM_STD_CONFIG,
                 'default_vm_list': "rhel3-x86 win10-x64 win11-x64 bdc420x dc00 dc01 idm00 fedora-x64 fedora-csb-x64 cirros ca8 mailhost",
-                'vxfs_snapshots': False
+                'vxfs_snapshots': False,
             },
             'solanthus': {**KVM_STD_CONFIG,
-                'default_vm_list': "rhel3-x86 rhel9-x64 ca8 fedora-x64 fedora-csb-x64 win10-x64 win11-x64 dc00 dc01 bdc420x idm00 cirros mailhost",
+                'default_vm_list': "rhel3-x86 rhel9-x64 ca8 fedora-x64 fedora-csb-x64 win10-x64 win11-x64 dc00 dc01 bdc420x idm00 cirros mailhost"
             },
             'lothlorien': {**KVM_STD_CONFIG,
                 'default_vm_list': "fedora-x64 cirros"
             },
-            'thorbardin': {**KVM_STD_CONFIG, 'threads': 2},
+            'thorbardin': {**KVM_STD_CONFIG, 'threads': 2 },
 
             # NAS/Synology hosts (use NAS standard + thread overrides)
-            'kalaman': {**NAS_STD_CONFIG, 'threads': 2},
-            'ligett': {**NAS_STD_CONFIG},
+            'kalaman': {**NAS_STD_CONFIG, 'threads': 2 },
+            'ligett': {**NAS_STD_CONFIG },
 
             # Testing hosts (use KVM standard + limited VM lists)
-            'rh8x64': {**KVM_STD_CONFIG, 'default_vm_list': "win11-x64 cirros"},
-            'rh9x64': {**KVM_STD_CONFIG, 'default_vm_list': "win11-x64 cirros"}
+            'rh8x64': {**KVM_STD_CONFIG, 'default_vm_list': "win11-x64 cirros" },
+            'rh9x64': {**KVM_STD_CONFIG, 'default_vm_list': "win11-x64 cirros" }
         }
 
         # =============================================================================
