@@ -9,7 +9,7 @@ hypervisor-specific configurations.
 Author: Vincent S. Cojot
 """
 
-# $Id: rsync_KVM_OS.py,v 1.8 2025/09/26 07:36:21 root Exp root $
+# $Id: rsync_KVM_OS.py,v 1.9 2025/09/29 15:02:02 root Exp root $
 __version__ = "rsync_KVM_OS.py,v 1.05 2025/09/26 12:00:00 python-conversion Exp"
 
 #
@@ -266,7 +266,7 @@ class KVMReplicator:
                 'default_vm_list': "rhel3-x86 rhel9-x64 ca8 fedora-x64 fedora-csb-x64 win10-x64 win11-x64 dc00 dc01 bdc420x idm00 cirros mailhost"
             },
             'lothlorien': {**KVM_STD_CONFIG,
-                'default_vm_list': "fedora-x64 cirros"
+                'default_vm_list': "fedora-csb-x64 cirros dc00 dc01 ca8 gitlab"
             },
             'thorbardin': {**KVM_STD_CONFIG },
 
