@@ -170,8 +170,8 @@ if [[ ! -f nodes.txt ]]; then
 	exit 1
 fi
 
-# Extract unique IPs from nodes.txt and process each node
-unique_ips=$(awk '{print $1}' nodes.txt | sort -u)
+# Extract unique IPs from nodes.txt and process each node (skip comments and empty lines)
+unique_ips=$(awk '!/^#/ && NF > 0 {print $1}' nodes.txt | sort -u)
 
 for ip in ${unique_ips}; do
     echo "################## Processing node: ${ip}"
