@@ -3,6 +3,12 @@
 # Enhanced ODF/Ceph Disk Wiping Tool
 # 
 # VERSION HISTORY:
+# v1.08 (2025/10/17) - SSH compatibility fix: removed -qt flags from commands that capture output,
+#                fixed BatchMode+pseudo-terminal conflicts causing silent failures, moved pipe filters
+#                to local execution, resolved OSTree subpath handling in findmnt output
+# v1.07 (2025/10/17) - RHCOS rootdisk detection overhaul: multi-method detection with 5 fallback strategies
+#                to handle RHCOS 4.16-4.18+ including ephemeral/Assisted Installer pre-install states,
+#                improved compatibility across different RHCOS deployment scenarios
 # v1.06 (2025/09/17) - LUKS handling restructure: separated LUKS cleanup into dedicated loop that runs
 #                before disk wiping, improved ODF/OCS deviceset detection with deduplication
 # v1.05 (2025/09/17) - Disk size validation: skip GB offsets beyond disk capacity, consolidated
@@ -30,7 +36,7 @@ PATH_SCRIPT="$(cd $(/usr/bin/dirname $(whence -- $0 || echo $0));pwd)"
 cd ${PATH_SCRIPT}
 
 # Script version
-VERSION="1.06"
+VERSION="1.08"
 SCRIPT_NAME="$(basename $0)"
 
 # Function to show help
@@ -127,7 +133,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 # SSH configuration - connects as 'core' user to execute sudo commands on OCP nodes
-ssh_opts="-l core -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+# Note: Simplified to basic options for maximum compatibility
+ssh_opts="-l core"
 
 # Enhanced disk wiping for ODF/Ceph cleanup
 # This script now uses wipefs, targeted Ceph metadata wiping, and blkdiscard
@@ -173,13 +180,59 @@ for ip in ${unique_ips}; do
     ssh ${ssh_opts} -qt ${ip} sudo /sbin/setenforce 0
 
     # Find rootdisk for this node
-    rootdisk_raw=$(ssh ${ssh_opts} -qt ${ip} sudo /usr/bin/findmnt -nv -o SOURCE / 2>/dev/null | \
-        strings -a|sed -e 's@[0-9]$@@' -e 's@/dev/@@')
-    rootdisk=$(sanitize_output "$rootdisk_raw")
+    # Multi-method detection with fallbacks for different RHCOS versions and states
+    rootdisk=""  # Initialize as empty for each node
+    
+    # Method 1: Try /boot first (RHCOS 4.14+)
+    if [[ -z "${rootdisk}" ]]; then
+        boot_dev_raw=$(ssh ${ssh_opts} ${ip} sudo findmnt -no SOURCE /boot 2>/dev/null | cut -d'[' -f1)
+        boot_dev=$(sanitize_output "$boot_dev_raw")
+        if [[ -n "${boot_dev}" && "${boot_dev}" != /dev/loop* ]]; then
+            rootdisk_raw=$(ssh ${ssh_opts} ${ip} sudo lsblk -ndo PKNAME ${boot_dev} 2>/dev/null)
+            rootdisk=$(sanitize_output "$rootdisk_raw")
+        fi
+    fi
+    
+    # Method 2: Try /sysroot (older RHCOS)
+    if [[ -z "${rootdisk}" ]]; then
+        sysroot_dev_raw=$(ssh ${ssh_opts} ${ip} sudo findmnt -no SOURCE /sysroot 2>/dev/null | cut -d'[' -f1)
+        sysroot_dev=$(sanitize_output "$sysroot_dev_raw")
+        if [[ -n "${sysroot_dev}" && "${sysroot_dev}" != /dev/loop* ]]; then
+            rootdisk_raw=$(ssh ${ssh_opts} ${ip} sudo lsblk -ndo PKNAME ${sysroot_dev} 2>/dev/null)
+            rootdisk=$(sanitize_output "$rootdisk_raw")
+        fi
+    fi
+    
+    # Method 3: Try root (/)
+    if [[ -z "${rootdisk}" ]]; then
+        root_dev_raw=$(ssh ${ssh_opts} ${ip} sudo findmnt -no SOURCE / 2>/dev/null | cut -d'[' -f1)
+        root_dev=$(sanitize_output "$root_dev_raw")
+        if [[ -n "${root_dev}" && "${root_dev}" != /dev/loop* ]]; then
+            rootdisk_raw=$(ssh ${ssh_opts} ${ip} sudo lsblk -ndo PKNAME ${root_dev} 2>/dev/null)
+            rootdisk=$(sanitize_output "$rootdisk_raw")
+        fi
+    fi
+    
+    # Method 4: Find any disk with mounted partitions (likely root disk)
+    if [[ -z "${rootdisk}" ]]; then
+        rootdisk_raw=$(ssh ${ssh_opts} ${ip} \
+            "sudo lsblk -npo NAME,TYPE,MOUNTPOINT 2>/dev/null | awk '\$2==\"part\" && \$3~/^\/(boot|sysroot)?\$/ {print \$1; exit}' | xargs -I {} sudo lsblk -ndo PKNAME {} 2>/dev/null | head -1" \
+            2>/dev/null | sed 's@/dev/@@')
+        rootdisk=$(sanitize_output "$rootdisk_raw")
+    fi
+    
+    # Method 5: Fallback - find smallest non-zero disk (often root disk)
+    # This is useful for ephemeral/pre-install states, exclude nbd/rbd/loop devices
+    if [[ -z "${rootdisk}" ]]; then
+        rootdisk_raw=$(ssh ${ssh_opts} ${ip} \
+            "sudo lsblk -ndbo NAME,SIZE,TYPE 2>/dev/null | awk '\$3==\"disk\" && \$2>0 && \$1!~/^(nbd|rbd|loop)/ {print \$2\" \"\$1}' | sort -n | head -1 | awk '{print \$2}'" \
+            2>/dev/null | sed 's@/dev/@@')
+        rootdisk=$(sanitize_output "$rootdisk_raw")
+    fi
 
     # Auto-discover available disks on this node (only sd*, vd*, and nvme* devices)
     echo "  Auto-discovering disks on ${ip}..."
-    discovered_disks_raw=$(ssh ${ssh_opts} -qt ${ip} \
+    discovered_disks_raw=$(ssh ${ssh_opts} ${ip} \
         "sudo lsblk -dpno NAME,TYPE 2>/dev/null | \
          grep -w disk | \
          cut -f1 -d' ' | \
@@ -194,11 +247,23 @@ for ip in ${unique_ips}; do
 
     echo "  Found disks: ${discovered_disks}"
     echo "  Root disk: ${rootdisk}"
+    
+    if [[ -z "${rootdisk}" ]]; then
+        echo "  WARNING: Could not detect root disk on ${ip}"
+        if [[ ${skip_rootdisk} -eq 1 ]]; then
+            echo "  WARNING: --skip-rootdisk is enabled but no root disk detected - ALL disks will be skipped!"
+            echo "  Skipping node ${ip} entirely for safety"
+            continue
+        else
+            echo "  WARNING: Root disk detection failed - proceeding to wipe ALL discovered disks"
+            echo "  WARNING: If this is unintended, use --skip-rootdisk or press Ctrl-C to abort"
+        fi
+    fi
 
     # Step A: Handle all LUKS/crypt cleanup for this node (before disk wiping)
     echo "################## LUKS/Crypt Cleanup for node: ${ip}"
     echo "  Exploring all LUKS/crypt mappings on node ${ip}..."
-    all_luks_mappings=$(ssh ${ssh_opts} -qt ${ip} "sudo dmsetup ls --target crypt 2>/dev/null" 2>/dev/null || true)
+    all_luks_mappings=$(ssh ${ssh_opts} ${ip} "sudo dmsetup ls --target crypt 2>/dev/null" 2>/dev/null || true)
     all_luks_mappings=$(sanitize_output "$all_luks_mappings")
 
     if [[ -n "${all_luks_mappings}" ]]; then
@@ -252,7 +317,7 @@ for ip in ${unique_ips}; do
 
             # Step 2: Get disk size and prepare wipe locations
             echo "Step 2: Getting disk size and calculating wipe locations..."
-            sectors_raw=$(ssh ${ssh_opts} -qt ${ip} sudo blockdev --getsz /dev/${disk} 2>/dev/null | strings -a)
+            sectors_raw=$(ssh ${ssh_opts} ${ip} sudo blockdev --getsz /dev/${disk} 2>/dev/null | strings -a)
             sectors=$(sanitize_output "$sectors_raw")
             echo "  Disk /dev/${disk} has ${sectors} sectors"
 
@@ -293,7 +358,7 @@ for ip in ${unique_ips}; do
                             echo "  Wiping /dev/${disk} at end of disk (seek=${end_seek})..."
                             execute_or_simulate "ssh ${ssh_opts} -qt ${ip} sudo dd if=/dev/zero of=/dev/${disk} bs=${block_size}K count=${metadata_count} oflag=direct,dsync seek=${end_seek} 2>/dev/null"
                         else
-                            dd_output=$(ssh ${ssh_opts} -qt ${ip} sudo dd if=/dev/zero of=/dev/${disk} bs=${block_size}K count=${metadata_count} oflag=direct,dsync seek=${end_seek} 2>&1 | grep "copied" | head -1)
+                            dd_output=$(ssh ${ssh_opts} ${ip} sudo dd if=/dev/zero of=/dev/${disk} bs=${block_size}K count=${metadata_count} oflag=direct,dsync seek=${end_seek} 2>&1 | grep "copied" | head -1)
                             printf "  Wiping /dev/%s at end of disk    : %s\n" "${disk}" "${dd_output}"
                         fi
                     else
@@ -308,7 +373,7 @@ for ip in ${unique_ips}; do
                         execute_or_simulate "ssh ${ssh_opts} -qt ${ip} sudo dd if=/dev/zero of=/dev/${disk} bs=${block_size}K count=${metadata_count} oflag=direct,dsync seek=${seek_blocks} 2>/dev/null"
                     else
                         seek_blocks=$((gb * 1024 * 1024 / block_size))
-                        dd_output=$(ssh ${ssh_opts} -qt ${ip} sudo dd if=/dev/zero of=/dev/${disk} bs=${block_size}K count=${metadata_count} oflag=direct,dsync seek=${seek_blocks} 2>&1 | grep "copied" | head -1)
+                        dd_output=$(ssh ${ssh_opts} ${ip} sudo dd if=/dev/zero of=/dev/${disk} bs=${block_size}K count=${metadata_count} oflag=direct,dsync seek=${seek_blocks} 2>&1 | grep "copied" | head -1)
                         printf "  Wiping /dev/%s at %4sGB offset : %s\n" "${disk}" "${gb}" "${dd_output}"
                     fi
                 fi
