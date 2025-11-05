@@ -3,6 +3,14 @@
 # Enhanced ODF/Ceph Disk Wiping Tool
 # 
 # VERSION HISTORY:
+# v1.10 (2025/11/05) - SSH error handling: added connectivity validation before node processing,
+#                explicit error reporting when SSH login fails, exit code checking for critical
+#                disk discovery commands to prevent silent failures; Added ANSI color support
+#                (Ansible-style) for improved output readability with red for errors, green for
+#                success/OK status, yellow for warnings/changes; Added -h short option for help
+# v1.09 (2025/10/29) - SSH host key handling: added StrictHostKeyChecking=no and UserKnownHostsFile=/dev/null
+#                to prevent any prompts about unknown or changed host keys, ensuring fully automated
+#                execution even with frequently rebuilt or ephemeral OCP/RHCOS nodes
 # v1.08 (2025/10/17) - SSH compatibility fix: removed -qt flags from commands that capture output,
 #                fixed BatchMode+pseudo-terminal conflicts causing silent failures, moved pipe filters
 #                to local execution, resolved OSTree subpath handling in findmnt output
@@ -36,8 +44,14 @@ PATH_SCRIPT="$(cd $(/usr/bin/dirname $(whence -- $0 || echo $0));pwd)"
 cd ${PATH_SCRIPT}
 
 # Script version
-VERSION="1.08"
+VERSION="1.10"
 SCRIPT_NAME="$(basename $0)"
+
+# ANSI color codes (Ansible-style)
+COLOR_RED='\033[0;31m'       # Errors, failures
+COLOR_GREEN='\033[0;32m'     # Success, OK status
+COLOR_YELLOW='\033[0;33m'    # Warnings, changes, important notices
+COLOR_RESET='\033[0m'        # Reset to default
 
 # Function to show help
 show_help() {
@@ -68,7 +82,7 @@ OPTIONS:
     --debug                                        Simulate disk wipe operations (default behavior)
     --yes-i-know-what-i-am-doing-please-wipe-the-disks  Perform actual disk wiping (DESTRUCTIVE!)
     --skip-rootdisk                                Skip wiping root disks on all nodes (safety option)
-    --help                                         Show this help message and exit
+    -h, --help                                     Show this help message and exit
     --version                                      Show version information and exit
 
 CONFIGURATION:
@@ -83,7 +97,7 @@ EXAMPLES:
     $SCRIPT_NAME                                               # Simulate operations (default - safe)
     $SCRIPT_NAME --yes-i-know-what-i-am-doing-please-wipe-the-disks  # Perform actual disk wiping with LUKS cleanup
     $SCRIPT_NAME --skip-rootdisk                               # Simulate with rootdisk protection
-    $SCRIPT_NAME --help                                        # Show this help
+    $SCRIPT_NAME -h                                            # Show this help
 
 EOF
 }
@@ -101,22 +115,22 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --debug)
             debug_mode=1
-            echo "DEBUG MODE: Simulating disk wipe operations (no actual writes will occur)"
+            echo -e "${COLOR_YELLOW}DEBUG MODE: Simulating disk wipe operations (no actual writes will occur)${COLOR_RESET}"
             echo "=========================================================================="
             shift
             ;;
         --yes-i-know-what-i-am-doing-please-wipe-the-disks)
             debug_mode=0
-            echo "LIVE MODE: Will perform ACTUAL DISK WIPING operations!"
+            echo -e "${COLOR_RED}LIVE MODE: Will perform ACTUAL DISK WIPING operations!${COLOR_RESET}"
             echo "=========================================================================="
             shift
             ;;
         --skip-rootdisk)
             skip_rootdisk=1
-            echo "ROOTDISK PROTECTION: Root disks will be skipped (safe mode)"
+            echo -e "${COLOR_YELLOW}ROOTDISK PROTECTION: Root disks will be skipped (safe mode)${COLOR_RESET}"
             shift
             ;;
-        --help)
+        -h|--help)
             show_help
             exit 0
             ;;
@@ -126,7 +140,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Use --help for usage information."
+            echo "Use -h or --help for usage information."
             exit 1
             ;;
     esac
@@ -134,7 +148,9 @@ done
 
 # SSH configuration - connects as 'core' user to execute sudo commands on OCP nodes
 # Note: Simplified to basic options for maximum compatibility
-ssh_opts="-l core"
+# StrictHostKeyChecking=no: Never prompt about unknown/changed host keys
+# UserKnownHostsFile=/dev/null: Don't save keys (ensures no state/prompts)
+ssh_opts="-l core -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 
 # Enhanced disk wiping for ODF/Ceph cleanup
 # This script now uses wipefs, targeted Ceph metadata wiping, and blkdiscard
@@ -177,12 +193,27 @@ for ip in ${unique_ips}; do
     echo "################## Processing node: ${ip}"
     ssh-keygen -R "${ip}" > /dev/null 2>&1
 
+    # Test SSH connectivity before proceeding
+    echo "  Testing SSH connectivity to ${ip}..."
+    if ! ssh ${ssh_opts} ${ip} true 2>&1; then
+        echo -e "  ${COLOR_RED}ERROR: Cannot establish SSH connection to ${ip}${COLOR_RESET}"
+        echo -e "  ${COLOR_RED}ERROR: Please verify:${COLOR_RESET}"
+        echo "    - Node ${ip} is reachable (ping test)"
+        echo "    - SSH service is running on the node"
+        echo "    - SSH key authentication is configured for 'core' user"
+        echo "    - Firewall allows SSH connections"
+        echo -e "  ${COLOR_YELLOW}Skipping node ${ip}${COLOR_RESET}"
+        echo ""
+        continue
+    fi
+    echo -e "  ${COLOR_GREEN}SSH connectivity OK${COLOR_RESET}"
+
     ssh ${ssh_opts} -qt ${ip} sudo /sbin/setenforce 0
 
     # Find rootdisk for this node
     # Multi-method detection with fallbacks for different RHCOS versions and states
     rootdisk=""  # Initialize as empty for each node
-    
+
     # Method 1: Try /boot first (RHCOS 4.14+)
     if [[ -z "${rootdisk}" ]]; then
         boot_dev_raw=$(ssh ${ssh_opts} ${ip} sudo findmnt -no SOURCE /boot 2>/dev/null | cut -d'[' -f1)
@@ -192,7 +223,7 @@ for ip in ${unique_ips}; do
             rootdisk=$(sanitize_output "$rootdisk_raw")
         fi
     fi
-    
+
     # Method 2: Try /sysroot (older RHCOS)
     if [[ -z "${rootdisk}" ]]; then
         sysroot_dev_raw=$(ssh ${ssh_opts} ${ip} sudo findmnt -no SOURCE /sysroot 2>/dev/null | cut -d'[' -f1)
@@ -202,7 +233,7 @@ for ip in ${unique_ips}; do
             rootdisk=$(sanitize_output "$rootdisk_raw")
         fi
     fi
-    
+
     # Method 3: Try root (/)
     if [[ -z "${rootdisk}" ]]; then
         root_dev_raw=$(ssh ${ssh_opts} ${ip} sudo findmnt -no SOURCE / 2>/dev/null | cut -d'[' -f1)
@@ -212,7 +243,7 @@ for ip in ${unique_ips}; do
             rootdisk=$(sanitize_output "$rootdisk_raw")
         fi
     fi
-    
+
     # Method 4: Find any disk with mounted partitions (likely root disk)
     if [[ -z "${rootdisk}" ]]; then
         rootdisk_raw=$(ssh ${ssh_opts} ${ip} \
@@ -220,7 +251,7 @@ for ip in ${unique_ips}; do
             2>/dev/null | sed 's@/dev/@@')
         rootdisk=$(sanitize_output "$rootdisk_raw")
     fi
-    
+
     # Method 5: Fallback - find smallest non-zero disk (often root disk)
     # This is useful for ephemeral/pre-install states, exclude nbd/rbd/loop devices
     if [[ -z "${rootdisk}" ]]; then
@@ -237,26 +268,35 @@ for ip in ${unique_ips}; do
          grep -w disk | \
          cut -f1 -d' ' | \
          cut -d/ -f3 | \
-         egrep -e '^(nvme|sd|vd)'" 2>/dev/null)
+         egrep -e '^(nvme|sd|vd)'" 2>&1)
+    ssh_exit_code=$?
     discovered_disks=$(sanitize_output "$discovered_disks_raw")
 
-    if [[ -z "${discovered_disks}" ]]; then
-        echo "  No disks discovered on ${ip}, skipping node"
+    # Check if SSH command failed
+    if [[ $ssh_exit_code -ne 0 ]]; then
+        echo -e "  ${COLOR_RED}ERROR: Failed to execute disk discovery commands on ${ip}${COLOR_RESET}"
+        echo -e "  ${COLOR_RED}ERROR: SSH command returned exit code: ${ssh_exit_code}${COLOR_RESET}"
+        echo "  Output: ${discovered_disks_raw}"
+        echo -e "  ${COLOR_YELLOW}Skipping node ${ip}${COLOR_RESET}"
         continue
     fi
 
-    echo "  Found disks: ${discovered_disks}"
-    echo "  Root disk: ${rootdisk}"
-    
+    if [[ -z "${discovered_disks}" ]]; then
+        echo -e "  ${COLOR_YELLOW}No disks discovered on ${ip}, skipping node${COLOR_RESET}"
+        continue
+    fi
+
+    echo -e "  ${COLOR_GREEN}Found disks: ${discovered_disks}${COLOR_RESET}"
+    echo -e "  Root disk: ${COLOR_GREEN}${rootdisk}${COLOR_RESET}"
+
     if [[ -z "${rootdisk}" ]]; then
-        echo "  WARNING: Could not detect root disk on ${ip}"
+        echo -e "  ${COLOR_YELLOW}WARNING: Could not detect root disk on ${ip}${COLOR_RESET}"
         if [[ ${skip_rootdisk} -eq 1 ]]; then
-            echo "  WARNING: --skip-rootdisk is enabled but no root disk detected - ALL disks will be skipped!"
-            echo "  Skipping node ${ip} entirely for safety"
-            continue
+            echo -e "  ${COLOR_YELLOW}WARNING: --skip-rootdisk is enabled but no root disk detected${COLOR_RESET}"
+            echo -e "  ${COLOR_YELLOW}WARNING: Cannot skip unknown root disk - proceeding to wipe ALL discovered disks${COLOR_RESET}"
         else
-            echo "  WARNING: Root disk detection failed - proceeding to wipe ALL discovered disks"
-            echo "  WARNING: If this is unintended, use --skip-rootdisk or press Ctrl-C to abort"
+            echo -e "  ${COLOR_YELLOW}WARNING: Root disk detection failed - proceeding to wipe ALL discovered disks${COLOR_RESET}"
+            echo -e "  ${COLOR_YELLOW}WARNING: If this is unintended, use --skip-rootdisk or press Ctrl-C to abort${COLOR_RESET}"
         fi
     fi
 
@@ -305,10 +345,8 @@ for ip in ${unique_ips}; do
     # Step B: Process each discovered disk for wiping
     echo "################## Disk Wiping for node: ${ip}"
     for disk in ${discovered_disks}; do
-        echo "################## Host IP: ${ip}, Processing disk: /dev/${disk}"
-
         if [[ "${disk}" != "${rootdisk}" || "${skip_rootdisk}" -eq 0 ]]; then
-            echo "################## Host IP: ${ip}, Wiping disk: /dev/${disk} (Enhanced ODF/Ceph cleanup)"
+            echo -e "################## Host IP: ${ip}, ${COLOR_YELLOW}Wiping disk: /dev/${disk}${COLOR_RESET} (Enhanced ODF/Ceph cleanup)"
 
             # Step 1: Wipe the partition table off the disk to a fresh, usable state
             echo "Step 1: Wiping partition table and filesystem signatures..."
@@ -381,13 +419,13 @@ for ip in ${unique_ips}; do
 
             # Step 4: Attempt block discard (if supported by device)
             echo "Step 4: Attempting block discard (if supported by device)..."
-            execute_or_simulate "ssh ${ssh_opts} -qt ${ip} sudo blkdiscard /dev/${disk} 2>/dev/null" && echo "  Block discard successful" || echo "  Block discard not supported or failed (this is normal for some devices)"
+            execute_or_simulate "ssh ${ssh_opts} -qt ${ip} sudo blkdiscard /dev/${disk} 2>/dev/null" && echo -e "  ${COLOR_GREEN}Block discard successful${COLOR_RESET}" || echo -e "  ${COLOR_YELLOW}Block discard not supported or failed (this is normal for some devices)${COLOR_RESET}"
 
             # Step 5: Final sync
             ssh ${ssh_opts} -qt ${ip} /bin/sync
         else
-            echo "################## Host IP: ${ip}, SKIPPING rootdisk /dev/${disk}"
+            echo -e "################## Host IP: ${ip}, ${COLOR_GREEN}SKIPPING rootdisk /dev/${disk}${COLOR_RESET}"
         fi
     done  # End of disk processing loop
-    echo "################## Completed processing node: ${ip}"
+    echo -e "################## ${COLOR_GREEN}Completed processing node: ${ip}${COLOR_RESET}"
 done  # End of IP processing loop
