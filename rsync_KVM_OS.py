@@ -9,7 +9,7 @@ hypervisor-specific configurations.
 Author: Vincent S. Cojot
 """
 
-# $Id: rsync_KVM_OS.py,v 1.9 2025/09/29 15:02:02 root Exp root $
+# $Id: rsync_KVM_OS.py,v 1.10 2025/11/10 14:09:04 root Exp root $
 __version__ = "rsync_KVM_OS.py,v 1.05 2025/09/26 12:00:00 python-conversion Exp"
 
 #
@@ -125,7 +125,7 @@ DEFAULT_VM_LIST = [
     "dc00", "dc01", "dc02", "dc03", "fedora-x64", "fedora-csb-x64",
     "win10-x64", "win11-x64", "unifi", "gitlab",
     "bdc416x", "bdc417x", "bdc418x", "bdc419x", "bdc420x", "bdc421x", "bdc422x", "bdc423x",
-    "sat6", "ca8", "idm00", "mailhost", "registry", "quay", "vxvom", "www8",
+    "sat6", "ca8", "idm00", "mailhost", "registry", "quay3", "vxvom", "www8",
     "kali-x64", "freenas-11", "ubuntu-x64", "dsm7", "ocp4s", "ocp4t",
     "rhel3-x86", "rhel4-x86", "rhel5-x86", "rhel5-x64", "rhel6-x86",
     "rhel6-x64", "rhel7-x64", "rhel8-x64", "rhel8-x64-eus", "rhel9-x64",
