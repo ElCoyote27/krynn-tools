@@ -9,12 +9,23 @@ Modernized Python implementation
 A tool to monitor RAID controller status using MegaCLI, perccli, or storcli.
 """
 
-# $Id: megaclisas-status,v 2.20 2025/11/14 19:00:00 storcli-native-syntax-fix Exp $
-__version__ = "megaclisas-status,v 2.20 2025/11/14 19:00:00 storcli-native-syntax-fix Exp"
+# $Id: megaclisas-status,v 2.21 2025/11/14 20:00:00 formatting-consistency-fix Exp $
+__version__ = "megaclisas-status,v 2.21 2025/11/14 20:00:00 formatting-consistency-fix Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v2.21 (2025-11-14): Output formatting consistency improvements
+#   - Fixed drive model formatting in legacy MegaCli parser to match perccli order
+#   - Drive model now displays: "Manufacturer DriveType Firmware Serial" (less to more specific)
+#   - Previous order was: "Serial Manufacturer DriveType Firmware" (inconsistent with native perccli)
+#   - Fixed array size formatting to use TB for large arrays (>= 1000 GB)
+#   - Array sizes now display as "1.818 TB" instead of "1818G" for consistency with perccli
+#   - Fixed disk size formatting to use TB for large disks (>= 1000 GB)
+#   - Disk sizes now run through _parse_size() for consistent TB/GB formatting
+#   - Sizes >= 1 TB use TB format with 3 decimal places, smaller sizes use GB/MB
+#   - Eliminates minor rounding differences between MegaCli and perccli output
 #
 # v2.20 (2025-11-14): Fixed storcli command syntax selection bug
 #   - Fixed critical bug where storcli was detected correctly but commands used wrong syntax
@@ -1288,21 +1299,30 @@ class RAIDParser:
 
     @staticmethod
     def _parse_size(size_str: str) -> str:
-        """Parse and normalize size string."""
+        """Parse and normalize size string to TB or GB format."""
         size_str = size_str.strip()
 
         if size_str.endswith("MB"):
-            size = float(size_str.rstrip("MB").strip())
-            if size > 1000:
-                return f"{int(round(size / 1000))}G"
+            size_mb = float(size_str.rstrip("MB").strip())
+            size_gb = size_mb / 1000
+            if size_gb >= 1000:
+                # Convert to TB for very large sizes
+                return f"{size_gb / 1000:.3f} TB"
+            elif size_gb >= 1:
+                return f"{int(round(size_gb))}G"
             else:
-                return f"{int(round(size))}M"
+                return f"{int(round(size_mb))}M"
         elif size_str.endswith("TB"):
-            size = float(size_str.rstrip("TB").strip())
-            return f"{int(round(size * 1000))}G"
+            # Keep TB format with 3 decimal places for consistency
+            size_tb = float(size_str.rstrip("TB").strip())
+            return f"{size_tb:.3f} TB"
         else:  # GB or no unit
-            size = float(size_str.rstrip("GB").strip())
-            return f"{int(round(size))}G"
+            size_gb = float(size_str.rstrip("GB").strip())
+            if size_gb >= 1000:
+                # Convert to TB for large sizes
+                return f"{size_gb / 1000:.3f} TB"
+            else:
+                return f"{int(round(size_gb))}G"
 
     @staticmethod
     def _parse_cache_properties(props: str) -> str:
@@ -1396,8 +1416,10 @@ class RAIDParser:
                     current_disk["media_type"] = "N/A"
             elif match := RegexPatterns.COERCED_SIZE.match(line):
                 size_str = match.group(1).strip()
-                current_disk["size"] = re.sub(r" \[.*\].*$", "", size_str).replace(" ", "")
-                current_disk["size"] = re.sub(r"[0-9][0-9]GB", "Gb", current_disk["size"])
+                # Remove sector information in brackets
+                size_str = re.sub(r" \[.*\].*$", "", size_str).strip()
+                # Normalize size format through _parse_size() for consistency
+                current_disk["size"] = RAIDParser._parse_size(size_str)
             elif match := RegexPatterns.DEVICE_SPEED.match(line):
                 current_disk["speed"] = match.group(1).strip()
             elif match := RegexPatterns.DRIVE_TEMP.match(line):
@@ -1449,8 +1471,10 @@ class RAIDParser:
                         try:
                             # Parse: EID:Slt, DID, State, DG, Size, Intf, Med, SED, PI, SeSz, Model...
                             size_idx = 4  # Size is at index 4
-                            if parts[size_idx+1] in ["TB", "GB"]:  # Size + unit
-                                current_disk["size"] = f"{parts[size_idx]} {parts[size_idx+1]}"
+                            if parts[size_idx+1] in ["TB", "GB", "MB"]:  # Size + unit
+                                size_str = f"{parts[size_idx]} {parts[size_idx+1]}"
+                                # Normalize size format through _parse_size() for consistency
+                                current_disk["size"] = RAIDParser._parse_size(size_str)
 
                             intf_idx = size_idx + 2  # Interface after size
                             current_disk["interface"] = parts[intf_idx]
@@ -1511,7 +1535,8 @@ class RAIDParser:
                 elif line_stripped.startswith("Coerced size ="):
                     # "Coerced size = 1.818 TB [0xe8d00000 Sectors]"
                     size_part = line_stripped.split("=")[1].split("[")[0].strip()
-                    current_disk["size"] = size_part
+                    # Normalize size format through _parse_size() for consistency
+                    current_disk["size"] = RAIDParser._parse_size(size_part)
                 elif line_stripped.startswith("Device Speed ="):
                     current_disk["speed"] = line_stripped.split("=")[1].strip()
                 elif line_stripped.startswith("SN ="):
@@ -1670,11 +1695,12 @@ class RAIDParser:
                     current_disk["media_type"] = "N/A"
 
             elif line.startswith("Coerced Size:"):
-                # Parse size like "1.818 TB [0xe8d00000 Sectors]"
+                # Parse size like "1.818 TB [0xe8d00000 Sectors]" or "14551 GB [0x...]"
                 size_str = line.split(":", 1)[1].strip()
                 if "[" in size_str:
                     size_str = size_str.split("[")[0].strip()
-                current_disk["size"] = size_str
+                # Normalize size format through _parse_size() for consistency
+                current_disk["size"] = RAIDParser._parse_size(size_str)
 
             elif line.startswith("Device Speed:"):
                 current_disk["speed"] = line.split(":", 1)[1].strip()
@@ -1794,20 +1820,27 @@ class RAIDParser:
                 "serial": seagate_match.group(1)
             }
 
-        # Generic parsing - extract manufacturer, drive type and serial
+        # Generic parsing for MegaCli inquiry data format
+        # Format: "SERIAL MANUFACTURER_MODEL FIRMWARE" (with variable spacing)
+        # Example: "S753NS0W812677Y Samsung SSD 870 EVO 2TB SVT03B6Q"
+        # Example: "4BJZ594H WDC WD161KFGX-68AFPN0 83.00A83"
         parts = model.split()
-        if len(parts) >= 2:
-            manufacturer = parts[0]
-            drive_type = parts[1] if len(parts) > 1 else ""
-            # Try to find serial at the end
-            serial = parts[-1] if len(parts) > 2 else ""
+        if len(parts) >= 3:
+            # parts[0] = serial, parts[1:-1] = manufacturer+model, parts[-1] = firmware
+            serial = parts[0]
+            manufacturer = parts[1]  # First word after serial is manufacturer
+            firmware = parts[-1]
 
-            # Format similar to original: "SERIAL MANUFACTURER DRIVETYPE FIRMWARE"
-            if len(parts) >= 4:
-                formatted_model = f"{parts[-1]} {parts[0]} {parts[1]} {parts[-2]}"
-            else:
-                formatted_model = original_model
+            # Reconstruct as: "MANUFACTURER MODEL FIRMWARE SERIAL" (less to more specific)
+            manufacturer_model = " ".join(parts[1:-1])  # Everything between serial and firmware
+            formatted_model = f"{manufacturer_model} {firmware} {serial}"
+        elif len(parts) == 2:
+            # Minimal format: "SERIAL SOMETHING"
+            serial = parts[0]
+            manufacturer = parts[1]
+            formatted_model = f"{parts[1]} {parts[0]}"
         else:
+            # Single part or empty - use as-is
             manufacturer = model.split()[0] if model.split() else "Unknown"
             formatted_model = original_model
             serial = ""
