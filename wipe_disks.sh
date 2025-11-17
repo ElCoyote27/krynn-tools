@@ -268,7 +268,7 @@ for ip in ${unique_ips}; do
          grep -w disk | \
          cut -f1 -d' ' | \
          cut -d/ -f3 | \
-         egrep -e '^(nvme|sd|vd)'" 2>&1)
+         egrep -e '^(nvme|sd|vd)'" 2>/dev/null)
     ssh_exit_code=$?
     discovered_disks=$(sanitize_output "$discovered_disks_raw")
 
