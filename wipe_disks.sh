@@ -150,7 +150,9 @@ done
 # Note: Simplified to basic options for maximum compatibility
 # StrictHostKeyChecking=no: Never prompt about unknown/changed host keys
 # UserKnownHostsFile=/dev/null: Don't save keys (ensures no state/prompts)
-ssh_opts="-l core -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+# LogLevel=ERROR: Suppress "Permanently added" warnings that can contaminate output
+# ConnectTimeout=5: Fail fast if host is unreachable (5 second timeout)
+ssh_opts="-l core -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5"
 
 # Enhanced disk wiping for ODF/Ceph cleanup
 # This script now uses wipefs, targeted Ceph metadata wiping, and blkdiscard
@@ -270,7 +272,8 @@ for ip in ${unique_ips}; do
          cut -d/ -f3 | \
          egrep -e '^(nvme|sd|vd)'" 2>/dev/null)
     ssh_exit_code=$?
-    discovered_disks=$(sanitize_output "$discovered_disks_raw")
+    # Sanitize and filter to only include valid disk names (remove any SSH warnings or garbage)
+    discovered_disks=$(echo "$discovered_disks_raw" | tr ' ' '\n' | grep -E '^(nvme[0-9]+n[0-9]+|[sv]d[a-z]+)$' | tr '\n' ' ' | xargs)
 
     # Check if SSH command failed
     if [[ $ssh_exit_code -ne 0 ]]; then
