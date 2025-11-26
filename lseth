@@ -87,7 +87,7 @@ class NetworkInterfaceAnalyzer:
     def get_terminal_width(self):
         """Get terminal width for output formatting"""
         try:
-            result = subprocess.run(['stty', 'size'], capture_output=True, text=True)
+            result = subprocess.run(['stty', 'size'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             if result.returncode == 0:
                 _, cols = result.stdout.strip().split()
                 self.max_cols = int(cols)
@@ -129,7 +129,7 @@ class NetworkInterfaceAnalyzer:
         """Get interface state (up/down)"""
         try:
             result = subprocess.run([self.tools['ip'], '-o', 'l', 'sh', interface], 
-                                  capture_output=True, text=True)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             if result.returncode == 0:
                 if re.search(r'[!<,]UP[!>,]', result.stdout):
                     return 'up'
@@ -164,7 +164,7 @@ class NetworkInterfaceAnalyzer:
         # Fallback to ethtool
         try:
             result = subprocess.run([self.tools['ethtool'], interface], 
-                                  capture_output=True, text=True)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             if result.returncode == 0:
                 match = re.search(r'Speed:\s+(\d+)Mb/s', result.stdout)
                 if match:
@@ -181,7 +181,7 @@ class NetworkInterfaceAnalyzer:
 
         try:
             result = subprocess.run([self.tools['ethtool'], '-g', interface], 
-                                  capture_output=True, text=True, timeout=5)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=5)
 
             if result.returncode == 0:
                 lines = result.stdout.splitlines()
@@ -214,13 +214,13 @@ class NetworkInterfaceAnalyzer:
                         elif line.startswith('TX:') and 'n/a' not in line.lower():
                             curr_tx = line.split(':')[1].strip()
 
-                # Format as simple current values only
+                # Format as RX/TX pair for consistency
                 if curr_rx and curr_tx:
                     return f"{curr_rx}/{curr_tx}"
                 elif curr_rx:
-                    return f"RX:{curr_rx}"
+                    return f"{curr_rx}/-"
                 elif curr_tx:
-                    return f"TX:{curr_tx}"
+                    return f"-/{curr_tx}"
 
             return 'N/A'
 
@@ -231,7 +231,7 @@ class NetworkInterfaceAnalyzer:
         """Get interface MTU"""
         try:
             result = subprocess.run([self.tools['ip'], '-o', 'l', 'sh', interface], 
-                                  capture_output=True, text=True)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             if result.returncode == 0:
                 match = re.search(r'mtu (\d+)', result.stdout)
                 if match:
@@ -244,7 +244,7 @@ class NetworkInterfaceAnalyzer:
         """Get driver name and PCI path"""
         try:
             result = subprocess.run([self.tools['ethtool'], '-i', interface], 
-                                  capture_output=True, text=True)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             if result.returncode == 0:
                 driver_match = re.search(r'driver:\s+(\S+)', result.stdout)
                 bus_match = re.search(r'bus-info:\s+(\S+)', result.stdout)
@@ -289,7 +289,7 @@ class NetworkInterfaceAnalyzer:
         except:
             try:
                 result = subprocess.run([self.tools['ip'], 'l', 'sh', interface], 
-                                      capture_output=True, text=True)
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
                 if result.returncode == 0:
                     match = re.search(r'link/ether (\S+)', result.stdout)
                     if match:
@@ -301,12 +301,12 @@ class NetworkInterfaceAnalyzer:
         try:
             result = subprocess.run(['grep', '-H', f'Slave Interface: {interface}$', 
                                    '/proc/net/bonding/bond*'], 
-                                  capture_output=True, text=True, shell=True)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, shell=True)
             if result.returncode == 0:
                 # Get the real MAC from bonding info
                 bond_result = subprocess.run(['grep', '-A5', f'Slave Interface: {interface}$', 
                                            '/proc/net/bonding/bond*'], 
-                                          capture_output=True, text=True, shell=True)
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, shell=True)
                 if bond_result.returncode == 0:
                     hw_match = re.search(r'Permanent HW addr:\s+(\S+)', bond_result.stdout)
                     if hw_match:
@@ -330,14 +330,14 @@ class NetworkInterfaceAnalyzer:
         try:
             if is_loopback:
                 result = subprocess.run([self.tools['ip'], '-o', '-4', 'a', 's', interface], 
-                                      capture_output=True, text=True)
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
                 if result.returncode == 0:
                     match = re.search(r'inet (\S+).*scope host', result.stdout)
                     if match:
                         return match.group(1)
             else:
                 result = subprocess.run([self.tools['ip'], '-o', '-4', 'a', 's', interface], 
-                                      capture_output=True, text=True)
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
                 if result.returncode == 0:
                     match = re.search(r'inet (\S+).*scope global(?!.*secondary)', result.stdout)
                     if match:
@@ -358,7 +358,7 @@ class NetworkInterfaceAnalyzer:
             # Get detailed subsystem info for these drivers
             try:
                 result = subprocess.run([self.tools['lspci'], '-vmm', '-s', pci_path], 
-                                      capture_output=True, text=True)
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
                 if result.returncode == 0:
                     vendor_match = re.search(r'SVendor:\s*(.+)', result.stdout)
                     device_match = re.search(r'SDevice:\s*(.+)', result.stdout)
@@ -378,7 +378,7 @@ class NetworkInterfaceAnalyzer:
             try:
                 # Get USB device info
                 result = subprocess.run(['udevadm', 'info', f'/sys/class/net/{interface}', '-x'], 
-                                      capture_output=True, text=True)
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
                 if result.returncode == 0:
                     vid_match = re.search(r'ID_USB_VENDOR_ID=(\w+)', result.stdout)
                     pid_match = re.search(r'ID_USB_MODEL_ID=(\w+)', result.stdout)
@@ -388,7 +388,7 @@ class NetworkInterfaceAnalyzer:
                         pid = pid_match.group(1)
 
                         usb_result = subprocess.run([self.tools['lsusb'], '-d', f'{vid}:{pid}'], 
-                                                  capture_output=True, text=True)
+                                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
                         if usb_result.returncode == 0:
                             desc_match = re.search(f'{vid}:{pid}\\s+(.+)', usb_result.stdout)
                             if desc_match:
@@ -400,7 +400,7 @@ class NetworkInterfaceAnalyzer:
         if not desc:
             try:
                 result = subprocess.run([self.tools['lspci'], '-D', '-s', pci_path], 
-                                      capture_output=True, text=True)
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
                 if result.returncode == 0:
                     desc_match = re.search(r'.*:\s+(.+)', result.stdout)
                     if desc_match:
@@ -467,7 +467,7 @@ class NetworkInterfaceAnalyzer:
         # Get base driver name
         try:
             result = subprocess.run([self.tools['ethtool'], '-i', interface], 
-                                  capture_output=True, text=True)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             if result.returncode == 0:
                 driver_match = re.search(r'driver:\s+(\S+)', result.stdout)
                 if driver_match:
@@ -492,7 +492,7 @@ class NetworkInterfaceAnalyzer:
             version = ''
             try:
                 result = subprocess.run(['/sbin/modinfo', '-F', 'version', driver], 
-                                      capture_output=True, text=True)
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
                 if result.returncode == 0:
                     version = result.stdout.strip()
                     self.debug_print(f"Got modinfo version for {driver}: '{version}'")
