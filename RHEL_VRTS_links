@@ -6,11 +6,21 @@ Python rewrite of RHEL_VRTS_links bash script
 Maintains same command syntax: --force, --silent, --exec
 """
 
-__version__ = "RHEL_VRTS_links 1.07 2025/08/31 22:05:00 python-rewrite Exp"
+__version__ = "RHEL_VRTS_links 1.08 2025/12/08 12:00:00 python-rewrite Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.08 (2025-12-08): Fixed subrevision comparison for proper module selection
+#   - CRITICAL FIX: Use full subrevision tuple comparison (570, 64, 1) not just (570)
+#   - For kernel 570.62.1: select module 570.12.1 (highest <= 62.1)
+#   - For kernel 570.64.1: select module 570.64.1 (exact match)
+#   - For kernel 570.69.1: select module 570.64.1 (highest <= 69.1)
+#   - Added extract_full_subrev() and extract_kernel_subrev() helper methods
+#   - Applied fix to both find_best_module() and find_vcs_module() functions
+#   - Also filters /dev/null symlinks in find_best_module() (was only in VCS)
+#   - Ensures correct module selection after VRTSllt rpm updates with new subrevisions
 #
 # v1.07 (2025-08-31): Renamed class to VRTSRelinker for accurate terminology
 #   - Changed class name from VRTSLinker to VRTSRelinker
@@ -392,12 +402,15 @@ class VRTSRelinker:
                         kmod_dir: str, blacklist_subrevs: set) -> Optional[str]:
         """Find the best matching kernel module for given kernel version
 
-        This replicates the bash logic but uses a clean set-based blacklist approach
+        Selects the module with highest subrevision that is <= kernel's subrevision.
+        Also filters out symlinks to /dev/null (disabled modules).
         """
         self.debug_print(f"Finding best module for {module_name} with kernel {kernel_version}")
         krev = kernel_version.split('-')[0]  # e.g., "5.14.0"
         ksubrev = '.'.join(kernel_version.split('.')[:3])  # e.g., "5.14.0"
+        kernel_subrev_tuple = self.extract_kernel_subrev(kernel_version)
         self.debug_print(f"  KREV (base): {krev}, KSUBREV (full): {ksubrev}")
+        self.debug_print(f"  Kernel full subrevision: {kernel_subrev_tuple}")
 
         # Try with full subrevision first (KSUBREV), then with base revision (KREV)
         patterns = [
@@ -412,50 +425,41 @@ class VRTSRelinker:
             self.debug_print(f"    Found {len(files)} matching files")
 
             if files:
-                # Sort by version using a version-aware sort (similar to sort -V)
-                def version_key(filename):
-                    # Extract version from filename like "module.ko.5.14.0-284.11.1.el9_2.x86_64"
-                    parts = filename.split('.ko.')
-                    if len(parts) >= 2:
-                        version = parts[1]
-                        # Split by dash to get the subrevision for sorting
-                        if '-' in version:
-                            dash_parts = version.split('-')
-                            if len(dash_parts) >= 2:
-                                try:
-                                    # Use the numeric part for sorting
-                                    subrev = int(dash_parts[1].split('.')[0])
-                                    return subrev
-                                except ValueError:
-                                    return 0
-                    return 0
+                # Filter out symlinks to /dev/null first
+                valid_files = []
+                for f in files:
+                    try:
+                        real_path = os.path.realpath(f)
+                        if real_path == '/dev/null':
+                            self.debug_print(f"      SKIPPED: {f} -> /dev/null (disabled module)")
+                            continue
+                    except OSError:
+                        pass
+                    valid_files.append(f)
 
-                files.sort(key=version_key)
-                if self.debug:
-                    self.debug_print(f"    Files sorted by version:")
-                    for f in files:
-                        subrev = version_key(f)
-                        self.debug_print(f"      {f} (subrev: {subrev})")
+                if not valid_files:
+                    self.debug_print(f"    No valid files after /dev/null filtering")
+                    continue
 
-                # Filter out blacklisted versions - much cleaner than regex matching
-                original_count = len(files)
-                if blacklist_subrevs:
-                    filtered_files = []
-                    for f in files:
-                        file_subrev = version_key(f)  # Extract subrev from filename
-                        if file_subrev not in blacklist_subrevs:
-                            filtered_files.append(f)
-                        else:
-                            self.debug_print(f"      FILTERED OUT: {f} (subrev {file_subrev} is blacklisted)")
-                    files = filtered_files
-                    self.debug_print(f"    After blacklist filtering: {len(files)}/{original_count} files remaining")
+                # Filter by subrevision: only keep modules with subrev <= kernel subrev
+                eligible_files = []
+                for f in valid_files:
+                    file_subrev = self.extract_full_subrev(f)
+                    if file_subrev <= kernel_subrev_tuple:
+                        eligible_files.append((f, file_subrev))
+                        self.debug_print(f"      ELIGIBLE: {f} (subrev {file_subrev} <= kernel {kernel_subrev_tuple})")
+                    else:
+                        self.debug_print(f"      FILTERED OUT: {f} (subrev {file_subrev} > kernel {kernel_subrev_tuple})")
 
-                if files:
-                    selected = files[-1]  # Return the latest version (tail -1 equivalent)
-                    self.debug_print(f"    SELECTED: {selected}")
-                    return selected
-                else:
-                    self.debug_print(f"    No files remaining after filtering")
+                if not eligible_files:
+                    self.debug_print(f"    No eligible files after subrev filtering")
+                    continue
+
+                # Sort by subrevision and select the highest (best match)
+                eligible_files.sort(key=lambda x: x[1])
+                selected = eligible_files[-1][0]
+                self.debug_print(f"    SELECTED: {selected}")
+                return selected
 
         self.debug_print(f"  No suitable module found for {module_name}")
         return None
@@ -535,11 +539,59 @@ class VRTSRelinker:
                     else:
                         self.debug_print(f"Blacklisted module {target_file} already absent")
 
+    def extract_full_subrev(self, filename: str) -> tuple:
+        """Extract full subrevision as tuple for proper version comparison.
+
+        For filename like 'llt.ko.5.14.0-570.12.1.el9_6.x86_64-rdma':
+        Returns (570, 12, 1) for proper numeric comparison.
+        """
+        parts = filename.split('.ko.')
+        if len(parts) >= 2:
+            version = parts[1]  # e.g., "5.14.0-570.12.1.el9_6.x86_64-rdma"
+            if '-' in version:
+                dash_parts = version.split('-')
+                if len(dash_parts) >= 2:
+                    # dash_parts[1] is like "570.12.1.el9_6.x86_64"
+                    subrev_full = dash_parts[1]  # e.g., "570.12.1.el9_6.x86_64"
+                    dot_parts = subrev_full.split('.')
+                    # Extract numeric parts until we hit non-numeric (el9_6)
+                    numeric_parts = []
+                    for part in dot_parts:
+                        try:
+                            numeric_parts.append(int(part))
+                        except ValueError:
+                            break
+                    if numeric_parts:
+                        return tuple(numeric_parts)
+        return (0,)
+
+    def extract_kernel_subrev(self, kernel_version: str) -> tuple:
+        """Extract full subrevision from kernel version for comparison.
+
+        For kernel like '5.14.0-570.62.1.el9_6.x86_64':
+        Returns (570, 62, 1) for proper numeric comparison.
+        """
+        if '-' in kernel_version:
+            dash_parts = kernel_version.split('-')
+            if len(dash_parts) >= 2:
+                subrev_full = dash_parts[1]  # e.g., "570.62.1.el9_6.x86_64"
+                dot_parts = subrev_full.split('.')
+                numeric_parts = []
+                for part in dot_parts:
+                    try:
+                        numeric_parts.append(int(part))
+                    except ValueError:
+                        break
+                if numeric_parts:
+                    return tuple(numeric_parts)
+        return (0,)
+
     def find_vcs_module(self, module_name: str, kernel_version: str,
                        local_kmod_dir: str, blacklist_subrevs: set) -> Optional[str]:
         """Find VCS module with complex pattern matching (updated with RDMA support and /dev/null detection)"""
         krev = kernel_version.split('-')[0]
         ksubrev = '.'.join(kernel_version.split('.')[:3])
+        kernel_subrev_tuple = self.extract_kernel_subrev(kernel_version)
 
         self.debug_print(f"  Looking for VCS module {module_name} in {local_kmod_dir}")
 
@@ -581,58 +633,49 @@ class VRTSRelinker:
                 f"{local_kmod_dir}/{module_name}.ko.{krev}*.el{rhel_version}.x86_64"
             ]
 
-        def extract_vcs_subrev(filename):
-            """Extract subrevision from VCS module filename"""
-            # VCS modules have different naming but similar logic
-            parts = filename.split('.ko.')
-            if len(parts) >= 2:
-                version = parts[1]
-                if '-' in version:
-                    dash_parts = version.split('-')
-                    if len(dash_parts) >= 2:
-                        try:
-                            subrev = int(dash_parts[1].split('.')[0])
-                            return subrev
-                        except ValueError:
-                            return 0
-            return 0
+        self.debug_print(f"  Kernel full subrevision: {kernel_subrev_tuple}")
 
         for i, pattern in enumerate(patterns):
             self.debug_print(f"    Trying VCS pattern {i+1}/{len(patterns)}: {pattern}")
             files = glob.glob(pattern)
             if files:
                 self.debug_print(f"      Found {len(files)} matching files")
-                # Sort by version
-                files.sort(key=extract_vcs_subrev)
 
-                # Filter out blacklisted versions
-                if blacklist_subrevs:
-                    filtered_files = []
-                    for f in files:
-                        file_subrev = extract_vcs_subrev(f)
-                        if file_subrev not in blacklist_subrevs:
-                            filtered_files.append(f)
-                        else:
-                            self.debug_print(f"        FILTERED OUT: {f} (subrev {file_subrev} is blacklisted)")
-                    files = filtered_files
-                    self.debug_print(f"      After blacklist filtering: {len(files)} files remaining")
-
-                if files:
-                    selected = files[-1]
-
-                    # NEW: Check if symlink points to /dev/null (disabled module)
+                # Filter out symlinks to /dev/null first
+                valid_files = []
+                for f in files:
                     try:
-                        real_path = os.path.realpath(selected)
+                        real_path = os.path.realpath(f)
                         if real_path == '/dev/null':
-                            self.debug_print(f"      SKIPPED: {selected} -> /dev/null (disabled module)")
+                            self.debug_print(f"        SKIPPED: {f} -> /dev/null (disabled module)")
                             continue
-                        else:
-                            self.debug_print(f"      SELECTED VCS module: {selected}")
-                            return selected
                     except OSError:
-                        # If readlink fails, assume it's a regular file
-                        self.debug_print(f"      SELECTED VCS module: {selected}")
-                        return selected
+                        pass
+                    valid_files.append(f)
+
+                if not valid_files:
+                    self.debug_print(f"      No valid files after /dev/null filtering")
+                    continue
+
+                # Filter by subrevision: only keep modules with subrev <= kernel subrev
+                eligible_files = []
+                for f in valid_files:
+                    file_subrev = self.extract_full_subrev(f)
+                    if file_subrev <= kernel_subrev_tuple:
+                        eligible_files.append((f, file_subrev))
+                        self.debug_print(f"        ELIGIBLE: {f} (subrev {file_subrev} <= kernel {kernel_subrev_tuple})")
+                    else:
+                        self.debug_print(f"        FILTERED OUT: {f} (subrev {file_subrev} > kernel {kernel_subrev_tuple})")
+
+                if not eligible_files:
+                    self.debug_print(f"      No eligible files after subrev filtering")
+                    continue
+
+                # Sort by subrevision and select the highest (best match)
+                eligible_files.sort(key=lambda x: x[1])
+                selected = eligible_files[-1][0]
+                self.debug_print(f"      SELECTED VCS module: {selected}")
+                return selected
 
         self.debug_print(f"  No suitable VCS module found for {module_name}")
         return None
