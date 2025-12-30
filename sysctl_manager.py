@@ -10,8 +10,13 @@ Features:
 - Built-in editable profiles for common configurations
 """
 
-# $Id: sysctl_manager.py 1.01 2025/12/26 00:00:00 add-profiles Exp $
-__version__ = "sysctl_manager.py 1.01 2025/12/26 00:00:00 add-profiles Exp"
+# $Id: sysctl_manager.py 1.02 2025/12/26 00:00:00 tcp-keepalive Exp $
+__version__ = "sysctl_manager.py 1.02 2025/12/26 tcp-keepalive"
+
+# VERSION HISTORY:
+# v1.02 (2025-12-26): Added TCP keepalive/fin_timeout to HVM profile, expanded known defaults
+# v1.01 (2025-12-26): Added built-in profiles (@hvm, @server, @database, @forward)
+# v1.00 (2025-12-26): Initial release - compare, defaults, apply, status commands
 
 import argparse
 import os
