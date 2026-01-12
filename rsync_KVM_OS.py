@@ -25,6 +25,7 @@ __version__ = "rsync_KVM_OS.py,v 1.15 2026/01/12 12:00:00 python-conversion Exp"
 #   - DEFAULT_KVM_TEMPLATES kept for future use but not currently active
 #   - Expanded machine type sed patterns to catch all pc-i440fx-* and pc-q35-* variants
 #   - After define, saves normalized XML to remote templates dir for propagation
+#   - Changed sync order: disk/NVRAM first, then XML (ensures consistency on failure)
 #
 # v1.05 (2025-09-26): VXFS source host detection fix
 #   - BUGFIX: Fixed VXFS snapshot logic to use source host configuration instead of destination host
@@ -1032,6 +1033,7 @@ class KVMReplicator:
 
                         # Define guest on remote machine
                         self.run_ssh_command(f"PATH=/bin:/opt/bin virsh define {remote_xml}")
+                        logger.info(f"Defined domain {vm} on {self.remote_host}")
 
                         # Copy normalized XML to remote templates directory for future use
                         remote_templates_dir = f"{DEFAULT_KVM_TEMPLATES}"
@@ -1238,11 +1240,6 @@ class KVMReplicator:
 
                 logger.info(f"Final VM List: {' '.join(vms_to_sync)}")
 
-                # Sync VM configurations
-                if vms_to_sync:
-                    if not self.sync_vm_configs(vms_to_sync):
-                        success = False
-
                 # Create snapshot if needed (only if no existing snapshot and snapshots are enabled)
                 if (disk_files or nvram_files) and not existing_snapshot_info and self.vxfs_snapshots:
                     snapshot_info = self.create_vxfs_snapshot(src_dir)
@@ -1275,6 +1272,11 @@ class KVMReplicator:
                     for nvram_file in nvram_files:
                         if not self.sync_file(nvram_file, self.host_config.kvm_nvram_dst_dirs[i]):
                             success = False
+
+                # Sync VM configurations (after disk/NVRAM sync to ensure consistency)
+                if vms_to_sync:
+                    if not self.sync_vm_configs(vms_to_sync):
+                        success = False
 
                 # Copy tools to scripts directory (always use canonical location)
                 dst_base_dir = os.path.dirname(self.host_config.kvm_images_dst_dirs[i])
