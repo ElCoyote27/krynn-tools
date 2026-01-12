@@ -9,8 +9,8 @@ hypervisor-specific configurations.
 Author: Vincent S. Cojot
 """
 
-# $Id: rsync_KVM_OS.py,v 1.15 2026/01/12 21:04:47 root Exp root $
-__version__ = "rsync_KVM_OS.py,v 1.15 2026/01/12 12:00:00 python-conversion Exp"
+# $Id: rsync_KVM_OS.py,v 1.06 2026/01/12 22:16:48 root Exp root $
+__version__ = "rsync_KVM_OS.py,v 1.06 2026/01/12 12:00:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
@@ -271,7 +271,7 @@ class KVMReplicator:
 
             # Standard KVM hosts (only override VM lists)
             'solinari': {**KVM_STD_CONFIG,
-                'default_vm_list': "rhel3-x86 win10-x64 win11-x64 bdc420x dc00 dc01 idm00 fedora-x64 fedora-csb-x64 cirros ca8 mailhost ocp4s ocp4t",
+                'default_vm_list': "rhel3-x86 win10-x64 win11-x64 bdc420x dc00 dc01 idm00 fedora-x64 fedora-csb-x64 cirros ca8 mailhost",
                 'vxfs_snapshots': False,
             },
             'solanthus': {**KVM_STD_CONFIG,
@@ -1263,7 +1263,7 @@ class KVMReplicator:
 
                 # Sync disk files with parallel rsync processes
                 if disk_files:
-                    logger.info(f"Starting parallel rsync for {len(disk_files)} disk files...")
+                    logger.info(f"Starting parallel rsync for {len(disk_files)} disk files to {self.remote_host}...")
                     if not self.sync_files_parallel(disk_files, self.host_config.kvm_images_dst_dirs[i]):
                         success = False
 
