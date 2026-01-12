@@ -9,12 +9,22 @@ hypervisor-specific configurations.
 Author: Vincent S. Cojot
 """
 
-# $Id: rsync_KVM_OS.py,v 1.10 2025/11/10 14:09:04 root Exp root $
-__version__ = "rsync_KVM_OS.py,v 1.05 2025/09/26 12:00:00 python-conversion Exp"
+# $Id: rsync_KVM_OS.py,v 1.15 2026/01/12 21:04:47 root Exp root $
+__version__ = "rsync_KVM_OS.py,v 1.15 2026/01/12 12:00:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.06 (2026-01-12): XML sync visibility and source selection fix
+#   - BUGFIX: Added explicit logging for XML configuration sync operations
+#   - Removed -q (quiet) flag from XML rsync to match disk/NVRAM sync visibility
+#   - XML syncs now show "*** Syncing XML ({vm})" messages like disk files do
+#   - Fixed exception handling in debug mode (errors were being swallowed silently)
+#   - Simplified XML source: always use /etc/libvirt/qemu/ (removed template logic)
+#   - DEFAULT_KVM_TEMPLATES kept for future use but not currently active
+#   - Expanded machine type sed patterns to catch all pc-i440fx-* and pc-q35-* variants
+#   - After define, saves normalized XML to remote templates dir for propagation
 #
 # v1.05 (2025-09-26): VXFS source host detection fix
 #   - BUGFIX: Fixed VXFS snapshot logic to use source host configuration instead of destination host
@@ -106,7 +116,7 @@ DEFAULT_KVM_CONF_SRC_DIR = "/etc/libvirt/qemu"
 DEFAULT_KVM_CONF_DST_DIR = "/etc/libvirt/qemu"
 DEFAULT_KVM_IMAGES_SRC_DIRS = ["/shared/kvm0/images"]
 DEFAULT_KVM_NVRAM_SRC_DIRS = ["/shared/kvm0/nvram"]
-DEFAULT_KVM_TEMPLATES = "/var/lib/libvirt/templates"
+DEFAULT_KVM_TEMPLATES = "/var/lib/libvirt/templates"  # Reserved for future use
 
 # SSH and Rsync Configuration
 SSH_CIPHER = "aes128-gcm@openssh.com"
@@ -129,7 +139,9 @@ DEFAULT_VM_LIST = [
     "kali-x64", "freenas-11", "ubuntu-x64", "dsm7", "ocp4s", "ocp4t",
     "rhel3-x86", "rhel4-x86", "rhel5-x86", "rhel5-x64", "rhel6-x86",
     "rhel6-x64", "rhel7-x64", "rhel8-x64", "rhel8-x64-eus", "rhel9-x64",
-    "coreos-sno-0", "coreos-sno-1", "coreos-sno-2", "coreos-sno-3", "cirros"
+    "coreos-sno-0", "coreos-sno-1", "coreos-sno-2", "coreos-sno-3",
+    "coreos-sno-4", "coreos-sno-5", "coreos-sno-6", "coreos-sno-7",
+    "cirros"
 ]
 
 # =============================================================================
@@ -187,7 +199,6 @@ class KVMReplicator:
         self.kvm_conf_dst_dir = DEFAULT_KVM_CONF_DST_DIR
         self.kvm_images_src_dirs = DEFAULT_KVM_IMAGES_SRC_DIRS.copy()
         self.kvm_nvram_src_dirs = DEFAULT_KVM_NVRAM_SRC_DIRS.copy()
-        self.default_kvm_templates = DEFAULT_KVM_TEMPLATES
 
         # SSH and rsync configuration from constants
         self.ssh_cipher = SSH_CIPHER
@@ -259,14 +270,14 @@ class KVMReplicator:
 
             # Standard KVM hosts (only override VM lists)
             'solinari': {**KVM_STD_CONFIG,
-                'default_vm_list': "rhel3-x86 win10-x64 win11-x64 bdc420x dc00 dc01 idm00 fedora-x64 fedora-csb-x64 cirros ca8 mailhost",
+                'default_vm_list': "rhel3-x86 win10-x64 win11-x64 bdc420x dc00 dc01 idm00 fedora-x64 fedora-csb-x64 cirros ca8 mailhost ocp4s ocp4t",
                 'vxfs_snapshots': False,
             },
             'solanthus': {**KVM_STD_CONFIG,
                 'default_vm_list': "rhel3-x86 rhel9-x64 ca8 fedora-x64 fedora-csb-x64 win10-x64 win11-x64 dc00 dc01 bdc420x idm00 cirros mailhost"
             },
             'lothlorien': {**KVM_STD_CONFIG,
-                'default_vm_list': "fedora-csb-x64 cirros dc00 dc01 ca8 gitlab"
+                'default_vm_list': "fedora-csb-x64 cirros dc00 dc01 ca8 gitlab win10-x64 win11-x64"
             },
             'thorbardin': {**KVM_STD_CONFIG },
 
@@ -945,15 +956,18 @@ class KVMReplicator:
 
         success = True
         for vm in vm_list:
-            # Check for templated XML
-            template_xml = f"{self.default_kvm_templates}/{vm}.xml"
-            if os.path.exists(template_xml):
-                xml_src = template_xml
-            else:
-                xml_src = f"{self.kvm_conf_src_dir}/{vm}.xml"
+            # Always use standard libvirt XML location
+            xml_src = f"{self.kvm_conf_src_dir}/{vm}.xml"
+            
+            if not os.path.exists(xml_src):
+                logger.warning(f"No XML file found for {vm} at {xml_src}, skipping...")
+                continue
 
-            # Sync XML file (with quiet flag to reduce output noise for small files)
-            rsync_cmd = ['rsync', '-q']  # Quiet mode for XML files
+            # Log XML sync operation (matching disk/NVRAM logging style)
+            logger.info(f"*** Syncing XML ({vm}) {xml_src} to {self.remote_host}:{self.kvm_conf_dst_dir}/{vm}.xml")
+
+            # Sync XML file (removed -q flag to match disk sync visibility)
+            rsync_cmd = ['rsync']
             rsync_cmd.extend(self.rsync_options.split())
             if self.host_config.rsync_path:
                 rsync_cmd.extend(['--rsync-path', self.host_config.rsync_path])
@@ -985,15 +999,14 @@ class KVMReplicator:
                 self.cleanup_child_processes()
                 raise
             except subprocess.CalledProcessError:
-                if not self.debug:
-                    logger.error(f"Failed to sync {xml_src}")
-                    success = False
-                    continue
+                logger.error(f"Failed to sync {xml_src}")
+                success = False
+                continue
 
             # Handle domain definition
             if not self.host_config.skip_define:
                 if self.debug:
-                    logger.info(f"DEBUG: Would define domain {vm} on {self.remote_host}")
+                    logger.info(f"DEBUG: Would normalize machine types, define domain {vm}, and save to templates on {self.remote_host}")
                 else:
                     try:
                         # Check if remote XML exists
@@ -1006,17 +1019,25 @@ class KVMReplicator:
                                 success = False
                                 continue
 
-                        # Edit remote file to fix machine types
+                        # Edit remote file to fix machine types (normalize to generic pc/q35)
+                        # Handles RHEL, Fedora, and upstream QEMU machine type variants
+                        # Pattern matches only valid machine type chars (alphanumeric, dots, dashes)
                         sed_cmd = (
                             f"sed -i "
-                            f"-e 's@pc-i440fx-rhel7.6.0@pc@' "
-                            f"-e 's@pc-q35-rhel[789].[0-9].0@q35@' "
+                            f"-e 's@pc-i440fx-[a-zA-Z0-9._-]*@pc@g' "
+                            f"-e 's@pc-q35-[a-zA-Z0-9._-]*@q35@g' "
                             f"{remote_xml}"
                         )
                         self.run_ssh_command(sed_cmd)
 
                         # Define guest on remote machine
                         self.run_ssh_command(f"PATH=/bin:/opt/bin virsh define {remote_xml}")
+
+                        # Copy normalized XML to remote templates directory for future use
+                        remote_templates_dir = f"{DEFAULT_KVM_TEMPLATES}"
+                        self.run_ssh_command(f"mkdir -p {remote_templates_dir}")
+                        self.run_ssh_command(f"cp -p {remote_xml} {remote_templates_dir}/{vm}.xml")
+                        logger.info(f"Saved normalized XML to {self.remote_host}:{remote_templates_dir}/{vm}.xml")
 
                     except subprocess.CalledProcessError as e:
                         logger.error(f"Failed to define domain {vm}: {e}")
