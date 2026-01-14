@@ -9,7 +9,7 @@ hypervisor-specific configurations.
 Author: Vincent S. Cojot
 """
 
-# $Id: rsync_KVM_OS.py,v 1.06 2026/01/12 22:16:48 root Exp root $
+# $Id: rsync_KVM_OS.py,v 1.06 2026/01/14 20:32:58 root Exp root $
 __version__ = "rsync_KVM_OS.py,v 1.06 2026/01/12 12:00:00 python-conversion Exp"
 
 #
@@ -268,19 +268,20 @@ class KVMReplicator:
             'daltigoth': {**KVM_STD_CONFIG, 'remote_host': 'daltigoth-228', 'threads': 2 },
             'palanthas': {**KVM_STD_CONFIG, 'remote_host': 'palanthas-228', 'threads': 2 },
             'ravenvale': {**KVM_STD_CONFIG, 'remote_host': 'ravenvale-228', 'threads': 2 },
+            'solinari': {**KVM_STD_CONFIG, 'remote_host': 'solinari-228', 'threads': 2 },
 
             # Standard KVM hosts (only override VM lists)
-            'solinari': {**KVM_STD_CONFIG,
-                'default_vm_list': "rhel3-x86 win10-x64 win11-x64 bdc420x dc00 dc01 idm00 fedora-x64 fedora-csb-x64 cirros ca8 mailhost",
-                'vxfs_snapshots': False,
-            },
             'solanthus': {**KVM_STD_CONFIG,
                 'default_vm_list': "rhel3-x86 rhel9-x64 ca8 fedora-x64 fedora-csb-x64 win10-x64 win11-x64 dc00 dc01 bdc420x idm00 cirros mailhost"
+                'vxfs_snapshots': False,
             },
             'lothlorien': {**KVM_STD_CONFIG,
                 'default_vm_list': "fedora-csb-x64 cirros dc00 dc01 ca8 gitlab win10-x64 win11-x64"
+                'vxfs_snapshots': False,
             },
-            'thorbardin': {**KVM_STD_CONFIG },
+            'thorbardin': {**KVM_STD_CONFIG,
+                'vxfs_snapshots': False,
+            },
 
             # NAS/Synology hosts (use NAS standard + thread overrides)
             'kalaman': {**NAS_STD_CONFIG, 'threads': 2 },
