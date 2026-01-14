@@ -272,11 +272,11 @@ class KVMReplicator:
 
             # Standard KVM hosts (only override VM lists)
             'solanthus': {**KVM_STD_CONFIG,
-                'default_vm_list': "rhel3-x86 rhel9-x64 ca8 fedora-x64 fedora-csb-x64 win10-x64 win11-x64 dc00 dc01 bdc420x idm00 cirros mailhost"
+                'default_vm_list': "rhel3-x86 rhel9-x64 ca8 fedora-x64 fedora-csb-x64 win10-x64 win11-x64 dc00 dc01 bdc420x idm00 cirros mailhost",
                 'vxfs_snapshots': False,
             },
             'lothlorien': {**KVM_STD_CONFIG,
-                'default_vm_list': "fedora-csb-x64 cirros dc00 dc01 ca8 gitlab win10-x64 win11-x64"
+                'default_vm_list': "fedora-csb-x64 cirros dc00 dc01 ca8 gitlab win10-x64 win11-x64",
                 'vxfs_snapshots': False,
             },
             'thorbardin': {**KVM_STD_CONFIG,
