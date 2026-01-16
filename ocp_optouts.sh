@@ -16,11 +16,11 @@ oc patch clusterversion version --type=json -p='[{"op": "remove", "path": "/spec
 
 # oc patch clusterversion/version --patch '{"spec":{"upstream":"https://openshift-release.apps.ci.l2s4.p1.openshiftapps.com/graph"}}' --type=merge
 # Set upstream to none for disconnected:
-oc patch clusterversion/version --patch '{"spec":{"upstream":"none"}}' --type=merge
+oc patch clusterversion/version --patch '{"spec":{"upstream":""}}' --type=merge
 
 # Disable Telemeter client (1/2)
 oc get cm -n openshift-monitoring cluster-monitoring-config -o jsonpath='{.data.config\.yaml}' | \
 sed -E '/^telemeterClient:$/ {N; /\n[[:space:]]{2,}enabled:/ d; }' > /var/tmp/cluster-monitoring-config.yaml
-printf 'telemeterClient:\n  enabled: false\n' >> /var/tmp/cluster-monitoring-config.yaml
+printf '\ntelemeterClient:\n  enabled: false\n' >> /var/tmp/cluster-monitoring-config.yaml
 jq -n --arg cfg "$(cat /var/tmp/cluster-monitoring-config.yaml)" '{data:{"config.yaml":$cfg}}' > /var/tmp/cluster-monitoring-config-patch.json
 oc patch cm -n openshift-monitoring cluster-monitoring-config --type=merge --patch-file /var/tmp/cluster-monitoring-config-patch.json
