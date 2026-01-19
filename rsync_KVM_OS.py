@@ -9,12 +9,23 @@ hypervisor-specific configurations.
 Author: Vincent S. Cojot
 """
 
-# $Id: rsync_KVM_OS.py,v 1.06 2026/01/14 21:53:51 root Exp root $
-__version__ = "rsync_KVM_OS.py,v 1.06 2026/01/12 12:00:00 python-conversion Exp"
+# $Id: rsync_KVM_OS.py,v 1.07 2026/01/19 16:00:00 root Exp root $
+__version__ = "rsync_KVM_OS.py,v 1.07 2026/01/19 16:00:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.07 (2026-01-19): Batch remote stat optimization
+#   - PERFORMANCE: Replaced per-file SSH+stat calls with single batch operation
+#   - Added get_batch_remote_mtimes() method for bulk mtime retrieval
+#   - Added collect_files_for_sync() to gather all files before stat checking
+#   - Batch approach reduces SSH calls from O(n) to O(1) for file comparisons
+#   - Uses stdin to pass file list (avoids shell command length limits)
+#   - Handles missing remote files gracefully (returns mtime=0)
+#   - Proper snapshot path mapping: local snapshot paths vs remote dest paths
+#   - Automatic fallback to individual checks if batch method fails
+#   - Maintains full backward compatibility with existing functionality
 #
 # v1.06 (2026-01-12): XML sync visibility and source selection fix
 #   - BUGFIX: Added explicit logging for XML configuration sync operations
@@ -92,9 +103,10 @@ import time
 import socket
 import stat
 import shutil
+import shlex
 import signal
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 import logging
 import psutil
@@ -175,6 +187,16 @@ class HostConfig:
     def get_effective_remote_host(self, detected_hostname: str) -> str:
         """Get the effective remote host, using detected hostname if not specified."""
         return self.remote_host if self.remote_host else detected_hostname
+
+
+@dataclass
+class FileInfo:
+    """Information about a file to be potentially synced."""
+    vm_name: str              # VM this file belongs to
+    local_path: str           # Path to local file (may be snapshot path)
+    remote_path: str          # Path to remote file (always destination path)
+    file_type: str            # 'disk' or 'nvram'
+    dst_dir: str              # Destination directory for rsync
 
 
 class KVMReplicator:
@@ -617,6 +639,184 @@ class KVMReplicator:
                 return int(os.path.getmtime(file_path))
             except OSError:
                 return 0  # File doesn't exist locally
+
+    def get_batch_remote_mtimes(self, file_paths: List[str]) -> Dict[str, int]:
+        """
+        Get modification times for multiple files on remote host in a single SSH call.
+
+        This is a major performance optimization - instead of one SSH call per file,
+        we make a single SSH call that stats all files and returns results in bulk.
+
+        Args:
+            file_paths: List of remote file paths to check
+
+        Returns:
+            Dictionary mapping file path -> mtime (0 for missing files)
+        """
+        if not file_paths:
+            return {}
+
+        # Remove duplicates while preserving order
+        unique_paths = list(dict.fromkeys(file_paths))
+
+        stat_cmd = self.host_config.stat_path if self.host_config.stat_path else "stat"
+
+        # Build a script that reads file paths from stdin and outputs "mtime filepath" for each
+        # Missing files output "0 filepath" (allows comparison to proceed - local will be newer)
+        # The || [ -n "$f" ] handles the last line if it doesn't end with newline
+        script = f'''while IFS= read -r f || [ -n "$f" ]; do
+    if [ -f "$f" ]; then
+        {stat_cmd} -L -c '%Y %n' "$f"
+    else
+        echo "0 $f"
+    fi
+done'''
+
+        # Prepare file list as stdin input
+        files_input = '\n'.join(unique_paths)
+
+        if self.debug:
+            logger.info(f"DEBUG: Batch stat for {len(unique_paths)} files on {self.remote_host}")
+
+        ssh_cmd = [
+            'ssh', '-q',
+            '-c', self.ssh_cipher,
+            '-oCompression=no',
+            self.remote_host,
+            f'bash -c {shlex.quote(script)}'
+        ]
+
+        try:
+            result = subprocess.run(
+                ssh_cmd,
+                input=files_input,
+                capture_output=True,
+                text=True,
+                check=False
+            )
+
+            if result.returncode != 0:
+                logger.warning(f"Batch stat failed (rc={result.returncode}): {result.stderr.strip()}")
+                return {}  # Empty dict signals fallback to individual checks
+
+            # Parse output: each line is "mtime filepath"
+            mtimes = {}
+            for line in result.stdout.strip().split('\n'):
+                if not line:
+                    continue
+                # Split on first space only (filepath may contain spaces)
+                parts = line.split(' ', 1)
+                if len(parts) == 2:
+                    mtime_str, filepath = parts
+                    try:
+                        mtimes[filepath] = int(mtime_str)
+                    except ValueError:
+                        mtimes[filepath] = 0
+                elif len(parts) == 1:
+                    # Handle edge case: just mtime with no filepath
+                    logger.debug(f"Malformed stat output line: {line}")
+
+            logger.info(f"Batch stat completed: {len(mtimes)} files checked in single SSH call")
+            return mtimes
+
+        except Exception as e:
+            logger.warning(f"Batch remote mtime check failed: {e}")
+            return {}  # Empty dict signals fallback to individual checks
+
+    def collect_files_for_sync(
+        self,
+        vm_list: List[str],
+        src_dir: str,
+        src_dir_index: int,
+        snapshot_mount: Optional[str],
+        kvm_fs_mnt: Optional[str]
+    ) -> Tuple[List[str], List[FileInfo]]:
+        """
+        Collect all files that need to be checked for syncing.
+
+        This is the first phase of the optimized sync process - we gather all files
+        from all VMs before doing any remote stat checks, enabling batch operations.
+
+        Args:
+            vm_list: List of VM names to process
+            src_dir: Source directory for this iteration
+            src_dir_index: Index into kvm_images_dst_dirs/kvm_nvram_dst_dirs
+            snapshot_mount: Snapshot mount point if using snapshots, None otherwise
+            kvm_fs_mnt: Original filesystem mount point (for path replacement)
+
+        Returns:
+            Tuple of (vms_to_process, file_info_list)
+            - vms_to_process: List of VM names that passed initial checks
+            - file_info_list: List of FileInfo objects for all files to check
+        """
+        vms_to_process = []
+        file_info_list = []
+
+        for vm in vm_list:
+            # Check if VM should be skipped (running locally or remotely)
+            if self.should_skip_vm(vm):
+                continue
+
+            xml_file = f"{self.kvm_conf_src_dir}/{vm}.xml"
+            if not os.path.exists(xml_file):
+                continue
+
+            # Parse VM XML to get disk and NVRAM files
+            vm_disks, vm_nvrams = self.parse_vm_xml(xml_file)
+            vm_has_files = False
+
+            # Process disk files
+            for disk_file in vm_disks:
+                # Determine actual local path (may be in snapshot)
+                if snapshot_mount and kvm_fs_mnt:
+                    actual_local_path = disk_file.replace(kvm_fs_mnt, snapshot_mount)
+                else:
+                    actual_local_path = disk_file
+
+                # Check if the file exists locally
+                if not os.path.exists(actual_local_path):
+                    continue
+
+                # Remote path is always in the destination directory (not snapshot)
+                remote_path = f"{self.host_config.kvm_images_dst_dirs[src_dir_index]}/{os.path.basename(disk_file)}"
+
+                file_info_list.append(FileInfo(
+                    vm_name=vm,
+                    local_path=actual_local_path,
+                    remote_path=remote_path,
+                    file_type='disk',
+                    dst_dir=self.host_config.kvm_images_dst_dirs[src_dir_index]
+                ))
+                vm_has_files = True
+
+            # Process NVRAM files
+            for nvram_file in vm_nvrams:
+                # Determine actual local path (may be in snapshot)
+                if snapshot_mount and kvm_fs_mnt:
+                    actual_local_path = nvram_file.replace(kvm_fs_mnt, snapshot_mount)
+                else:
+                    actual_local_path = nvram_file
+
+                # Check if the file exists locally
+                if not os.path.exists(actual_local_path):
+                    continue
+
+                # Remote path is always in the destination directory
+                remote_path = f"{self.host_config.kvm_nvram_dst_dirs[src_dir_index]}/{os.path.basename(nvram_file)}"
+
+                file_info_list.append(FileInfo(
+                    vm_name=vm,
+                    local_path=actual_local_path,
+                    remote_path=remote_path,
+                    file_type='nvram',
+                    dst_dir=self.host_config.kvm_nvram_dst_dirs[src_dir_index]
+                ))
+                vm_has_files = True
+
+            if vm_has_files:
+                vms_to_process.append(vm)
+
+        return vms_to_process, file_info_list
 
     def should_skip_vm(self, vm_name: str) -> bool:
         """Check if VM should be skipped due to running state."""
@@ -1160,88 +1360,98 @@ class KVMReplicator:
             snapshot_info = None
 
             try:
-                # Process each VM
-                for vm in vm_list:
-                    if self.should_skip_vm(vm):
-                        continue
+                # Determine snapshot mount info for path mapping
+                snapshot_mount = None
+                kvm_fs_mnt = None
+                if existing_snapshot_info:
+                    kvm_fs_mnt = self.run_command(['df', '--output=target', src_dir]).stdout.strip().split('\n')[1]
+                    snapshot_mount = existing_snapshot_info[3]
 
-                    xml_file = f"{self.kvm_conf_src_dir}/{vm}.xml"
-                    if not os.path.exists(xml_file):
-                        continue
+                # ============================================================
+                # PHASE 1: Collect all files from all VMs (single pass)
+                # ============================================================
+                logger.info("Collecting files from VM configurations...")
+                vms_to_process, file_info_list = self.collect_files_for_sync(
+                    vm_list, src_dir, i, snapshot_mount, kvm_fs_mnt
+                )
 
-                    # Parse VM XML to get disk and NVRAM files
-                    vm_disks, vm_nvrams = self.parse_vm_xml(xml_file)
+                if not file_info_list:
+                    logger.info("No files to check for this source directory")
+                    continue
 
-                    vm_needs_sync = False
+                logger.info(f"Found {len(file_info_list)} files from {len(vms_to_process)} VMs to check")
 
-                    # Check disk files
-                    for disk_file in vm_disks:
-                        # Use actual source file path (may be in snapshot)
-                        actual_disk_file = disk_file
-                        if existing_snapshot_info:
-                            kvm_fs_mnt = self.run_command(['df', '--output=target', src_dir]).stdout.strip().split('\n')[1]
-                            actual_disk_file = disk_file.replace(kvm_fs_mnt, existing_snapshot_info[3])
+                # ============================================================
+                # PHASE 2: Batch stat check on remote (single SSH call)
+                # ============================================================
+                remote_mtimes = {}
+                use_batch_stat = (
+                    not self.force_action and
+                    not self.host_config.skip_stat_check and
+                    self.stat_available
+                )
 
-                        # Check if the file exists in the actual location (original or snapshot)
-                        if not os.path.exists(actual_disk_file):
-                            continue
+                if use_batch_stat:
+                    # Collect all unique remote paths for batch stat
+                    remote_paths = [fi.remote_path for fi in file_info_list]
+                    remote_mtimes = self.get_batch_remote_mtimes(remote_paths)
 
-                        dst_file = f"{self.host_config.kvm_images_dst_dirs[i]}/{os.path.basename(disk_file)}"
+                    # If batch stat failed, fall back to individual checks
+                    if not remote_mtimes and remote_paths:
+                        logger.warning("Batch stat returned no results, falling back to individual stat checks")
+                        use_batch_stat = False
 
-                        if self.force_action or self.host_config.skip_stat_check or not self.stat_available:
-                            if not self.stat_available and not self.host_config.skip_stat_check:
-                                logger.debug(f"Stat not available on both systems, syncing {actual_disk_file}")
-                            logger.info(f"*** Will rsync ({vm}) {actual_disk_file} to {self.remote_host}:{self.host_config.kvm_images_dst_dirs[i]}")
-                            disk_files.append(actual_disk_file)
-                            vm_needs_sync = True
+                # ============================================================
+                # PHASE 3: Compare mtimes and build sync lists
+                # ============================================================
+                vms_needing_sync = set()
+
+                for fi in file_info_list:
+                    if self.force_action or self.host_config.skip_stat_check or not self.stat_available:
+                        # Skip stat comparison - sync everything
+                        if not self.stat_available and not self.host_config.skip_stat_check:
+                            logger.debug(f"Stat not available on both systems, syncing {fi.local_path}")
+                        logger.info(f"*** Will rsync ({fi.vm_name}) {fi.local_path} to {self.remote_host}:{fi.dst_dir}")
+                        if fi.file_type == 'disk':
+                            disk_files.append(fi.local_path)
                         else:
-                            local_mtime = self.get_file_mtime(actual_disk_file)
-                            remote_mtime = self.get_file_mtime(dst_file, remote=True)
+                            nvram_files.append(fi.local_path)
+                        vms_needing_sync.add(fi.vm_name)
+                    elif use_batch_stat:
+                        # Use batch stat results
+                        local_mtime = self.get_file_mtime(fi.local_path)
+                        remote_mtime = remote_mtimes.get(fi.remote_path, 0)
 
-                            if local_mtime > remote_mtime:
-                                logger.info(f"*** Will rsync ({vm}) {actual_disk_file} to {self.remote_host}:{self.host_config.kvm_images_dst_dirs[i]}")
-                                disk_files.append(actual_disk_file)
-                                vm_needs_sync = True
-                            elif local_mtime == remote_mtime:
-                                logger.info(f"stat() times on {vm} ({actual_disk_file}) are identical, skipping...")
+                        if local_mtime > remote_mtime:
+                            logger.info(f"*** Will rsync ({fi.vm_name}) {fi.local_path} to {self.remote_host}:{fi.dst_dir}")
+                            if fi.file_type == 'disk':
+                                disk_files.append(fi.local_path)
+                            else:
+                                nvram_files.append(fi.local_path)
+                            vms_needing_sync.add(fi.vm_name)
+                        elif local_mtime == remote_mtime:
+                            logger.info(f"stat() times on {fi.vm_name} ({fi.local_path}) are identical, skipping...")
+                    else:
+                        # Fallback: individual stat checks (only if batch failed)
+                        local_mtime = self.get_file_mtime(fi.local_path)
+                        remote_mtime = self.get_file_mtime(fi.remote_path, remote=True)
 
-                    # Check NVRAM files
-                    for nvram_file in vm_nvrams:
-                        # Use actual source file path (may be in snapshot)
-                        actual_nvram_file = nvram_file
-                        if existing_snapshot_info:
-                            kvm_fs_mnt = self.run_command(['df', '--output=target', src_dir]).stdout.strip().split('\n')[1]
-                            actual_nvram_file = nvram_file.replace(kvm_fs_mnt, existing_snapshot_info[3])
+                        if local_mtime > remote_mtime:
+                            logger.info(f"*** Will rsync ({fi.vm_name}) {fi.local_path} to {self.remote_host}:{fi.dst_dir}")
+                            if fi.file_type == 'disk':
+                                disk_files.append(fi.local_path)
+                            else:
+                                nvram_files.append(fi.local_path)
+                            vms_needing_sync.add(fi.vm_name)
+                        elif local_mtime == remote_mtime:
+                            logger.info(f"stat() times on {fi.vm_name} ({fi.local_path}) are identical, skipping...")
 
-                        # Check if the file exists in the actual location (original or snapshot)
-                        if not os.path.exists(actual_nvram_file):
-                            continue
+                vms_to_sync = sorted(vms_needing_sync)
+                logger.info(f"VMs requiring sync: {' '.join(vms_to_sync) if vms_to_sync else '(none)'}")
 
-                        dst_file = f"{self.host_config.kvm_nvram_dst_dirs[i]}/{os.path.basename(nvram_file)}"
-
-                        if self.force_action or self.host_config.skip_stat_check or not self.stat_available:
-                            if not self.stat_available and not self.host_config.skip_stat_check:
-                                logger.debug(f"Stat not available on both systems, syncing {actual_nvram_file}")
-                            logger.info(f"*** Will rsync ({vm}) {actual_nvram_file} to {self.remote_host}:{self.host_config.kvm_nvram_dst_dirs[i]}")
-                            nvram_files.append(actual_nvram_file)
-                            vm_needs_sync = True
-                        else:
-                            local_mtime = self.get_file_mtime(actual_nvram_file)
-                            remote_mtime = self.get_file_mtime(dst_file, remote=True)
-
-                            if local_mtime > remote_mtime:
-                                logger.info(f"*** Will rsync ({vm}) {actual_nvram_file} to {self.remote_host}:{self.host_config.kvm_nvram_dst_dirs[i]}")
-                                nvram_files.append(actual_nvram_file)
-                                vm_needs_sync = True
-                            elif local_mtime == remote_mtime:
-                                logger.info(f"stat() times on {vm} ({actual_nvram_file}) are identical, skipping...")
-
-                    if vm_needs_sync:
-                        vms_to_sync.append(vm)
-
-                logger.info(f"Final VM List: {' '.join(vms_to_sync)}")
-
-                # Create snapshot if needed (only if no existing snapshot and snapshots are enabled)
+                # ============================================================
+                # PHASE 4: Create snapshot if needed (after determining what to sync)
+                # ============================================================
                 if (disk_files or nvram_files) and not existing_snapshot_info and self.vxfs_snapshots:
                     snapshot_info = self.create_vxfs_snapshot(src_dir)
                     if snapshot_info:
