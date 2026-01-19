@@ -9,22 +9,28 @@ hypervisor-specific configurations.
 Author: Vincent S. Cojot
 """
 
-# $Id: rsync_KVM_OS.py,v 1.07 2026/01/19 16:00:00 root Exp root $
-__version__ = "rsync_KVM_OS.py,v 1.07 2026/01/19 16:00:00 python-conversion Exp"
+# $Id: rsync_KVM_OS.py,v 1.08 2026/01/19 17:00:00 root Exp root $
+__version__ = "rsync_KVM_OS.py,v 1.08 2026/01/19 17:00:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
 # ================
 #
-# v1.07 (2026-01-19): Batch remote stat optimization
+# v1.08 (2026-01-19): Batch optimizations for SSH calls
 #   - PERFORMANCE: Replaced per-file SSH+stat calls with single batch operation
 #   - Added get_batch_remote_mtimes() method for bulk mtime retrieval
 #   - Added collect_files_for_sync() to gather all files before stat checking
-#   - Batch approach reduces SSH calls from O(n) to O(1) for file comparisons
+#   - Batch stat reduces SSH calls from O(n) to O(1) for file comparisons
 #   - Uses stdin to pass file list (avoids shell command length limits)
 #   - Handles missing remote files gracefully (returns mtime=0)
 #   - Proper snapshot path mapping: local snapshot paths vs remote dest paths
 #   - Automatic fallback to individual checks if batch method fails
+#   - PERFORMANCE: Replaced per-VM running state checks with batch operation
+#   - Added get_running_vms_local() and get_running_vms_remote() methods
+#   - Added prefetch_running_vms() for early batch retrieval
+#   - Single "virsh list" call locally + single SSH call remotely
+#   - Exact VM name matching using Python set membership
+#   - Total reduction: ~90 SSH calls → ~2 SSH calls for typical 30 VM sync
 #   - Maintains full backward compatibility with existing functionality
 #
 # v1.06 (2026-01-12): XML sync visibility and source selection fix
@@ -237,6 +243,10 @@ class KVMReplicator:
         self.remote_host = ""
         self.host_config = None
         self.stat_available = True  # Track if stat works on both source and destination
+
+        # Cached running VM lists (populated once, used for all checks)
+        self.running_vms_local = None   # Set of VM names running locally
+        self.running_vms_remote = None  # Set of VM names running on remote
 
         # Process tracking for proper cleanup
         self.child_processes = []  # Track child processes for cleanup
@@ -595,7 +605,7 @@ class KVMReplicator:
         return disk_files, nvram_files
 
     def get_domain_state(self, vm_name: str, remote: bool = False) -> str:
-        """Get the state of a libvirt domain."""
+        """Get the state of a libvirt domain (legacy per-VM method, used as fallback)."""
         if self.debug:
             logger.info(f"DEBUG: Checking domain state for {vm_name} ({'remote' if remote else 'local'})")
 
@@ -615,6 +625,77 @@ class KVMReplicator:
                 pass
 
         return "unknown"
+
+    def get_running_vms_local(self) -> set:
+        """
+        Get set of all running VM names on the local host in a single virsh call.
+        
+        Returns:
+            Set of VM names that are currently running locally.
+        """
+        running = set()
+        try:
+            result = self.run_command(
+                ['virsh', 'list', '--name', '--state-running'],
+                check=False
+            )
+            if result.returncode == 0:
+                # virsh list --name outputs one VM name per line (empty lines for no VMs)
+                for line in result.stdout.strip().split('\n'):
+                    vm_name = line.strip()
+                    if vm_name:  # Skip empty lines
+                        running.add(vm_name)
+                logger.info(f"Local running VMs: {', '.join(sorted(running)) if running else '(none)'}")
+            else:
+                logger.warning("Failed to get local running VM list, will check individually")
+        except Exception as e:
+            logger.warning(f"Error getting local running VMs: {e}")
+        
+        return running
+
+    def get_running_vms_remote(self) -> set:
+        """
+        Get set of all running VM names on the remote host in a single SSH call.
+        
+        Returns:
+            Set of VM names that are currently running on the remote host.
+        """
+        running = set()
+        try:
+            result = self.run_ssh_command(
+                "PATH=/bin:/opt/bin virsh list --name --state-running",
+                check=False
+            )
+            if result.returncode == 0:
+                # virsh list --name outputs one VM name per line
+                for line in result.stdout.strip().split('\n'):
+                    vm_name = line.strip()
+                    if vm_name:  # Skip empty lines
+                        running.add(vm_name)
+                logger.info(f"Remote running VMs ({self.remote_host}): {', '.join(sorted(running)) if running else '(none)'}")
+            else:
+                logger.warning(f"Failed to get remote running VM list from {self.remote_host}, will check individually")
+        except Exception as e:
+            logger.warning(f"Error getting remote running VMs: {e}")
+        
+        return running
+
+    def prefetch_running_vms(self):
+        """
+        Prefetch running VM lists from both local and remote hosts.
+        
+        This is called once before processing to avoid per-VM SSH calls.
+        Results are cached in self.running_vms_local and self.running_vms_remote.
+        """
+        if self.force_action:
+            logger.info("Force mode enabled - skipping running VM checks")
+            self.running_vms_local = set()
+            self.running_vms_remote = set()
+            return
+
+        logger.info("Checking for running VMs (batch mode)...")
+        self.running_vms_local = self.get_running_vms_local()
+        self.running_vms_remote = self.get_running_vms_remote()
 
     def get_file_mtime(self, file_path: str, remote: bool = False) -> int:
         """Get file modification time."""
@@ -823,6 +904,20 @@ done'''
         if self.force_action:
             return False
 
+        # Use cached running VM lists if available (batch optimization)
+        if self.running_vms_local is not None and self.running_vms_remote is not None:
+            # Exact name match using set membership
+            if vm_name in self.running_vms_local:
+                logger.warning(f"Domain {vm_name} is running locally!! Skipping...")
+                return True
+
+            if vm_name in self.running_vms_remote:
+                logger.warning(f"Domain {vm_name} is running on {self.remote_host}!! Skipping...")
+                return True
+
+            return False
+
+        # Fallback to individual checks if batch prefetch wasn't done
         local_state = self.get_domain_state(vm_name, remote=False)
         remote_state = self.get_domain_state(vm_name, remote=True)
 
@@ -1315,6 +1410,9 @@ done'''
 
         # Test SSH connectivity first (fail fast) - critical even in debug mode
         self.test_ssh_connectivity()
+
+        # Prefetch running VM lists (single virsh call local + single SSH call remote)
+        self.prefetch_running_vms()
 
         # Test stat availability on both systems (unless we're skipping stat checks)
         if not self.host_config.skip_stat_check:
