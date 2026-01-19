@@ -9,12 +9,21 @@ hypervisor-specific configurations.
 Author: Vincent S. Cojot
 """
 
-# $Id: rsync_KVM_OS.py,v 1.08 2026/01/19 17:00:00 root Exp root $
-__version__ = "rsync_KVM_OS.py,v 1.08 2026/01/19 17:00:00 python-conversion Exp"
+# $Id: rsync_KVM_OS.py,v 1.09 2026/01/19 18:00:00 root Exp root $
+__version__ = "rsync_KVM_OS.py,v 1.09 2026/01/19 18:00:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.09 (2026-01-19): Batch XML sync and domain definition
+#   - PERFORMANCE: Replaced per-VM XML rsync with single batch rsync
+#   - PERFORMANCE: Replaced per-VM domain operations with single SSH call
+#   - Batch script handles: sed normalize, virsh define, cp to templates
+#   - Single rsync call for all XML files to /etc/libvirt/qemu/
+#   - Single SSH call for all post-sync operations (was 5 SSH calls per VM)
+#   - Reports per-VM success/failure from batch operation
+#   - Further reduces total SSH calls for typical sync operations
 #
 # v1.08 (2026-01-19): Batch optimizations for SSH calls
 #   - PERFORMANCE: Replaced per-file SSH+stat calls with single batch operation
@@ -629,7 +638,7 @@ class KVMReplicator:
     def get_running_vms_local(self) -> set:
         """
         Get set of all running VM names on the local host in a single virsh call.
-        
+
         Returns:
             Set of VM names that are currently running locally.
         """
@@ -650,13 +659,13 @@ class KVMReplicator:
                 logger.warning("Failed to get local running VM list, will check individually")
         except Exception as e:
             logger.warning(f"Error getting local running VMs: {e}")
-        
+
         return running
 
     def get_running_vms_remote(self) -> set:
         """
         Get set of all running VM names on the remote host in a single SSH call.
-        
+
         Returns:
             Set of VM names that are currently running on the remote host.
         """
@@ -677,13 +686,13 @@ class KVMReplicator:
                 logger.warning(f"Failed to get remote running VM list from {self.remote_host}, will check individually")
         except Exception as e:
             logger.warning(f"Error getting remote running VMs: {e}")
-        
+
         return running
 
     def prefetch_running_vms(self):
         """
         Prefetch running VM lists from both local and remote hosts.
-        
+
         This is called once before processing to avoid per-VM SSH calls.
         Results are cached in self.running_vms_local and self.running_vms_remote.
         """
@@ -1243,8 +1252,28 @@ done'''
         return sorted(set(validated_vms))
 
     def sync_vm_configs(self, vm_list: List[str]) -> bool:
-        """Sync VM configuration files."""
+        """
+        Sync VM configuration files using batch operations.
+
+        Optimized to use:
+        - Single rsync call for all XML files
+        - Single SSH call for all post-sync operations (sed, virsh define, cp to templates)
+        """
         if not vm_list:
+            return True
+
+        # Build list of XML files that exist
+        xml_files = []
+        vm_names = []
+        for vm in vm_list:
+            xml_src = f"{self.kvm_conf_src_dir}/{vm}.xml"
+            if os.path.exists(xml_src):
+                xml_files.append(xml_src)
+                vm_names.append(vm)
+            else:
+                logger.warning(f"No XML file found for {vm} at {xml_src}, skipping...")
+
+        if not xml_files:
             return True
 
         logger.info(f"Waiting {self.wait_time} seconds before push to {self.remote_host}...")
@@ -1252,94 +1281,101 @@ done'''
             time.sleep(self.wait_time)
 
         success = True
-        for vm in vm_list:
-            # Always use standard libvirt XML location
-            xml_src = f"{self.kvm_conf_src_dir}/{vm}.xml"
-            
-            if not os.path.exists(xml_src):
-                logger.warning(f"No XML file found for {vm} at {xml_src}, skipping...")
-                continue
 
-            # Log XML sync operation (matching disk/NVRAM logging style)
-            logger.info(f"*** Syncing XML ({vm}) {xml_src} to {self.remote_host}:{self.kvm_conf_dst_dir}/{vm}.xml")
+        # ============================================================
+        # PHASE 1: Batch rsync all XML files to libvirt directory
+        # ============================================================
+        logger.info(f"*** Syncing {len(xml_files)} XML configs to {self.remote_host}:{self.kvm_conf_dst_dir}/")
 
-            # Sync XML file (removed -q flag to match disk sync visibility)
-            rsync_cmd = ['rsync']
-            rsync_cmd.extend(self.rsync_options.split())
-            if self.host_config.rsync_path:
-                rsync_cmd.extend(['--rsync-path', self.host_config.rsync_path])
+        # Build rsync command for all XML files
+        rsync_cmd = ['rsync']
+        rsync_cmd.extend(self.rsync_options.split())
+        if self.host_config.rsync_path:
+            rsync_cmd.extend(['--rsync-path', self.host_config.rsync_path])
 
-            # Add dry-run flag in debug mode
+        # Add dry-run flag in debug mode
+        if self.debug:
+            rsync_cmd.append('--dry-run')
+
+        # Add all source files and destination
+        rsync_cmd.extend(xml_files)
+        rsync_cmd.append(f"{self.remote_host}:{self.kvm_conf_dst_dir}/")
+
+        try:
+            process = subprocess.Popen(rsync_cmd)
+            self.child_processes.append(process)
+            returncode = process.wait()
+            if process in self.child_processes:
+                self.child_processes.remove(process)
+
+            if returncode != 0:
+                raise subprocess.CalledProcessError(returncode, rsync_cmd)
+
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user during XML sync")
+            self.cleanup_child_processes()
+            raise
+        except subprocess.CalledProcessError:
+            logger.error(f"Failed to sync XML files to {self.remote_host}")
+            return False
+
+        # ============================================================
+        # PHASE 2: Batch post-sync operations (sed, virsh define, cp)
+        # ============================================================
+        if not self.host_config.skip_define:
             if self.debug:
-                rsync_cmd.append('--dry-run')
+                logger.info(f"DEBUG: Would normalize machine types, define {len(vm_names)} domains, and save to templates on {self.remote_host}")
+            else:
+                # Build a single script that processes all VMs
+                remote_templates_dir = DEFAULT_KVM_TEMPLATES
 
-            rsync_cmd.extend([xml_src, f"{self.remote_host}:{self.kvm_conf_dst_dir}/{vm}.xml"])
+                # Create the batch script
+                # For each VM: sed normalize, virsh define, cp to templates
+                script_lines = [
+                    f'mkdir -p {remote_templates_dir}',
+                    'failed=""',
+                ]
 
-            try:
-                process = subprocess.Popen(rsync_cmd)
+                for vm in vm_names:
+                    remote_xml = f"{self.kvm_conf_dst_dir}/{vm}.xml"
+                    script_lines.extend([
+                        f'# Processing {vm}',
+                        f"sed -i -e 's@pc-i440fx-[a-zA-Z0-9._-]*@pc@g' -e 's@pc-q35-[a-zA-Z0-9._-]*@q35@g' {remote_xml}",
+                        f'if PATH=/bin:/opt/bin virsh define {remote_xml} >/dev/null 2>&1; then',
+                        f'    cp -p {remote_xml} {remote_templates_dir}/{vm}.xml',
+                        f'    echo "OK: {vm}"',
+                        f'else',
+                        f'    echo "FAILED: {vm}"',
+                        f'    failed="$failed {vm}"',
+                        f'fi',
+                    ])
 
-                # Track this process for cleanup
-                self.child_processes.append(process)
+                script_lines.append('[ -z "$failed" ] && exit 0 || exit 1')
 
-                # Wait for completion
-                returncode = process.wait()
+                batch_script = '\n'.join(script_lines)
 
-                # Remove from tracking list when done
-                if process in self.child_processes:
-                    self.child_processes.remove(process)
+                logger.info(f"Defining {len(vm_names)} domains on {self.remote_host} (batch mode)...")
 
-                if returncode != 0:
-                    raise subprocess.CalledProcessError(returncode, rsync_cmd)
+                try:
+                    result = self.run_ssh_command(f'bash -c {shlex.quote(batch_script)}', check=False)
 
-            except KeyboardInterrupt:
-                logger.warning("Interrupted by user during XML sync")
-                self.cleanup_child_processes()
-                raise
-            except subprocess.CalledProcessError:
-                logger.error(f"Failed to sync {xml_src}")
-                success = False
-                continue
+                    # Parse output to see which succeeded/failed
+                    for line in result.stdout.strip().split('\n'):
+                        if line.startswith('OK: '):
+                            vm = line[4:]
+                            logger.info(f"Defined domain {vm} on {self.remote_host}")
+                        elif line.startswith('FAILED: '):
+                            vm = line[8:]
+                            logger.error(f"Failed to define domain {vm} on {self.remote_host}")
+                            success = False
 
-            # Handle domain definition
-            if not self.host_config.skip_define:
-                if self.debug:
-                    logger.info(f"DEBUG: Would normalize machine types, define domain {vm}, and save to templates on {self.remote_host}")
-                else:
-                    try:
-                        # Check if remote XML exists
-                        remote_xml = f"{self.kvm_conf_dst_dir}/{vm}.xml"
-                        result = self.run_ssh_command(f"PATH=/bin:/opt/bin test -f {remote_xml}", check=False)
-
-                        if result.returncode != 0:
-                            logger.info(f"Remote XML does not exist, copying {xml_src}...")
-                            if not self.sync_file(xml_src, self.kvm_conf_dst_dir):
-                                success = False
-                                continue
-
-                        # Edit remote file to fix machine types (normalize to generic pc/q35)
-                        # Handles RHEL, Fedora, and upstream QEMU machine type variants
-                        # Pattern matches only valid machine type chars (alphanumeric, dots, dashes)
-                        sed_cmd = (
-                            f"sed -i "
-                            f"-e 's@pc-i440fx-[a-zA-Z0-9._-]*@pc@g' "
-                            f"-e 's@pc-q35-[a-zA-Z0-9._-]*@q35@g' "
-                            f"{remote_xml}"
-                        )
-                        self.run_ssh_command(sed_cmd)
-
-                        # Define guest on remote machine
-                        self.run_ssh_command(f"PATH=/bin:/opt/bin virsh define {remote_xml}")
-                        logger.info(f"Defined domain {vm} on {self.remote_host}")
-
-                        # Copy normalized XML to remote templates directory for future use
-                        remote_templates_dir = f"{DEFAULT_KVM_TEMPLATES}"
-                        self.run_ssh_command(f"mkdir -p {remote_templates_dir}")
-                        self.run_ssh_command(f"cp -p {remote_xml} {remote_templates_dir}/{vm}.xml")
-                        logger.info(f"Saved normalized XML to {self.remote_host}:{remote_templates_dir}/{vm}.xml")
-
-                    except subprocess.CalledProcessError as e:
-                        logger.error(f"Failed to define domain {vm}: {e}")
+                    if result.returncode != 0:
+                        logger.warning("Some domain definitions failed")
                         success = False
+
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"Batch domain definition failed: {e}")
+                    success = False
 
         return success
 
