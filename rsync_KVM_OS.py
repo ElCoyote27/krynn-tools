@@ -9,12 +9,58 @@ hypervisor-specific configurations.
 Author: Vincent S. Cojot
 """
 
-# $Id: rsync_KVM_OS.py,v 1.09 2026/01/19 18:00:00 root Exp root $
-__version__ = "rsync_KVM_OS.py,v 1.09 2026/01/19 18:00:00 python-conversion Exp"
+# $Id: rsync_KVM_OS.py,v 1.17 2026/01/20 02:00:00 root Exp root $
+__version__ = "rsync_KVM_OS.py,v 1.17 2026/01/20 02:00:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.17 (2026-01-20): Skip templates handling for NAS systems
+#   - For hosts with skip_define=True (NAS), skip XML comparison
+#   - NAS systems don't have templates dir or virsh
+#   - XMLs only synced when data files change (as backup)
+#   - Eliminates "missing on remote" messages for NAS targets
+#
+# v1.16 (2026-01-20): Fix whitespace comparison issue
+#   - BUGFIX: Local XML read with f.read() preserved trailing newlines
+#   - Remote XML parsed with .strip() removed trailing newlines
+#   - Now strips both before comparison to handle whitespace differences
+#
+# v1.15 (2026-01-19): Compare against templates (not libvirt qemu dir)
+#   - BUGFIX: virsh define modifies XML (adds defaults, reformats), causing false diffs
+#   - Now compares local XML against templates dir (saved BEFORE virsh define)
+#   - Templates copy is saved after sed but before virsh define
+#   - This gives us a clean "source-normalized" reference for comparison
+#   - Changed get_batch_remote_xml_contents() to read from templates dir
+#
+# v1.14 (2026-01-19): Always compare XML content (not mtime)
+#   - Superseded by v1.15 due to virsh define modification issue
+#
+# v1.13 (2026-01-19): Detect XML-only changes (superseded by v1.14)
+#   - Added XML mtime check (didn't work due to remote sed/virsh define)
+#
+# v1.12 (2026-01-19): Handle undefined VMs on remote
+#   - If VM is not defined on remote (virsh list --all), always sync + define
+#   - Added get_defined_vms_remote() for batch check of defined VMs
+#   - Distinguishes between "XML file exists" vs "VM is defined in libvirt"
+#   - Ensures VMs get properly defined even if XML file was orphaned
+#
+# v1.11 (2026-01-19): NVRAM changes force XML sync
+#   - NVRAM and XML are tied together for UEFI VMs
+#   - If NVRAM file changed, XML is always synced (skips smart comparison)
+#   - Added vms_with_nvram_changes tracking in main loop
+#   - sync_vm_configs() now accepts vms_with_nvram_changes parameter
+#   - Log message shows which VMs have NVRAM changes forcing XML sync
+#
+# v1.10 (2026-01-19): Smart XML comparison ignoring machine type differences
+#   - BUGFIX: Fixed XML always appearing changed due to machine type normalization
+#   - Added normalize_xml_content() to apply machine type normalization in memory
+#   - Added get_batch_remote_xml_contents() for bulk XML retrieval
+#   - Smart compare: normalizes both local and remote XML before comparison
+#   - Only copies + defines XML if there's a REAL change (not just machine type)
+#   - Missing remote XMLs are always copied (new VM case)
+#   - Reduces unnecessary XML syncs and virsh define operations
 #
 # v1.09 (2026-01-19): Batch XML sync and domain definition
 #   - PERFORMANCE: Replaced per-VM XML rsync with single batch rsync
@@ -111,6 +157,7 @@ __version__ = "rsync_KVM_OS.py,v 1.09 2026/01/19 18:00:00 python-conversion Exp"
 
 import argparse
 import os
+import re
 import sys
 import subprocess
 import xml.etree.ElementTree as ET
@@ -689,6 +736,36 @@ class KVMReplicator:
 
         return running
 
+    def get_defined_vms_remote(self) -> set:
+        """
+        Get set of all defined VM names on the remote host in a single SSH call.
+
+        This returns ALL VMs known to libvirt (running + shut off), not just running ones.
+        Used to detect if a VM needs to be defined (virsh define) on the remote.
+
+        Returns:
+            Set of VM names that are defined on the remote host.
+        """
+        defined = set()
+        try:
+            result = self.run_ssh_command(
+                "PATH=/bin:/opt/bin virsh list --all --name",
+                check=False
+            )
+            if result.returncode == 0:
+                # virsh list --all --name outputs one VM name per line
+                for line in result.stdout.strip().split('\n'):
+                    vm_name = line.strip()
+                    if vm_name:  # Skip empty lines
+                        defined.add(vm_name)
+                logger.info(f"Remote defined VMs ({self.remote_host}): {len(defined)} VMs")
+            else:
+                logger.warning(f"Failed to get remote defined VM list from {self.remote_host}")
+        except Exception as e:
+            logger.warning(f"Error getting remote defined VMs: {e}")
+
+        return defined
+
     def prefetch_running_vms(self):
         """
         Prefetch running VM lists from both local and remote hosts.
@@ -812,6 +889,96 @@ done'''
         except Exception as e:
             logger.warning(f"Batch remote mtime check failed: {e}")
             return {}  # Empty dict signals fallback to individual checks
+
+    def normalize_xml_content(self, xml_content: str) -> str:
+        """
+        Normalize XML content by applying machine type transformations.
+
+        This applies the same transformations that we do on the remote side
+        with sed, allowing us to compare local vs remote XMLs fairly.
+
+        Normalizations applied:
+        - pc-i440fx-* → pc
+        - pc-q35-* → q35
+
+        Args:
+            xml_content: Raw XML content string
+
+        Returns:
+            Normalized XML content string
+        """
+        # Apply the same patterns as the sed commands
+        normalized = re.sub(r'pc-i440fx-[a-zA-Z0-9._-]*', 'pc', xml_content)
+        normalized = re.sub(r'pc-q35-[a-zA-Z0-9._-]*', 'q35', normalized)
+        return normalized
+
+    def get_batch_remote_xml_contents(self, vm_names: List[str]) -> Dict[str, str]:
+        """
+        Get XML contents for multiple VMs from remote host in a single SSH call.
+
+        Reads from templates directory (not /etc/libvirt/qemu) because:
+        - Templates contain the sed-normalized XML saved BEFORE virsh define
+        - /etc/libvirt/qemu/*.xml gets modified by virsh define (adds defaults, reformats)
+        - Comparing against templates gives us a clean "source-normalized" reference
+
+        Args:
+            vm_names: List of VM names to get XML for
+
+        Returns:
+            Dictionary mapping VM name -> XML content (empty string if missing)
+        """
+        if not vm_names:
+            return {}
+
+        # Build a script that outputs each XML with delimiters
+        # Format: <<<VM_NAME>>>\n<xml content>\n<<<END_VM_NAME>>>
+        # Read from templates dir (has sed-normalized XML before virsh define)
+        script_parts = []
+        for vm in vm_names:
+            remote_xml = f"{DEFAULT_KVM_TEMPLATES}/{vm}.xml"
+            script_parts.append(
+                f'echo "<<<{vm}>>>"; '
+                f'if [ -f "{remote_xml}" ]; then cat "{remote_xml}"; else echo ""; fi; '
+                f'echo "<<<END_{vm}>>>"'
+            )
+
+        script = '; '.join(script_parts)
+
+        if self.debug:
+            logger.info(f"DEBUG: Batch XML fetch for {len(vm_names)} VMs from {self.remote_host}")
+
+        try:
+            result = self.run_ssh_command(f'bash -c {shlex.quote(script)}', check=False)
+
+            if result.returncode != 0:
+                logger.warning(f"Batch XML fetch failed: {result.stderr.strip()}")
+                return {}
+
+            # Parse output - extract content between markers
+            xml_contents = {}
+            output = result.stdout
+
+            for vm in vm_names:
+                start_marker = f"<<<{vm}>>>"
+                end_marker = f"<<<END_{vm}>>>"
+
+                start_idx = output.find(start_marker)
+                end_idx = output.find(end_marker)
+
+                if start_idx != -1 and end_idx != -1:
+                    # Extract content between markers (skip the marker line itself)
+                    content_start = start_idx + len(start_marker) + 1  # +1 for newline
+                    content = output[content_start:end_idx].strip()
+                    xml_contents[vm] = content
+                else:
+                    xml_contents[vm] = ""
+
+            logger.info(f"Batch XML fetch completed: {len(xml_contents)} configs retrieved")
+            return xml_contents
+
+        except Exception as e:
+            logger.warning(f"Batch remote XML fetch failed: {e}")
+            return {}
 
     def collect_files_for_sync(
         self,
@@ -1251,29 +1418,142 @@ done'''
 
         return sorted(set(validated_vms))
 
-    def sync_vm_configs(self, vm_list: List[str]) -> bool:
+    def sync_vm_configs(self, vm_list: List[str], vms_with_nvram_changes: set = None) -> bool:
         """
-        Sync VM configuration files using batch operations.
+        Sync VM configuration files using batch operations with smart comparison.
+
+        Smart comparison: normalizes machine types in both local and remote XMLs
+        before comparing, so we only sync when there's a REAL change (not just
+        machine type differences like pc-q35-rhel9.2.0 vs q35).
+
+        Exception: VMs with NVRAM changes always get XML synced (NVRAM and XML
+        are tied together for UEFI VMs).
 
         Optimized to use:
-        - Single rsync call for all XML files
-        - Single SSH call for all post-sync operations (sed, virsh define, cp to templates)
+        - Single SSH call to fetch all remote XML contents
+        - Single rsync call for XMLs that actually need updating
+        - Single SSH call for all post-sync operations (sed, virsh define, cp)
+
+        Args:
+            vm_list: List of VM names to potentially sync
+            vms_with_nvram_changes: Set of VM names that had NVRAM changes
+                                    (these skip smart comparison - always sync XML)
         """
         if not vm_list:
             return True
 
-        # Build list of XML files that exist
-        xml_files = []
-        vm_names = []
+        if vms_with_nvram_changes is None:
+            vms_with_nvram_changes = set()
+
+        # ============================================================
+        # NAS SYSTEMS: Skip XML comparison (no templates/virsh)
+        # Just rsync XMLs as backup - caller only passes VMs with data changes
+        # ============================================================
+        if self.host_config.skip_define:
+            xml_files = []
+            for vm in vm_list:
+                xml_src = f"{self.kvm_conf_src_dir}/{vm}.xml"
+                if os.path.exists(xml_src):
+                    xml_files.append(xml_src)
+
+            if not xml_files:
+                return True
+
+            logger.info(f"NAS target: Backing up {len(xml_files)} XML configs (data files changed)")
+            logger.info(f"*** Syncing {len(xml_files)} XML configs to {self.remote_host}:{self.kvm_conf_dst_dir}/")
+
+            rsync_cmd = ['rsync']
+            rsync_cmd.extend(self.rsync_options.split())
+            if self.host_config.rsync_path:
+                rsync_cmd.extend(['--rsync-path', self.host_config.rsync_path])
+            if self.debug:
+                rsync_cmd.append('--dry-run')
+            rsync_cmd.extend(xml_files)
+            rsync_cmd.append(f"{self.remote_host}:{self.kvm_conf_dst_dir}/")
+
+            try:
+                process = subprocess.Popen(rsync_cmd)
+                self.child_processes.append(process)
+                returncode = process.wait()
+                if process in self.child_processes:
+                    self.child_processes.remove(process)
+                if returncode != 0:
+                    logger.error(f"Failed to sync XML files to {self.remote_host}")
+                    return False
+            except KeyboardInterrupt:
+                logger.warning("Interrupted by user during XML sync")
+                self.cleanup_child_processes()
+                raise
+
+            return True
+
+        # ============================================================
+        # KVM HOSTS: Full XML comparison and sync
+        # ============================================================
+
+        # Build list of XML files that exist locally
+        local_xml_contents = {}  # vm_name -> local XML content
         for vm in vm_list:
             xml_src = f"{self.kvm_conf_src_dir}/{vm}.xml"
             if os.path.exists(xml_src):
-                xml_files.append(xml_src)
-                vm_names.append(vm)
+                try:
+                    with open(xml_src, 'r') as f:
+                        local_xml_contents[vm] = f.read()
+                except IOError as e:
+                    logger.warning(f"Failed to read {xml_src}: {e}")
             else:
                 logger.warning(f"No XML file found for {vm} at {xml_src}, skipping...")
 
-        if not xml_files:
+        if not local_xml_contents:
+            return True
+
+        # ============================================================
+        # PHASE 1: Fetch remote state (XML contents + defined VMs)
+        # ============================================================
+        logger.info(f"Comparing {len(local_xml_contents)} XML configs with remote...")
+        remote_xml_contents = self.get_batch_remote_xml_contents(list(local_xml_contents.keys()))
+
+        # Get list of defined VMs on remote (to detect undefined VMs that need virsh define)
+        remote_defined_vms = self.get_defined_vms_remote()
+
+        # ============================================================
+        # PHASE 2: Smart compare - only sync XMLs with real changes
+        # Exceptions that force XML sync:
+        #   - VM has NVRAM changes (NVRAM and XML are tied together)
+        #   - VM is not defined on remote (needs virsh define)
+        #   - Remote XML file doesn't exist
+        # ============================================================
+        vms_needing_sync = []
+
+        for vm, local_content in local_xml_contents.items():
+            remote_content = remote_xml_contents.get(vm, "")
+
+            # If NVRAM changed, always sync XML (they're tied together)
+            if vm in vms_with_nvram_changes:
+                logger.info(f"XML for {vm} will sync (NVRAM changed)")
+                vms_needing_sync.append(vm)
+            elif not remote_content:
+                # Remote XML doesn't exist - always sync
+                logger.info(f"XML for {vm} missing on remote - will sync")
+                vms_needing_sync.append(vm)
+            elif vm not in remote_defined_vms:
+                # VM is not defined on remote - need to sync and define
+                logger.info(f"XML for {vm} will sync (VM not defined on remote)")
+                vms_needing_sync.append(vm)
+            else:
+                # Normalize both and compare
+                # Strip both to handle whitespace/newline differences from different read methods
+                local_normalized = self.normalize_xml_content(local_content).strip()
+                remote_normalized = self.normalize_xml_content(remote_content).strip()
+
+                if local_normalized != remote_normalized:
+                    logger.info(f"XML for {vm} has real changes - will sync")
+                    vms_needing_sync.append(vm)
+                else:
+                    logger.info(f"XML for {vm} unchanged (after normalization) - skipping")
+
+        if not vms_needing_sync:
+            logger.info("No XML configs need syncing (all unchanged)")
             return True
 
         logger.info(f"Waiting {self.wait_time} seconds before push to {self.remote_host}...")
@@ -1283,11 +1563,12 @@ done'''
         success = True
 
         # ============================================================
-        # PHASE 1: Batch rsync all XML files to libvirt directory
+        # PHASE 3: Batch rsync only XMLs that need updating
         # ============================================================
+        xml_files = [f"{self.kvm_conf_src_dir}/{vm}.xml" for vm in vms_needing_sync]
         logger.info(f"*** Syncing {len(xml_files)} XML configs to {self.remote_host}:{self.kvm_conf_dst_dir}/")
 
-        # Build rsync command for all XML files
+        # Build rsync command for XML files that need updating
         rsync_cmd = ['rsync']
         rsync_cmd.extend(self.rsync_options.split())
         if self.host_config.rsync_path:
@@ -1297,7 +1578,7 @@ done'''
         if self.debug:
             rsync_cmd.append('--dry-run')
 
-        # Add all source files and destination
+        # Add source files and destination
         rsync_cmd.extend(xml_files)
         rsync_cmd.append(f"{self.remote_host}:{self.kvm_conf_dst_dir}/")
 
@@ -1320,29 +1601,33 @@ done'''
             return False
 
         # ============================================================
-        # PHASE 2: Batch post-sync operations (sed, virsh define, cp)
+        # PHASE 4: Batch post-sync operations (sed, virsh define, cp)
         # ============================================================
         if not self.host_config.skip_define:
             if self.debug:
-                logger.info(f"DEBUG: Would normalize machine types, define {len(vm_names)} domains, and save to templates on {self.remote_host}")
+                logger.info(f"DEBUG: Would normalize machine types, define {len(vms_needing_sync)} domains, and save to templates on {self.remote_host}")
             else:
                 # Build a single script that processes all VMs
                 remote_templates_dir = DEFAULT_KVM_TEMPLATES
 
                 # Create the batch script
-                # For each VM: sed normalize, virsh define, cp to templates
+                # Order is important:
+                # 1. sed normalize (fix machine types)
+                # 2. cp to templates BEFORE virsh define (saves clean normalized version)
+                # 3. virsh define (this modifies the XML in /etc/libvirt/qemu/)
+                # We compare against templates for future syncs, not /etc/libvirt/qemu/
                 script_lines = [
                     f'mkdir -p {remote_templates_dir}',
                     'failed=""',
                 ]
 
-                for vm in vm_names:
+                for vm in vms_needing_sync:
                     remote_xml = f"{self.kvm_conf_dst_dir}/{vm}.xml"
                     script_lines.extend([
                         f'# Processing {vm}',
                         f"sed -i -e 's@pc-i440fx-[a-zA-Z0-9._-]*@pc@g' -e 's@pc-q35-[a-zA-Z0-9._-]*@q35@g' {remote_xml}",
+                        f'cp -p {remote_xml} {remote_templates_dir}/{vm}.xml',  # Save BEFORE virsh define
                         f'if PATH=/bin:/opt/bin virsh define {remote_xml} >/dev/null 2>&1; then',
-                        f'    cp -p {remote_xml} {remote_templates_dir}/{vm}.xml',
                         f'    echo "OK: {vm}"',
                         f'else',
                         f'    echo "FAILED: {vm}"',
@@ -1354,7 +1639,7 @@ done'''
 
                 batch_script = '\n'.join(script_lines)
 
-                logger.info(f"Defining {len(vm_names)} domains on {self.remote_host} (batch mode)...")
+                logger.info(f"Defining {len(vms_needing_sync)} domains on {self.remote_host} (batch mode)...")
 
                 try:
                     result = self.run_ssh_command(f'bash -c {shlex.quote(batch_script)}', check=False)
@@ -1539,6 +1824,7 @@ done'''
                 # PHASE 3: Compare mtimes and build sync lists
                 # ============================================================
                 vms_needing_sync = set()
+                vms_with_nvram_changes = set()  # Track VMs with NVRAM changes (forces XML sync)
 
                 for fi in file_info_list:
                     if self.force_action or self.host_config.skip_stat_check or not self.stat_available:
@@ -1550,6 +1836,7 @@ done'''
                             disk_files.append(fi.local_path)
                         else:
                             nvram_files.append(fi.local_path)
+                            vms_with_nvram_changes.add(fi.vm_name)
                         vms_needing_sync.add(fi.vm_name)
                     elif use_batch_stat:
                         # Use batch stat results
@@ -1562,6 +1849,7 @@ done'''
                                 disk_files.append(fi.local_path)
                             else:
                                 nvram_files.append(fi.local_path)
+                                vms_with_nvram_changes.add(fi.vm_name)
                             vms_needing_sync.add(fi.vm_name)
                         elif local_mtime == remote_mtime:
                             logger.info(f"stat() times on {fi.vm_name} ({fi.local_path}) are identical, skipping...")
@@ -1576,12 +1864,15 @@ done'''
                                 disk_files.append(fi.local_path)
                             else:
                                 nvram_files.append(fi.local_path)
+                                vms_with_nvram_changes.add(fi.vm_name)
                             vms_needing_sync.add(fi.vm_name)
                         elif local_mtime == remote_mtime:
                             logger.info(f"stat() times on {fi.vm_name} ({fi.local_path}) are identical, skipping...")
 
                 vms_to_sync = sorted(vms_needing_sync)
-                logger.info(f"VMs requiring sync: {' '.join(vms_to_sync) if vms_to_sync else '(none)'}")
+                logger.info(f"VMs with data file changes: {' '.join(vms_to_sync) if vms_to_sync else '(none)'}")
+                if vms_with_nvram_changes:
+                    logger.info(f"VMs with NVRAM changes (will force XML sync): {' '.join(sorted(vms_with_nvram_changes))}")
 
                 # ============================================================
                 # PHASE 4: Create snapshot if needed (after determining what to sync)
@@ -1618,10 +1909,19 @@ done'''
                         if not self.sync_file(nvram_file, self.host_config.kvm_nvram_dst_dirs[i]):
                             success = False
 
-                # Sync VM configurations (after disk/NVRAM sync to ensure consistency)
-                if vms_to_sync:
-                    if not self.sync_vm_configs(vms_to_sync):
-                        success = False
+                # Sync VM configurations
+                # For KVM hosts: check ALL processed VMs with smart comparison
+                # For NAS (skip_define): only sync XMLs when data files changed (backup only)
+                if self.host_config.skip_define:
+                    # NAS: only sync XMLs for VMs with data changes (as backup)
+                    if vms_to_sync:
+                        if not self.sync_vm_configs(vms_to_sync, vms_with_nvram_changes):
+                            success = False
+                else:
+                    # KVM: check all VMs with smart XML comparison
+                    if vms_to_process:
+                        if not self.sync_vm_configs(vms_to_process, vms_with_nvram_changes):
+                            success = False
 
                 # Copy tools to scripts directory (always use canonical location)
                 dst_base_dir = os.path.dirname(self.host_config.kvm_images_dst_dirs[i])
