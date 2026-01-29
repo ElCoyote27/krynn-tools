@@ -1,3 +1,5 @@
+
+
 #!/usr/bin/env python3
 """
 KVM Virtual Machine Replication Script
@@ -207,9 +209,10 @@ WAIT_TIME_BEFORE_SYNC = 2.5  # seconds
 
 # Default VM List - VMs to replicate by default
 DEFAULT_VM_LIST = [
-    "dc00", "dc01", "dc02", "dc03", "fedora-x64", "fedora-csb-x64",
+    "dc00", "dc01", "dc02", "dc03", "fedora-x64", "csb-x64",
     "win10-x64", "win11-x64", "unifi", "gitlab",
-    "bdc416x", "bdc417x", "bdc418x", "bdc419x", "bdc420x", "bdc421x", "bdc422x", "bdc423x",
+    "bdc416x", "bdc417x", "bdc418x", "bdc419x", "bdc420x", "bdc421x", "bdc422x",
+    "bdc423x", "bdc424x", "bdc425x", "bdc426x", "bdc427x", "bdc428x",
     "sat6", "ca8", "idm00", "mailhost", "registry", "quay3", "vxvom", "www8",
     "kali-x64", "freenas-11", "ubuntu-x64", "dsm7", "ocp4s", "ocp4t",
     "rhel3-x86", "rhel4-x86", "rhel5-x86", "rhel5-x64", "rhel6-x86",
@@ -360,11 +363,11 @@ class KVMReplicator:
 
             # Standard KVM hosts (only override VM lists)
             'solanthus': {**KVM_STD_CONFIG,
-                'default_vm_list': "rhel3-x86 rhel9-x64 ca8 fedora-x64 fedora-csb-x64 win10-x64 win11-x64 dc00 dc01 bdc420x idm00 cirros mailhost",
+                'default_vm_list': "rhel3-x86 rhel9-x64 ca8 fedora-x64 csb-x64 win10-x64 win11-x64 dc00 dc01 bdc420x idm00 cirros mailhost",
                 'vxfs_snapshots': False,
             },
             'lothlorien': {**KVM_STD_CONFIG,
-                'default_vm_list': "fedora-csb-x64 cirros dc00 dc01 ca8 gitlab win10-x64 win11-x64",
+                'default_vm_list': "csb-x64 cirros dc00 dc01 ca8 gitlab win10-x64 win11-x64",
                 'vxfs_snapshots': False,
             },
             'thorbardin': {**KVM_STD_CONFIG,
