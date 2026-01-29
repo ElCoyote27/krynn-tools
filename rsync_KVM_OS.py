@@ -1,5 +1,3 @@
-
-
 #!/usr/bin/env python3
 """
 KVM Virtual Machine Replication Script
