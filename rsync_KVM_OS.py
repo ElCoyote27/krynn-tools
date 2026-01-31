@@ -9,12 +9,18 @@ hypervisor-specific configurations.
 Author: Vincent S. Cojot
 """
 
-# $Id: rsync_KVM_OS.py,v 1.17 2026/01/20 02:00:00 root Exp root $
-__version__ = "rsync_KVM_OS.py,v 1.17 2026/01/20 02:00:00 python-conversion Exp"
+# $Id: rsync_KVM_OS.py,v 1.18 2026/01/29 02:00:00 root Exp root $
+__version__ = "rsync_KVM_OS.py,v 1.18 2026/01/29 02:00:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.18 (2026-01-29): Ignore emulator path differences in XML comparison
+#   - Added emulator path normalization to normalize_xml_content()
+#   - RHEL uses /usr/libexec/qemu-kvm, Fedora might use /usr/bin/qemu-kvm
+#   - Normalization only for comparison - actual XML emulator path unchanged
+#   - Eliminates false XML differences between RHEL and Fedora hypervisors
 #
 # v1.17 (2026-01-20): Skip templates handling for NAS systems
 #   - For hosts with skip_define=True (NAS), skip XML comparison
@@ -893,7 +899,7 @@ done'''
 
     def normalize_xml_content(self, xml_content: str) -> str:
         """
-        Normalize XML content by applying machine type transformations.
+        Normalize XML content by applying machine type and emulator transformations.
 
         This applies the same transformations that we do on the remote side
         with sed, allowing us to compare local vs remote XMLs fairly.
@@ -901,6 +907,8 @@ done'''
         Normalizations applied:
         - pc-i440fx-* → pc
         - pc-q35-* → q35
+        - <emulator>/path/to/qemu-kvm</emulator> → <emulator>qemu-kvm</emulator>
+          (RHEL uses /usr/libexec/qemu-kvm, Fedora uses /usr/bin/qemu-kvm)
 
         Args:
             xml_content: Raw XML content string
@@ -911,6 +919,8 @@ done'''
         # Apply the same patterns as the sed commands
         normalized = re.sub(r'pc-i440fx-[a-zA-Z0-9._-]*', 'pc', xml_content)
         normalized = re.sub(r'pc-q35-[a-zA-Z0-9._-]*', 'q35', normalized)
+        # Normalize emulator path (RHEL vs Fedora difference)
+        normalized = re.sub(r'<emulator>[^<]*qemu-kvm</emulator>', '<emulator>qemu-kvm</emulator>', normalized)
         return normalized
 
     def get_batch_remote_xml_contents(self, vm_names: List[str]) -> Dict[str, str]:
