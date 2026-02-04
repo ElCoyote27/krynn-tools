@@ -3,3 +3,4 @@ non_reg_megaclisas.sh
 eXpSpaces.sh
 __pycache__/
 nodes.txt
+apc_ups_outlet_reboot.py
