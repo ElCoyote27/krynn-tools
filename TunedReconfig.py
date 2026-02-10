@@ -5,14 +5,22 @@ TunedReconfig - Simple script to switch between tuned profiles
 A utility to quickly switch between common tuned profiles:
 - powersave
 - virtual-host intel-sst
+
+Skips profile changes on virtual machines unless --force is used.
 """
 
-# $Id: TunedReconfig.py 1.05 2025/09/11 00:00:00 add-accelerator-profile Exp $
-__version__ = "TunedReconfig.py 1.05 2025/09/11 00:00:00 add-accelerator-profile Exp"
+# $Id: TunedReconfig.py 1.06 2026/02/10 00:00:00 skip-virtual-systems Exp $
+__version__ = "TunedReconfig.py 1.06 2026/02/10 00:00:00 skip-virtual-systems Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.06 (2026-02-10): Skip profile changes on virtual systems
+#   - Added virtual machine detection via systemd-detect-virt
+#   - Profile changes are skipped by default on virtual systems
+#   - Added -f/--force flag to override virtual system detection
+#   - Status display shows virtualization type when detected
 #
 # v1.05 (2025-09-11): Added accelerator-performance profile
 #   - Added support for accelerator-performance profile with 'a' alias
@@ -90,6 +98,43 @@ def is_root():
     """Check if running as root"""
     return os.getuid() == 0
 
+def is_virtual():
+    """Detect if running on a virtual machine.
+
+    Uses systemd-detect-virt which returns the virtualization
+    technology name (kvm, vmware, xen, etc.) with exit code 0
+    if virtualized, or 'none' with non-zero exit code if
+    running on bare metal.
+
+    Returns a tuple of (is_vm, virt_type) where is_vm is a
+    boolean and virt_type is the detected virtualization type
+    string (or None if bare metal).
+    """
+    detect_virt = shutil.which('systemd-detect-virt')
+    if not detect_virt:
+        # Check common locations
+        for path in ['/usr/bin/systemd-detect-virt',
+                     '/bin/systemd-detect-virt']:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                detect_virt = path
+                break
+
+    if not detect_virt:
+        # Cannot detect, assume physical
+        return (False, None)
+
+    try:
+        result = subprocess.run(
+            [detect_virt], capture_output=True, text=True
+        )
+        virt_type = result.stdout.strip()
+        if result.returncode == 0 and virt_type != 'none':
+            return (True, virt_type)
+        return (False, None)
+    except (subprocess.CalledProcessError, FileNotFoundError,
+            OSError):
+        return (False, None)
+
 def setup_cron_environment():
     """Set up minimal environment for cron execution"""
     # Ensure basic PATH is available for cron
@@ -163,7 +208,12 @@ Examples:
   TunedReconfig.py l      Switch to latency-performance
   TunedReconfig.py a      Switch to accelerator-performance
   TunedReconfig.py -q p   Switch to powersave silently
+  TunedReconfig.py -f v   Force profile change on a virtual system
   TunedReconfig.py        Show current profile and toggle options
+
+Note:
+  On virtual machines (detected via systemd-detect-virt), profile
+  changes are skipped by default. Use -f/--force to override.
 
 Cron usage:
   15 8 * * * /usr/local/sbin/TunedReconfig.py -q v  # Virtual-host at 8:15 AM
@@ -178,21 +228,29 @@ Cron usage:
                        help='Show current profile only')
     parser.add_argument('-q', '--quiet', action='store_true',
                        help='Suppress all output except critical errors')
+    parser.add_argument('-f', '--force', action='store_true',
+                       help='Force profile change even on virtual systems')
     parser.add_argument('--version', action='version', version=__version__,
                        help='Show version information')
 
     args = parser.parse_args()
 
     current = get_current_profile()
+    vm_detected, virt_type = is_virtual()
 
     if args.status:
         if not args.quiet:
             print(f"Current profile: {current}")
+            if vm_detected:
+                print(f"Virtual system detected: {virt_type}")
         return
 
     if not args.profile:
         if not args.quiet:
             print(f"Current profile: {current}")
+            if vm_detected:
+                print(f"Virtual system detected: {virt_type}"
+                      " (use -f to force profile changes)")
             print("\nAvailable options:")
             print("  p/power      -> powersave")
             print("  v/virtual    -> virtual-host intel-sst")
@@ -241,6 +299,14 @@ Cron usage:
         sys.exit(1)
 
     target_profile = PROFILES[profile_key]
+
+    # Skip profile changes on virtual systems unless --force
+    if vm_detected and not args.force:
+        if not args.quiet:
+            print(f"Virtual system detected ({virt_type})"
+                  " - skipping profile change.")
+            print("Use -f/--force to override.")
+        return
 
     if current == target_profile:
         if not args.quiet:
