@@ -218,7 +218,7 @@ DEFAULT_VM_LIST = [
     "bdc416x", "bdc417x", "bdc418x", "bdc419x", "bdc420x", "bdc421x", "bdc422x",
     "bdc423x", "bdc424x", "bdc425x", "bdc426x", "bdc427x", "bdc428x",
     "sat6", "ca8", "idm00", "mailhost", "registry", "quay3", "vxvom", "www8",
-    "kali-x64", "freenas-11", "ubuntu-x64", "dsm7", "ocp4s", "ocp4t",
+    "kali-x64", "freenas-11", "ubuntu-x64", "dsm7", "ocp4v", "ocp4t",
     "rhel3-x86", "rhel4-x86", "rhel5-x86", "rhel5-x64", "rhel6-x86",
     "rhel6-x64", "rhel7-x64", "rhel8-x64", "rhel8-x64-eus", "rhel9-x64",
     "coreos-sno-0", "coreos-sno-1", "coreos-sno-2", "coreos-sno-3",
