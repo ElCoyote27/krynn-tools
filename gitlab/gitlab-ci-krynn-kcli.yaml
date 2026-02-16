@@ -1,0 +1,514 @@
+########################################################################################################################
+### CI Variables ###
+### Add those variables to a manual pipeline run to modify task execution
+########################################################################################################################
+#
+# OCP variable:
+#   '4.y': Deploys latest OCP 4.y (12<= y <=23)
+#
+# HVM variable:
+#   'thorbardin': only execute on HVM thorbardin
+#   'daltigoth': only execute on HVM daltigoth
+#   'palanthas': only execute on HVM palanthas
+#   'ravenvale': only execute on HVM ravenvale
+#
+# SIZE variable:
+#   'sno': 1*master, 2*workers, 3*infra (ODF)
+#   'compact': 3*master, 2*workers, 3*infra (ODF)
+#   'large': 3*master, 3*workers, 3*infra (ODF)
+#   'full': 3*master, 3*workers, 6*infra (ODF)
+#
+# SDN_DRIVER variable:
+#   'multus': Use Multus
+#   'openshift': Use OpenShift SDN
+#
+############################################ UTILITY ROUTINES ##########################################################
+
+.tag_restrict: &tag_restrict
+  only:
+    - master_disabled_20200129
+    - web
+    - refact
+
+######################################## STAGES & GLOBALS ########################################
+# Stages
+stages:
+  - select_hypervisor
+  - select_ocp
+  - select_sdn
+  - select_deploy_size
+  - initiate_launch
+  - launch_hypervisor
+  - deploy_openshift
+  - delete_openshift
+
+#  - copy_ocp_tooling
+
+# Sane Defaults
+variables:
+  FF_SCRIPT_SECTIONS: "true"
+  TZ: "Europe/Paris"
+  REDIS_HOST: "ca8.lasthome.solace.krynn"
+  REDIS_PORT: "6379"
+  GIT_SSL_NO_VERIFY: "1"
+  GIT_SUBMODULE_STRATEGY: recursive
+  PYTHONUNBUFFERED: "true"
+  ANSIBLE_FORCE_COLOR: "yes"
+  SSH_USER: "vmrun"
+  SSH_PLAYBOOK_USER: "raistlin"
+  VBMC_CONTAINER: "krynn-vbmc"
+  SUSHY_CONTAINER: "krynn-suhsy"
+  ANSIBLE_HOST_KEY_CHECKING: "False"
+  #
+  #HVM_TUNED_PROFILE: "virtual-host"
+  HVM_TUNED_PROFILE: "virtual-host intel-sst"
+  HVM_DEFAULT_TUNED_PROFILE: "powersave"
+  ERASE_ME_OCP:
+    value: "4.18.30"
+    description: "The desired version of OCP"
+  ERASE_ME_HVM:
+    value: "daltigoth.lasthome.solace.krynn"
+    description: "The hypervisor onto which OCP will be deployed (Remember to input an FQDN)"
+  ERASE_ME_SIZE:
+    value: "large"
+    description: "Deployment size (sno/compact/medium/large/full)"
+  # This is commented out so we block waiting for user to select one option..
+  ERASE_ME_SDN_DRIVER:
+    value: "openshift"
+    description: "SDN Driver for OCP (openshift or multus)"
+
+######################################## DEFAULT BEFORE_SCRIPT ########################################
+
+default:
+  #### image: registry.access.redhat.com/ubi8/ubi:latest
+  #### image: docker.io/fedora:30
+  image: registry.lasthome.solace.krynn:5010/repository/krynn/krynn-gitlab-runner:latest
+  before_script:
+    # Failsafe: ensure required tools are present (no-op if already installed)
+    #- dnf -y -q install nmap-ncat libvirt-client openssh-clients redis iproute iputils coreutils findutils psutils sysfsutils diffutils patchutils procps-ng rsync ansible nano git wget xz 7za jq 2>/dev/null || true
+    # this is the start of the utility functions embedded in all stages
+    - ls -l /builds/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}/gitlab/functions.sh
+    - if [ -f /builds/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}/gitlab/functions.sh ]; then source /builds/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}/gitlab/functions.sh; fi
+    - umask 0022
+    # site-configs
+    - pushd .
+    - cd /builds/${CI_PROJECT_NAMESPACE}
+    # - rm -rf site-configs # cleanup when needed
+    - if [ ! -d site-configs ]; then git clone https://gitlab.lasthome.solace.krynn/openstack-group/site-configs.git; fi
+    - if [ -d site-configs ]; then (cd site-configs && git pull); fi
+    - popd
+    # let's do the redis magic (TBD)
+    - mkdir -p ~/.ssh/
+    - echo -e "Host *\n  ForwardAgent yes\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  PreferredAuthentications=publickey\n  ServerAliveInterval 30\n  ServerAliveCountMax 720\n  TCPKeepAlive no\n  ControlMaster auto\n  ControlPath /tmp/ssh-%r@%h:%p\n  ControlPersist 600\n" > ~/.ssh/config
+    - chmod 0700 -R ~/.ssh
+    # Load redis values..
+    - load_redis_keys
+    # Summary
+    - if [ ! -z "${HVM}" -a ! -z "${OCP}" -a ! -z "${SIZE}" -a ! -z "${SDN_DRIVER}" ]; then
+        print_banner_ocp;
+      fi
+    - export LIBVIRT_DEFAULT_URI=qemu+ssh://${SSH_USER}@${HVM}/system ;
+    - echo "LIBVIRT_DEFAULT_URI set to ${LIBVIRT_DEFAULT_URI}";
+    # SSH Agent
+    - eval $(ssh-agent)
+    - chmod 600 /builds/${CI_PROJECT_NAMESPACE}/site-configs/${SSH_USER}_rsa
+    - ssh-add /builds/${CI_PROJECT_NAMESPACE}/site-configs/${SSH_USER}_rsa
+    - ssh-add -l
+
+######################################## SELECT HYPERVISOR ########################################
+.select_hypervisor:
+  script:
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_OCP" "${OCP}"
+    - echo "Selected Hypervisor ${HVM} and OCP v${OCP}..."
+  <<: *tag_restrict
+
+hvm_palanthas:
+  extends: .select_hypervisor
+  stage: select_hypervisor
+  #tags: palanthas
+  when: manual
+  allow_failure: true
+  script:
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_HVM" "palanthas.lasthome.solace.krynn"
+
+hvm_daltigoth:
+  extends: .select_hypervisor
+  stage: select_hypervisor
+  #tags: daltigoth
+  when: manual
+  allow_failure: true
+  script:
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_HVM" "daltigoth.lasthome.solace.krynn"
+
+hvm_ravenvale:
+  extends: .select_hypervisor
+  stage: select_hypervisor
+  #tags: ravenvale
+  when: manual
+  allow_failure: true
+  script:
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_HVM" "ravenvale.lasthome.solace.krynn"
+
+hvm_solinari:
+  extends: .select_hypervisor
+  stage: select_hypervisor
+  #tags: solinari
+  when: manual
+  allow_failure: true
+  script:
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_HVM" "solinari.lasthome.solace.krynn"
+
+######################################## SELECT OCP ########################################
+.select_ocp:
+  script:
+    - echo "Selected Hypervisor ${HVM} and OCP v${OCP}..."
+  <<: *tag_restrict
+
+ocp_4.21.z:
+  extends: .select_ocp
+  stage: select_ocp
+  #tags: thorbardin
+  when: manual
+  script:
+    # Hypervisor
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_OCP" "4.21.1"
+  allow_failure: true
+
+ocp_4.20.z:
+  extends: .select_ocp
+  stage: select_ocp
+  #tags: thorbardin
+  when: manual
+  script:
+    # Hypervisor
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_OCP" "4.20.12"
+  allow_failure: true
+
+ocp_4.19.z:
+  extends: .select_ocp
+  stage: select_ocp
+  #tags: thorbardin
+  when: manual
+  script:
+    # Hypervisor
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_OCP" "4.19.20"
+  allow_failure: true
+
+ocp_4.18.z:
+  extends: .select_ocp
+  stage: select_ocp
+  #tags: thorbardin
+  when: manual
+  script:
+    # Hypervisor
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_OCP" "4.18.30"
+  allow_failure: true
+
+ocp_4.17.z:
+  extends: .select_ocp
+  stage: select_ocp
+  #tags: thorbardin
+  when: manual
+  script:
+    # Hypervisor
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_OCP" "4.17.45"
+  allow_failure: true
+
+ocp_4.16.z:
+  extends: .select_ocp
+  stage: select_ocp
+  #tags: thorbardin
+  when: manual
+  script:
+    # Hypervisor
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_OCP" "4.16.56"
+  allow_failure: true
+
+ocp_4.15.z:
+  extends: .select_ocp
+  stage: select_ocp
+  #tags: thorbardin
+  when: manual
+  script:
+    # Hypervisor
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_OCP" "4.15.59"
+  allow_failure: true
+
+ocp_4.14.z:
+  extends: .select_ocp
+  stage: select_ocp
+  #tags: thorbardin
+  when: manual
+  script:
+    # Hypervisor
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_OCP" "4.14.58"
+  allow_failure: true
+
+######################################## SELECT SDN_DRIVER ########################################
+.select_sdn_driver:
+  script:
+    - echo "Selected SDN Driver ${SDN_DRIVER}..."
+  <<: *tag_restrict
+
+Openshift_SDN (Legacy):
+  extends: .select_sdn_driver
+  stage: select_sdn
+  #tags: thorbardin
+  when: manual
+  script:
+    # Hypervisor
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_SDN_DRIVER" "sdn"
+  allow_failure: true
+
+Multus_SDN:
+  extends: .select_sdn_driver
+  stage: select_sdn
+  #tags: thorbardin
+  when: manual
+  script:
+    # Hypervisor
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_SDN_DRIVER" "multus"
+  allow_failure: true
+
+######################################## SELECT SIZE ########################################
+.select_deploy_size:
+  script:
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_SIZE" "${SIZE}"
+    - echo "Selected Hypervisor ${HVM}, OCP v${OCP} and size ${SIZE}..."
+  <<: *tag_restrict
+
+1_sno:
+  extends: .select_deploy_size
+  stage: select_deploy_size
+  #tags: thorbardin
+  when: manual
+  allow_failure: true
+  script:
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_SIZE" "sno"
+
+2_compact:
+  extends: .select_deploy_size
+  stage: select_deploy_size
+  #tags: daltigoth
+  when: manual
+  allow_failure: true
+  script:
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_SIZE" "compact"
+
+3_large:
+  extends: .select_deploy_size
+  stage: select_deploy_size
+  #tags: palanthas
+  when: manual
+  allow_failure: true
+  script:
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_SIZE" "large"
+
+4_full:
+  extends: .select_deploy_size
+  stage: select_deploy_size
+  #tags: ravenvale
+  when: manual
+  allow_failure: true
+  script:
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_SIZE" "full"
+
+######################################## DISCOVER HYPERVISOR (BLOCKING) ########################################
+config_injection:
+  stage: initiate_launch
+  <<: *tag_restrict
+  script:
+    # Blocking loop (2hours max)
+    # Default to KEEP='no'
+    - ${REDIS_CMD} set KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_KEEP "no"
+    # 1st, Select Hypervisor:
+    - TIMEOUT=3600;
+      until test ! -z "$(${REDIS_CMD} get KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_HVM)" || [ $TIMEOUT -eq 0 ];
+        do
+          echo "Hypervisor not yet selected, sleeping (${TIMEOUT} attempts remaining)";
+          sleep 2; TIMEOUT=$(( $TIMEOUT - 1 ));
+        done;
+    - export HVM="$(${REDIS_CMD} get KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_HVM)"
+    - echo "Requested Hypervisor is ${HVM}"
+    # 2nd, Select OCP version:
+    - TIMEOUT=3600;
+      until test ! -z "$(${REDIS_CMD} get KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_OCP)" || [ $TIMEOUT -eq 0 ];
+        do
+           echo "OCP Version not yet selected, sleeping (${TIMEOUT} attempts remaining)";
+           sleep 2; TIMEOUT=$(( $TIMEOUT - 1 ));
+        done;
+    - export OCP="$(${REDIS_CMD} get KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_OCP)"
+    - echo "Requested OCP version is ${OCP} on RHCOS"
+    # 3nd, Select Sdn Driver:
+    - TIMEOUT=3600;
+      until test ! -z "$(${REDIS_CMD} get KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_SDN_DRIVER)" || [ $TIMEOUT -eq 0 ];
+        do
+           echo "SDN Driver (OVS/OVN) not yet selected, sleeping (${TIMEOUT} attempts remaining)";
+           sleep 2; TIMEOUT=$(( $TIMEOUT - 1 ));
+        done;
+    - export SDN_DRIVER="$(${REDIS_CMD} get KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_SDN_DRIVER)"
+    - echo "Requested SDN Driver is ${SDN_DRIVER}"
+    - if [[ "${SDN_DRIVER}" = "ovn" ]]; then
+        OCP_FAMILY="$(echo ${OCP}|cut -d. -f1)";
+        if [[ ${OCP_FAMILY} -lt 13 ]]; then
+          echo "SDN Driver cannot be OVN for OCP lower than 13! Resetting to OVS...";
+          ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_SDN_DRIVER" "ovs";
+        fi;
+      fi;
+    # 4th, Select openshift deployment size:
+    - TIMEOUT=3600;
+      until test ! -z "$(${REDIS_CMD} get KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_SIZE)" || [ $TIMEOUT -eq 0 ];
+        do
+           echo "Deployment size not yet selected, sleeping (${TIMEOUT} attempts remaining)";
+           sleep 2; TIMEOUT=$(( $TIMEOUT - 1 ));
+        done;
+    - export SIZE="$(${REDIS_CMD} get KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_SIZE)"
+    - echo "Requested OCP deployment size is ${SIZE}"
+    - export KEEP="$(${REDIS_CMD} get KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_KEEP)"
+    - echo "Requested to keep openshift after pipeline is ${KEEP}"
+    # This is where the hostname/guest name logic happens:
+    - export INSTACK_DNS="osp$(echo ${OCP}|cut -d. -f1)$(echo $HVM|cut -c1)"
+    - export INSTACK_GUEST="instack-${OCP}"
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_INSTACK_DNS" "${INSTACK_DNS}"
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_INSTACK_GUEST" "${INSTACK_GUEST}"
+    # Final banner
+    - if [ ! -z "${HVM}" -a ! -z "${OCP}" -a ! -z "${SIZE}" ]; then
+        print_banner_ocp;
+      else
+        exit 127 ;
+      fi
+
+keep_env_after_pipeline:
+  stage: initiate_launch
+  <<: *tag_restrict
+  when: manual
+  allow_failure: true
+  script:
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_KEEP" "yes"
+
+
+discard_env_after_pipeline:
+  stage: initiate_launch
+  <<: *tag_restrict
+  when: manual
+  allow_failure: true
+  script:
+    - ${REDIS_CMD} set "KRYNN_${CI_PROJECT_ID}_${CI_PIPELINE_ID}_KEEP" "no"
+
+
+######################################## LAUNCH HYPERVISOR ########################################
+wake_hypervisor:
+  stage: launch_hypervisor
+  <<: *tag_restrict
+  script:
+    - SHORT_HVM="$(echo $HVM|cut -d. -f1)"
+    - ssh -qt ${SSH_USER}@imladris.lasthome.solace.krynn sudo /opt/krynn/scripts/wake_${SHORT_HVM}.sh
+
+wait_hypervisor_online:
+  stage: launch_hypervisor
+  <<: *tag_restrict
+  script:
+    - wait_system_online -t 720 -h ${HVM} -p 22
+
+wait_libvirtd_online:
+  stage: launch_hypervisor
+  <<: *tag_restrict
+  script:
+    - wait_libvirtd_active -t 720 -h ${HVM}
+    - echo "Libvirtd on ${HVM} now reports 'active'"
+
+wait_vcs_running:
+  stage: launch_hypervisor
+  <<: *tag_restrict
+  script:
+    - wait_vcs_running -t 720 -h ${HVM}
+    - echo "Veritas Cluster on ${HVM} now reports 'RUNNING'"
+
+######################################## COPY OCP TOOLING ########################################
+.rsync_playbook_tooling:
+  stage: copy_ocp_tooling
+  <<: *tag_restrict
+  script:
+    - wait_system_online -t 240 -h ${HVM} -p 22
+    # Copy templates to HVM under /var/tmp/user/virt-OCP
+    - ssh -qt ${SSH_PLAYBOOK_USER}@${HVM} "mkdir -p /var/tmp/${SSH_PLAYBOOK_USER}/${CI_PROJECT_NAME} && chmod 700 /var/tmp/${SSH_PLAYBOOK_USER}/${CI_PROJECT_NAME}"
+    - rsync
+          -rc --executability --delete
+          --chmod=0700
+          /builds/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}/ ${SSH_PLAYBOOK_USER}@${HVM}:/var/tmp/${SSH_PLAYBOOK_USER}/${CI_PROJECT_NAME}
+
+######################################## LAUNCH OCP DEPLOY ########################################
+configure_suhsy_tools:
+  stage: deploy_openshift
+  <<: *tag_restrict
+  script:
+    - virsh list
+    - ssh -qt ${SSH_USER}@${HVM} "timeout 60s sudo /usr/local/bin/RedFish_Start.sh || /bin/true"
+    - echo "All suhsy-tools containers started on ${HVM}..."
+
+configure_vbmc_consoles:
+  stage: deploy_openshift
+  <<: *tag_restrict
+  script:
+    - virsh list
+    - ssh -qt ${SSH_USER}@${HVM} "timeout 60s sudo /usr/local/bin/VBMC_Start.sh || /bin/true"
+    - echo "All vbmc processes started on ${HVM}..."
+
+######################################## SET TUNED PROFILE ########################################
+set_tuned_profile:
+  stage: deploy_openshift
+  <<: *tag_restrict
+  script:
+    - echo "Enabling tuned profile ${HVM_TUNED_PROFILE}..."
+    - ssh -qt ${SSH_USER}@${HVM} "sudo /sbin/tuned-adm profile ${HVM_TUNED_PROFILE}"
+
+create_ocp_cluster:
+  stage: deploy_openshift
+  timeout: 3h
+  <<: *tag_restrict
+  script:
+    - SHORT_HVM="$(echo $HVM|cut -d. -f1)"
+    - mkdir ${HOME}/.kcli
+    - rsync -a /builds/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}/gitlab/config.yml ${HOME}/.kcli/config.yml
+    - rsync -a /builds/${CI_PROJECT_NAMESPACE}/site-configs/openshift_pull.json /builds/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}/openshift_pull.json
+    # Sanitize pull secret: keep only 'auths' (extra fields like __comment, proxies cause MCO degraded state)
+    - "jq '{auths: .auths}' /builds/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}/openshift_pull.json > /tmp/pull.json && mv /tmp/pull.json /builds/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}/openshift_pull.json"
+    - rsync -a /builds/${CI_PROJECT_NAMESPACE}/site-configs/vmrun_rsa ${HOME}/.ssh/id_rsa
+    - rsync -a /builds/${CI_PROJECT_NAMESPACE}/site-configs/vmrun_rsa.pub ${HOME}/.ssh/id_rsa.pub
+    #
+    # Background watcher: push credentials to imladris as soon as they appear
+    - DIGIT="$(echo ${SHORT_HVM}|cut -c1)"
+    - push_credentials_async -d ${DIGIT}
+    #
+    - /builds/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}/install_ocp.sh --host ${SHORT_HVM} --size ${SIZE} --version ${OCP}
+  #artifacts:
+  #  paths:
+  #    - auth/
+  #  expire_in: 7 days
+
+######################################## DELETE openshift ########################################
+delete_ocp_cluster:
+  stage: delete_openshift
+  <<: *tag_restrict
+  allow_failure: true
+  when: always
+  script:
+    - SHORT_HVM="$(echo $HVM|cut -d. -f1)"
+    - if [ "${KEEP}" = "yes" ]; then exit 0 ; fi
+    - wait_system_online -t 60 -h ${HVM} -p 22
+    - mkdir ${HOME}/.kcli
+    - rsync -a /builds/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}/gitlab/config.yml ${HOME}/.kcli/config.yml
+    # Run openshift stack delete
+    - rsync -a /builds/${CI_PROJECT_NAMESPACE}/site-configs/vmrun_rsa ${HOME}/.ssh/id_rsa
+    - rsync -a /builds/${CI_PROJECT_NAMESPACE}/site-configs/vmrun_rsa.pub ${HOME}/.ssh/id_rsa.pub
+    - /builds/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}/ocp_full_bfg.sh ${SHORT_HVM}
+
+######################################## UNSET TUNED PROFILE ########################################
+unset_tuned_profile:
+  stage: delete_openshift
+  <<: *tag_restrict
+  allow_failure: true
+  when: always
+  script:
+    - echo "Revert tuned profile to ${HVM_DEFAULT_TUNED_PROFILE}..."
+    - ssh -qt ${SSH_USER}@${HVM} "sudo /sbin/tuned-adm profile ${HVM_DEFAULT_TUNED_PROFILE}" || /bin/true
