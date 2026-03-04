@@ -1,156 +1,81 @@
 #!/usr/bin/env perl
-# Version: $Id: FixNames.pl,v 1.20 2014/04/09 16:52:29 root Exp $
+# Version: $Id: FixNames.pl,v 2.0 2026/03/04 12:00:00 root Exp $
 #
-# WARNING: Edit with 'vi', not 'pico'!!
+# Rename files: strip accents, replace special chars with underscores.
+# Uses proper Unicode decomposition instead of raw byte matching.
 #
-# rename script examples from lwall:
-#       rename 's/\.orig$//' *.orig
-#       rename 'y/A-Z/a-z/ unless /^Make/' *
-#       rename '$_ .= ".bad"' *.f
-#       rename 'print "$_: "; s/foo/bar/ if <stdin> =~ /^y/i' *
+# Usage: FixNames.pl file1 file2 ...
+#        FixNames.pl *
 
-use File::Find;
+use strict;
+use warnings;
+use Encode qw(decode encode FB_DEFAULT);
+use Unicode::Normalize qw(NFKD);
 
 sub new_name {
-	$transform_op =
-		's/ /_/g;
-		s/\303\200/A/g; #A
-		s/\303\201/A/g;
-		s/\303\202/A/g;
-		s/\303\203/A/g;
-		s/\303\204/A/g;
-		s/\303\205/A/g;
-		s/\303\207/C/g; #C
-		s/\303\213/E/g; #E
-		s/\303\212/E/g;
-		s/\303\211/E/g;
-		s/\303\210/E/g;
-		s/\303\217/I/g; #I
-		s/\303\216/I/g;
-		s/\303\215/I/g;
-		s/\303\214/I/g;
-		s/\303\227/A/g; #A
-		s/\303\226/O/g; #O
-		s/\303\225/O/g;
-		s/\303\224/O/g;
-		s/\303\223/O/g;
-		s/\303\222/O/g;
-		s/\303\253/e/g; #e
-		s/\303\252/e/g;
-		s/\303\251/e/g;
-		s/\303\250/e/g;
-		s/\303\257/i/g; #i
-		s/\303\256/i/g;
-		s/\303\255/i/g;
-		s/\303\254/i/g;
-		s/\303\243/a/g; #a
-		s/\303\242/a/g;
-		s/\303\241/a/g;
-		s/\303\240/a/g;
-		s/\303\266/o/g; #o
-		s/\303\265/o/g;
-		s/\303\264/o/g;
-		s/\303\263/o/g;
-		s/\303\262/o/g;
-		s/\303\261/o/g;
-		s/\303\260/o/g;
-		s/\303\261/n/g; #n
-		s/\303\274/u/g; #u
-		s/\303\273/u/g;
-		s/\303\272/u/g;
-		s/\303\271/u/g;
-		s/\302\257/o/g; #o
-		s/\302\260/o/g;
-		s/\302\240/_/g;
-		s/\200/e/g;
-		s/\201/e/g;
-		s/\202/e/g;
-		s/\203/e/g;
-		s/\204/i/g;
-		s/\205/i/g;
-		s/\206/i/g;
-		s/\207/i/g;
-		s/\210/e/g;
-		s/\211/o/g;
-		s/\212/o/g;
-		s/\213/o/g;
-		s/\214/o/g;
-		s/\216/o/g;
-		s/\217/u/g;
-		s/\304\207/c/g;
-		s/\304i/c/g;
-		s/u\314/u/g;
-		s/\340/a/g;
-		s/\341/a/g;
-		s/\342/a/g;
-		s/\343/a/g;
-		s/\344/a/g;
-		s/\345/a/g;
-		s/\346/a/g;
-		s/\350/e/g;
-		s/\351/e/g;
-		s/\352/e/g;
-		s/\353/e/g;
-		s/\354/i/g;
-		s/\355/i/g;
-		s/\356/i/g;
-		s/\357/i/g;
-		s/\362/o/g;
-		s/\363/o/g;
-		s/\364/o/g;
-		s/\365/o/g;
-		s/\366/o/g;
-		s/\370/o/g;
-		s/\371/u/g;
-		s/\372/u/g;
-		s/\373/u/g;
-		s/\374/u/g;
-		s/\376//g;
-		s/&/_/g;
-		s/\\\/_/g;
-		s/!/_/g;
-		s/#/_/g;
-		s/\*/_/g;
-		s/`/_/g;
-		s/\"/_/g;
-		s/\(/_/g;
-		s/\)/_/g;
-		s/,/_/g;
-		s/\[/-_/g;
-		s/\]/_/g;
-		s/__/_/g;
-		s/^_//g;
-		s/^-//g;
-		s/_$//g;
-		s/_\.([A-z]*$)/\.\1/g;
-		s/\'/_/g';
+	my $old = $_;
 
-	$old_file_name = $_;
-	eval $transform_op; # Do it several times, just to make really sure...
-	eval $transform_op;
-	eval $transform_op;
-	eval $transform_op;
-	eval $transform_op;
-	eval $transform_op;
-	$new_file_name = $_;
-	die $@ if $@;
-	if ( $old_file_name eq $new_file_name ) {
-		# print("Files \"$old_file_name\" and \"$new_file_name\" are identical!\n");
-	} else {
-		print("\"$old_file_name\" -> \"$new_file_name\"\n");
-		rename($old_file_name,$new_file_name) unless $old_file_name eq $new_file_name;
+	my $name = eval { decode('UTF-8', $old, FB_DEFAULT) } // $old;
+
+	# NFKD: decomposes accented chars (e -> e + combining accent),
+	# and normalizes fullwidth chars to ASCII equivalents
+	$name = NFKD($name);
+
+	# Strip all combining marks (accents, diacritics, etc.)
+	$name =~ s/\p{Mark}//g;
+
+	# Smart quotes and apostrophes -> underscore
+	$name =~ s/[\x{2018}\x{2019}\x{02BC}]/_/g;
+	$name =~ s/[\x{201C}\x{201D}]/_/g;
+
+	# Dashes: en-dash / em-dash -> hyphen
+	$name =~ s/[\x{2013}\x{2014}]/-/g;
+
+	# Non-breaking and exotic spaces -> underscore
+	$name =~ s/[\x{00A0}\x{2002}-\x{200B}]/_/g;
+
+	# Ellipsis character -> three dots
+	$name =~ s/\x{2026}/.../g;
+
+	# Standard replacements (same as original script)
+	$name =~ s/ /_/g;
+	$name =~ s/&/_/g;
+	$name =~ s/\\/_/g;
+	$name =~ s/!/_/g;
+	$name =~ s/#/_/g;
+	$name =~ s/\*/_/g;
+	$name =~ s/`/_/g;
+	$name =~ s/"/_/g;
+	$name =~ s/\(/_-_/g;
+	$name =~ s/\)/_/g;
+	$name =~ s/,/_/g;
+	$name =~ s/\[/-_/g;
+	$name =~ s/\]/_/g;
+	$name =~ s/'/_/g;
+
+	# Catch-all: replace any remaining non-ASCII with underscore
+	$name =~ s/[^\x00-\x7F]/_/g;
+
+	# Clean up multiple underscores, leading/trailing junk
+	$name =~ s/__+/_/g;
+	$name =~ s/^_//;
+	$name =~ s/^-//;
+	$name =~ s/_$//;
+	$name =~ s/_\.([A-Za-z0-9]*$)/.$1/;
+
+	$name = encode('UTF-8', $name);
+
+	if ($old ne $name) {
+		print("\"$old\" -> \"$name\"\n");
+		rename($old, $name);
 	}
-
 }
-
-
 
 sub Main {
 	@ARGV = qw(.) unless @ARGV;
-
 	for (@ARGV) {
 		new_name($_);
 	}
 }
 
-&Main();
+Main();
