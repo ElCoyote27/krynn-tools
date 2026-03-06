@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 """
 KVM Virtual Machine Replication Script
 
@@ -9,7 +10,7 @@ hypervisor-specific configurations.
 Author: Vincent S. Cojot
 """
 
-# $Id: rsync_KVM_OS.py,v 1.18 2026/01/29 02:00:00 root Exp root $
+# $Id: rsync_KVM_OS.py,v 1.18 2026/03/06 12:49:52 root Exp root $
 __version__ = "rsync_KVM_OS.py,v 1.18 2026/01/29 02:00:00 python-conversion Exp"
 
 #
@@ -214,10 +215,10 @@ WAIT_TIME_BEFORE_SYNC = 2.5  # seconds
 # Default VM List - VMs to replicate by default
 DEFAULT_VM_LIST = [
     "dc00", "dc01", "dc02", "dc03", "fedora-x64", "csb-x64",
-    "win10-x64", "win11-x64", "unifi", "gitlab",
+    "win10-x64", "win11-x64", "unifi", "gitlab", "www8",
     "bdc416x", "bdc417x", "bdc418x", "bdc419x", "bdc420x", "bdc421x", "bdc422x",
     "bdc423x", "bdc424x", "bdc425x", "bdc426x", "bdc427x", "bdc428x",
-    "sat6", "ca8", "idm00", "mailhost", "registry", "quay3", "vxvom", "www8",
+    "sat6", "ca8", "idm00", "idm01" ,"mailhost", "registry", "quay3", "vxvom",
     "kali-x64", "freenas-11", "ubuntu-x64", "dsm7", "ocp4v", "ocp4t",
     "rhel3-x86", "rhel4-x86", "rhel5-x86", "rhel5-x64", "rhel6-x86",
     "rhel6-x64", "rhel7-x64", "rhel8-x64", "rhel8-x64-eus", "rhel9-x64",
@@ -367,7 +368,7 @@ class KVMReplicator:
 
             # Standard KVM hosts (only override VM lists)
             'solanthus': {**KVM_STD_CONFIG,
-                'default_vm_list': "rhel3-x86 rhel9-x64 ca8 fedora-x64 csb-x64 win10-x64 win11-x64 dc00 dc01 bdc420x idm00 cirros mailhost",
+                'default_vm_list': "rhel3-x86 rhel9-x64 ca8 fedora-x64 csb-x64 win10-x64 win11-x64 dc00 dc01 bdc420x idm00 idm01 cirros mailhost",
                 'vxfs_snapshots': False,
             },
             'lothlorien': {**KVM_STD_CONFIG,
