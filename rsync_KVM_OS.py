@@ -10,8 +10,8 @@ hypervisor-specific configurations.
 Author: Vincent S. Cojot
 """
 
-# $Id: rsync_KVM_OS.py,v 1.18 2026/03/06 12:49:52 root Exp root $
-__version__ = "rsync_KVM_OS.py,v 1.18 2026/01/29 02:00:00 python-conversion Exp"
+# $Id: rsync_KVM_OS.py,v 1.19 2026/06/27 12:49:52 root Exp root $
+__version__ = "rsync_KVM_OS.py,v 1.19 2026/06/27 02:00:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
@@ -214,7 +214,7 @@ WAIT_TIME_BEFORE_SYNC = 2.5  # seconds
 
 # Default VM List - VMs to replicate by default
 DEFAULT_VM_LIST = [
-    "dc00", "dc01", "dc02", "dc03", "fedora-x64", "csb-x64",
+    "dc00", "dc01", "dc02", "dc03", "fedora-x64", "csb-x64", "seedbox-x64",
     "win10-x64", "win11-x64", "unifi", "gitlab", "www8",
     "bdc416x", "bdc417x", "bdc418x", "bdc419x", "bdc420x", "bdc421x", "bdc422x",
     "bdc423x", "bdc424x", "bdc425x", "bdc426x", "bdc427x", "bdc428x",
