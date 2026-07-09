@@ -1,5 +1,5 @@
 #!/bin/bash
-# odf-storage-report.sh v1.01
+# odf-storage-report.sh v1.02
 #
 # ODF storage consumption breakdown for OpenShift clusters.
 #
@@ -445,8 +445,9 @@ def pretty(b):
 
 quay_raw = quay_logical * replica
 other_raw = max(rgw_raw - quay_raw, 0)
+other_logical = other_raw / replica
 print(f'  ├─ Quay registry (logical):          {pretty(quay_logical)}  (~{pretty(quay_raw)} raw)')
-print(f'  └─ Other (ACM metrics, etcd, etc.):  ~{pretty(other_raw)} raw')
+print(f'  └─ Other (ACM metrics, etcd, etc.):  ~{pretty(other_logical)}  (~{pretty(other_raw)} raw)')
 " 2>/dev/null
 		fi
 	fi
