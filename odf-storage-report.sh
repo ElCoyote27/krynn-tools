@@ -1,6 +1,7 @@
 #!/bin/bash
+# odf-storage-report.sh v1.01
 #
-# odf-storage-report.sh — ODF storage consumption breakdown for OpenShift clusters.
+# ODF storage consumption breakdown for OpenShift clusters.
 #
 # Generates a read-only report covering:
 #   - Ceph cluster health, pool usage, OSD distribution
