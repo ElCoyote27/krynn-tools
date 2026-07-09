@@ -3,6 +3,13 @@
 # Enhanced ODF/Ceph Disk Wiping Tool
 # 
 # VERSION HISTORY:
+# v1.11 (2026/07/02) - Robustness: added is_valid_disk_name() validation to prevent SSH warning
+#                messages (e.g. "Warning: Permanently added...") from being mistaken as device
+#                names (/dev/Warning, /dev/Permanently), removed redundant ssh-keygen -R
+#                (unnecessary with UserKnownHostsFile=/dev/null and caused repeated warnings),
+#                added block device existence verification before wipe operations, improved
+#                numeric validation for disk sector counts, added carriage-return stripping
+#                to discovery filter
 # v1.10 (2025/11/05) - SSH error handling: added connectivity validation before node processing,
 #                explicit error reporting when SSH login fails, exit code checking for critical
 #                disk discovery commands to prevent silent failures; Added ANSI color support
@@ -44,7 +51,7 @@ PATH_SCRIPT="$(cd $(/usr/bin/dirname $(whence -- $0 || echo $0));pwd)"
 cd ${PATH_SCRIPT}
 
 # Script version
-VERSION="1.10"
+VERSION="1.11"
 SCRIPT_NAME="$(basename $0)"
 
 # ANSI color codes (Ansible-style)
@@ -164,6 +171,13 @@ sanitize_output() {
     echo "$1" | tr -d '\r' | xargs
 }
 
+# Validate that a string is a legitimate Linux block device name
+# Only allows sd[a-z]+, vd[a-z]+, or nvme[0-9]+n[0-9]+ patterns
+is_valid_disk_name() {
+    local name="$1"
+    [[ -n "$name" && "$name" =~ ^(nvme[0-9]+n[0-9]+|[sv]d[a-z]+)$ ]]
+}
+
 # Function to execute or simulate destructive commands
 execute_or_simulate() {
     local cmd="$1"
@@ -193,7 +207,10 @@ unique_ips=$(awk '!/^#/ && NF > 0 {print $1}' nodes.txt | sort -u)
 
 for ip in ${unique_ips}; do
     echo "################## Processing node: ${ip}"
-    ssh-keygen -R "${ip}" > /dev/null 2>&1
+
+    # Note: ssh-keygen -R was removed - it's redundant with UserKnownHostsFile=/dev/null
+    # and was causing repeated "Warning: Permanently added" messages that could leak
+    # into captured output and be misinterpreted as device names.
 
     # Test SSH connectivity before proceeding
     echo "  Testing SSH connectivity to ${ip}..."
@@ -263,6 +280,12 @@ for ip in ${unique_ips}; do
         rootdisk=$(sanitize_output "$rootdisk_raw")
     fi
 
+    # Validate rootdisk name (guards against SSH warnings or garbage in parsed output)
+    if [[ -n "${rootdisk}" ]] && ! is_valid_disk_name "$rootdisk"; then
+        echo -e "  ${COLOR_YELLOW}WARNING: Ignoring invalid rootdisk name: '${rootdisk}'${COLOR_RESET}"
+        rootdisk=""
+    fi
+
     # Auto-discover available disks on this node (only sd*, vd*, and nvme* devices)
     echo "  Auto-discovering disks on ${ip}..."
     discovered_disks_raw=$(ssh ${ssh_opts} ${ip} \
@@ -273,7 +296,8 @@ for ip in ${unique_ips}; do
          egrep -e '^(nvme|sd|vd)'" 2>/dev/null)
     ssh_exit_code=$?
     # Sanitize and filter to only include valid disk names (remove any SSH warnings or garbage)
-    discovered_disks=$(echo "$discovered_disks_raw" | tr ' ' '\n' | grep -E '^(nvme[0-9]+n[0-9]+|[sv]d[a-z]+)$' | tr '\n' ' ' | xargs)
+    # Strip carriage returns first (\r can prevent regex anchors from matching)
+    discovered_disks=$(echo "$discovered_disks_raw" | tr -d '\r' | tr ' ' '\n' | grep -E '^(nvme[0-9]+n[0-9]+|[sv]d[a-z]+)$' | sort -u | tr '\n' ' ' | xargs)
 
     # Check if SSH command failed
     if [[ $ssh_exit_code -ne 0 ]]; then
@@ -348,6 +372,18 @@ for ip in ${unique_ips}; do
     # Step B: Process each discovered disk for wiping
     echo "################## Disk Wiping for node: ${ip}"
     for disk in ${discovered_disks}; do
+        # Final-gate validation: reject any non-device-name strings that slipped through
+        if ! is_valid_disk_name "$disk"; then
+            echo -e "  ${COLOR_YELLOW}WARNING: Skipping invalid disk name: '${disk}' (likely SSH output contamination)${COLOR_RESET}"
+            continue
+        fi
+
+        # Verify the device actually exists as a block device on the remote node
+        if ! ssh ${ssh_opts} ${ip} "test -b /dev/${disk}" 2>/dev/null; then
+            echo -e "  ${COLOR_RED}ERROR: /dev/${disk} is not a block device on ${ip}, skipping${COLOR_RESET}"
+            continue
+        fi
+
         if [[ "${disk}" != "${rootdisk}" || "${skip_rootdisk}" -eq 0 ]]; then
             echo -e "################## Host IP: ${ip}, ${COLOR_YELLOW}Wiping disk: /dev/${disk}${COLOR_RESET} (Enhanced ODF/Ceph cleanup)"
 
@@ -363,7 +399,7 @@ for ip in ${unique_ips}; do
             echo "  Disk /dev/${disk} has ${sectors} sectors"
 
             # Calculate disk size in GB (sectors * 512 bytes / 1024^3) and end-of-disk position
-            if [[ -n "${sectors}" && "${sectors}" -gt 0 ]]; then
+            if [[ -n "${sectors}" && "${sectors}" =~ ^[0-9]+$ && "${sectors}" -gt 0 ]]; then
                 disk_gb=$(( sectors * 512 / 1024 / 1024 / 1024 ))
                 echo "  Disk size: approximately ${disk_gb}GB"
 
