@@ -1,5 +1,5 @@
 #!/bin/bash
-# odf-storage-report.sh v1.03
+# odf-storage-report.sh v1.04
 #
 # ODF storage consumption breakdown for OpenShift clusters.
 #
@@ -29,6 +29,10 @@
 #
 # License: Apache-2.0
 #
+# Maintainers & Contributors:
+#   Vincent Cojot & Johann Peyrard
+#
+
 [ "$BASH" ] && function whence { type -p "$@"; }
 PATH_SCRIPT="$(cd $(/usr/bin/dirname $(whence -- $0 || echo $0));pwd)"
 
@@ -464,6 +468,7 @@ fi
 # ======================================================================
 hdr "SUMMARY"
 # ======================================================================
+CEPH_HEALTH=$(ceph_cmd ceph health | awk '{print $1}' 2>/dev/null)
 CEPH_DF=$(ceph_cmd ceph df 2>/dev/null)
 TOTAL_RAW=$(echo "${CEPH_DF}" | awk '/TOTAL/{print $2, $3}')
 TOTAL_AVAIL=$(echo "${CEPH_DF}" | awk '/TOTAL/{print $4, $5}')
@@ -473,6 +478,7 @@ OSD_COUNT=$(ceph_cmd ceph osd stat 2>/dev/null | awk '{print $1}')
 SC_COUNT=$(echo "${SC_JSON}" | python3 -c "import json,sys; print(json.load(sys.stdin)['spec']['storageDeviceSets'][0]['count'])" 2>/dev/null)
 
 echo "  Cluster:          ${HUB_SHORT}"
+echo "  Health:           ${CEPH_HEALTH}"
 echo "  OSDs:             ${OSD_COUNT} (count=${SC_COUNT} x replica=3)"
 echo "  Raw capacity:     ${TOTAL_RAW}"
 echo "  Used:             ${TOTAL_USED} (${PCT}%)"
