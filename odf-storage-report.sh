@@ -75,6 +75,10 @@ TOOLS_POD=$(oc get pods -n openshift-storage -l app=rook-ceph-tools \
 	-o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 if [[ -z "${TOOLS_POD}" ]]; then
 	err "No rook-ceph-tools pod found. Is ODF deployed and ceph tools enabled?"
+	err "launch the following command for more information "
+	err ""
+        err "$ oc explain storageclusters.ocs.openshift.io.spec.enableCephTools"
+        err "$ oc get -A storageclusters.ocs.openshift.io"
 	exit 1
 fi
 
