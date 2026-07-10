@@ -1,5 +1,5 @@
 #!/bin/bash
-# odf-storage-report.sh v1.02
+# odf-storage-report.sh v1.03
 #
 # ODF storage consumption breakdown for OpenShift clusters.
 #
