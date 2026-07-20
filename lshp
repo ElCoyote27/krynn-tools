@@ -120,6 +120,17 @@ class HugePagesAnalyzer:
             pass
         return None
 
+    def get_ppid(self, pid: str) -> Optional[str]:
+        """Get parent PID from /proc/PID/status"""
+        try:
+            with open(f'/proc/{pid}/status', 'r') as f:
+                for line in f:
+                    if line.startswith('PPid:'):
+                        return line.split()[1]
+        except (IOError, OSError):
+            pass
+        return None
+
     def get_guest_name(self, pid: str) -> str:
         """Extract guest name from KVM process cmdline"""
         try:
@@ -214,24 +225,55 @@ class HugePagesAnalyzer:
 
         print(self.print_pattern % (f"# [procname] ({description})", "PID", "Total HP", "Usage"))
 
-        # Process and display results
+        # Group by parent process to avoid double-counting shared memory.
+        # E.g. PostgreSQL's postmaster forks N backends that all map the
+        # same shared_buffers segment; without grouping, each child's
+        # smaps reports the full segment size, inflating the total.
+        pid_set = set(pid_totals.keys())
+        pid_ppid = {}
+        pid_name = {}
+
+        for pid in list(pid_set):
+            if not os.path.exists(f'/proc/{pid}/status'):
+                pid_set.discard(pid)
+                continue
+            pid_ppid[pid] = self.get_ppid(pid)
+            name = self.get_process_name(pid)
+            if name is None:
+                pid_set.discard(pid)
+                continue
+            pid_name[pid] = name
+
+        groups = {}
+        for pid in pid_set:
+            ppid = pid_ppid.get(pid)
+            if ppid in pid_set:
+                if ppid not in groups:
+                    groups[ppid] = {'children': []}
+                groups[ppid]['children'].append(pid)
+            else:
+                if pid not in groups:
+                    groups[pid] = {'children': []}
+
         results = []
         section_total_kb = 0
 
-        for pid_str, total_kb in pid_totals.items():
-            # Check if process still exists
-            if not os.path.exists(f'/proc/{pid_str}/status'):
+        for leader_pid, group in groups.items():
+            if leader_pid not in pid_name:
                 continue
 
-            process_name = self.get_process_name(pid_str)
-            if not process_name:
-                continue
+            process_name = pid_name[leader_pid]
+            total_kb = pid_totals.get(leader_pid, 0)
+            child_count = len(group['children'])
 
             display_name, pid_display, formatted_size, hugepage_display = self.format_process_info(
-                pid_str, process_name, total_kb, kernel_page_size)
+                leader_pid, process_name, total_kb, kernel_page_size)
+
+            if child_count > 0:
+                hugepage_display += f" (+ {child_count} children sharing)"
 
             result_line = self.print_pattern % (display_name, pid_display, formatted_size, hugepage_display)
-            results.append((total_kb, result_line))  # Store with size for sorting
+            results.append((total_kb, result_line))
             section_total_kb += total_kb
 
         # Sort by total KB (descending)

@@ -165,6 +165,17 @@ class TransparentHugePagesAnalyzer:
             pass
         return None
 
+    def get_ppid(self, pid: str) -> Optional[str]:
+        """Get parent PID from /proc/PID/status"""
+        try:
+            with open(f'/proc/{pid}/status', 'r') as f:
+                for line in f:
+                    if line.startswith('PPid:'):
+                        return line.split()[1]
+        except (IOError, OSError):
+            pass
+        return None
+
     def get_guest_name(self, pid: str) -> str:
         """Extract guest name from KVM process cmdline"""
         try:
@@ -238,27 +249,58 @@ class TransparentHugePagesAnalyzer:
         # Print header with hugepage size information
         print(self.print_pattern % (f"# [procname] ({self.hugepage_size_display} Transparent HugePages)", "PID", "Total THP", "Usage"))
 
-        # Process and display results
+        # Group by parent process for cleaner output.
+        # THP is per-process (private anonymous memory), so we sum all
+        # members' usage within each group rather than counting only once.
+        pid_set = set(pid_totals.keys())
+        pid_ppid = {}
+        pid_name = {}
+
+        for pid in list(pid_set):
+            if not os.path.exists(f'/proc/{pid}/status'):
+                pid_set.discard(pid)
+                continue
+            pid_ppid[pid] = self.get_ppid(pid)
+            name = self.get_process_name(pid)
+            if name is None:
+                pid_set.discard(pid)
+                continue
+            pid_name[pid] = name
+
+        groups = {}
+        for pid in pid_set:
+            ppid = pid_ppid.get(pid)
+            if ppid in pid_set:
+                if ppid not in groups:
+                    groups[ppid] = {'children': []}
+                groups[ppid]['children'].append(pid)
+            else:
+                if pid not in groups:
+                    groups[pid] = {'children': []}
+
         results = []
         grand_total_kb = 0
 
-        for pid_str, total_kb in pid_totals.items():
-            # Check if process still exists
-            if not os.path.exists(f'/proc/{pid_str}/status'):
+        for leader_pid, group in groups.items():
+            if leader_pid not in pid_name:
                 continue
 
-            process_name = self.get_process_name(pid_str)
-            if not process_name:
-                continue
+            process_name = pid_name[leader_pid]
+            total_kb = pid_totals.get(leader_pid, 0)
+            for child_pid in group['children']:
+                total_kb += pid_totals.get(child_pid, 0)
+            child_count = len(group['children'])
 
-            display_name, pid_display, formatted_size = self.format_process_info(pid_str, process_name, total_kb)
+            display_name, pid_display, formatted_size = self.format_process_info(
+                leader_pid, process_name, total_kb)
 
-            # Calculate number of hugepages used by this process
             num_hugepages = total_kb // self.hugepage_size_kb
             hugepage_display = f"{num_hugepages} hugepages"
+            if child_count > 0:
+                hugepage_display += f" (+ {child_count} children)"
 
             result_line = self.print_pattern % (display_name, pid_display, formatted_size, hugepage_display)
-            results.append((total_kb, result_line))  # Store with size for sorting
+            results.append((total_kb, result_line))
             grand_total_kb += total_kb
 
         # Sort by total KB (descending)
