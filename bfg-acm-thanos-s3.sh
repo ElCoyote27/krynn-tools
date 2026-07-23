@@ -190,6 +190,12 @@ except: pass
     radosgw-admin bucket rm --bucket="$ORPHAN" --purge-objects --rgw-realm="$REALM" 2>&1 || true
 done
 
+# Force RGW garbage collection (actual RADOS object deletion is deferred)
+echo "  Forcing RGW garbage collection..."
+oc exec -n "$NS_STOR" "$TOOLS" -- radosgw-admin gc process --rgw-realm="$REALM" 2>&1 || true
+oc exec -n "$NS_STOR" "$TOOLS" -- radosgw-admin gc process 2>&1 || true
+echo "  GC processed."
+
 # --- Step 5: Delete observability PVCs (free block storage) ---
 echo ""
 echo "=== [5/7] Deleting observability PVCs ==="
