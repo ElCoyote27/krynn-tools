@@ -10,12 +10,12 @@
 #
 # WARNING: This DESTROYS all historical Thanos metrics.
 #
-# Usage: KUBECONFIG=/path/to/kubeconfig ./fix-acm-thanos-s3.sh
+# Usage: KUBECONFIG=/path/to/kubeconfig ./bfg-acm-thanos-s3.sh
 set -euo pipefail
 
 if [ -z "${KUBECONFIG:-}" ]; then
   echo "ERROR: KUBECONFIG is not set."
-  echo "Usage: KUBECONFIG=/path/to/kubeconfig ./fix-acm-thanos-s3.sh"
+  echo "Usage: KUBECONFIG=/path/to/kubeconfig ./bfg-acm-thanos-s3.sh"
   exit 1
 fi
 
