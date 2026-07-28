@@ -1,5 +1,5 @@
 #!/bin/bash
-# odf-storage-report.sh v1.06
+# odf-storage-report.sh v1.10
 #
 # ODF storage consumption breakdown for OpenShift clusters.
 #
@@ -13,6 +13,9 @@
 #
 # Supports:
 #   - Clusters with ODF only (no Quay, no ACM)
+#   - Clusters without ODF (LVMS, SNO) — gracefully skips ODF sections
+#   - Ceph tools pod optional — reports what it can without it
+#   - RGW bucket-level breakdown via radosgw-admin (if ceph tools enabled)
 #   - Quay 3.15 and 3.16 (auto-detected)
 #   - ACM with MultiClusterObservability (auto-detected)
 #
@@ -25,7 +28,7 @@
 # Requirements:
 #   - oc (OpenShift CLI) in PATH
 #   - python3 in PATH
-#   - Ceph tools pod enabled on the target cluster (enableCephTools: true)
+#   - Ceph tools pod recommended (enableCephTools: true) but not required
 #
 # License: Apache-2.0
 #
@@ -74,18 +77,43 @@ HUB_FQDN=$(echo "${HUB_API}" | sed -E 's|https?://api\.||; s|:[0-9]+/?$||')
 HUB_SHORT=$(echo "${HUB_FQDN}" | cut -d. -f1)
 info "Connected to: ${HUB_SHORT} (${HUB_API})"
 
+# --- Check for ODF (openshift-storage namespace + StorageCluster) ---
+HAS_ODF=false
+HAS_STORAGECLUSTER=false
+SC_NAME=""
+if oc get namespace openshift-storage &>/dev/null; then
+	HAS_ODF=true
+	SC_NAME=$(oc get storagecluster -n openshift-storage \
+		-o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+	if [[ -n "${SC_NAME}" ]]; then
+		HAS_STORAGECLUSTER=true
+	fi
+fi
+
+if ! ${HAS_ODF}; then
+	info "ODF not deployed (openshift-storage namespace not found)."
+	info "This cluster may use LVMS or another storage backend."
+elif ! ${HAS_STORAGECLUSTER}; then
+	info "No ODF StorageCluster found. The openshift-storage namespace"
+	info "exists but may be used by other components (e.g. Observability)."
+fi
+
 # --- Discover ceph tools pod ---
-TOOLS_POD=$(oc get pods -n openshift-storage -l app=rook-ceph-tools \
-	-o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-CEPH_TOOLS=true
-if [[ -z "${TOOLS_POD}" ]]; then
-	CEPH_TOOLS=false
-	warn "No rook-ceph-tools pod found."
-	warn "Enable it for deeper Ceph and RGW bucket insights:"
-	warn "  oc patch storagecluster ocs-storagecluster -n openshift-storage \\"
-	warn "    --type merge -p '{\"spec\":{\"enableCephTools\":true}}'"
-	warn "For more information:"
-	warn "  oc explain storageclusters.ocs.openshift.io.spec.enableCephTools"
+CEPH_TOOLS=false
+TOOLS_POD=""
+if ${HAS_STORAGECLUSTER}; then
+	TOOLS_POD=$(oc get pods -n openshift-storage -l app=rook-ceph-tools \
+		-o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+	if [[ -n "${TOOLS_POD}" ]]; then
+		CEPH_TOOLS=true
+	else
+		warn "No rook-ceph-tools pod found."
+		warn "Enable it for deeper Ceph and RGW bucket insights:"
+		warn "  oc patch storagecluster ${SC_NAME} -n openshift-storage"
+		warn "    --type merge -p '{\"spec\":{\"enableCephTools\":true}}'"
+		warn "For more information:"
+		warn "  oc explain storageclusters.ocs.openshift.io.spec.enableCephTools"
+	fi
 fi
 
 ceph_cmd() {
@@ -110,16 +138,36 @@ if ${CEPH_TOOLS}; then
 	ceph_cmd ceph osd df tree
 
 	# ==================================================================
-	hdr "PG AUTOSCALE STATUS"
+	hdr "POOL PG DISTRIBUTION"
 	# ==================================================================
-	ceph_cmd ceph osd pool autoscale-status
+	ceph_cmd ceph osd pool ls detail -f json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    pools = json.load(sys.stdin)
+except Exception:
+    pools = []
+if not pools:
+    print('  (no pool data available)')
+    sys.exit(0)
+fmt = '  {:<60s}  {:>6}  {:>6}  {:>10}  {:>10}'
+print(fmt.format('POOL', 'PG_NUM', 'PGP', 'AUTOSCALE', 'CRUSH RULE'))
+print('  ' + '-' * 98)
+for p in pools:
+    print(fmt.format(
+        p['pool_name'], p['pg_num'], p.get('pg_placement_num', p['pg_num']),
+        p.get('pg_autoscale_mode', '?'),
+        str(p.get('crush_rule', '?'))))
+" 2>/dev/null
 fi
+
+if ${HAS_STORAGECLUSTER}; then
 
 # ======================================================================
 hdr "STORAGECLUSTER RESOURCES"
 # ======================================================================
-SC_JSON=$(oc get storagecluster ocs-storagecluster -n openshift-storage -o json 2>/dev/null)
-echo "${SC_JSON}" | python3 -c "
+SC_JSON=$(oc get storagecluster "${SC_NAME}" -n openshift-storage -o json 2>/dev/null)
+if [[ -n "${SC_JSON}" ]]; then
+	echo "${SC_JSON}" | python3 -c "
 import json, sys
 sc = json.load(sys.stdin)
 spec = sc.get('spec', {})
@@ -141,34 +189,37 @@ for name in ['mds','mgr','mon','rgw','noobaa-core','noobaa-db','noobaa-endpoint'
     req = r.get('requests', {})
     lim = r.get('limits', {})
     print(fmt.format(name,
-        req.get('cpu','-'), lim.get('cpu','-'),
-        req.get('memory','-'), lim.get('memory','-')))
+        str(req.get('cpu','-')), str(lim.get('cpu','-')),
+        str(req.get('memory','-')), str(lim.get('memory','-'))))
 
 osd_r = ds.get('resources', {})
 osd_req = osd_r.get('requests', {})
 osd_lim = osd_r.get('limits', {})
 print(fmt.format('osd (deviceSet)',
-    osd_req.get('cpu','-'), osd_lim.get('cpu','-'),
-    osd_req.get('memory','-'), osd_lim.get('memory','-')))
+    str(osd_req.get('cpu','-')), str(osd_lim.get('cpu','-')),
+    str(osd_req.get('memory','-')), str(osd_lim.get('memory','-'))))
 
 if mcg:
     print(f\"\"\"
   MCG endpoints:    min={mcg.get('minCount','?')} max={mcg.get('maxCount','?')}\"\"\")
 " 2>/dev/null
+else
+	info "No StorageCluster resource found."
+fi
 
 # ======================================================================
 hdr "ODF NODE CPU ALLOCATION"
 # ======================================================================
 ODF_NODES=$(oc get nodes -l cluster.ocs.openshift.io/openshift-storage -o name 2>/dev/null)
 if [[ -n "${ODF_NODES}" ]]; then
-	printf "  %-45s  %10s  %10s\n" "NODE" "CPU req" "CPU limit"
-	echo "  $(printf '%0.s-' {1..68})"
+	printf "  %-45s  %16s  %16s\n" "NODE" "CPU REQUESTS" "CPU LIMITS"
+	echo "  $(printf '%0.s-' {1..80})"
 	for node in ${ODF_NODES}; do
 		nname=$(echo "$node" | sed 's|node/||')
-		alloc=$(oc describe "$node" 2>/dev/null | grep -A5 'Allocated resources' | grep cpu | head -1 | awk '{print $2, $6}')
-		req=$(echo "$alloc" | awk '{print $1}')
-		lim=$(echo "$alloc" | awk '{print $2}')
-		printf "  %-45s  %10s  %10s\n" "$nname" "$req" "$lim"
+		alloc=$(oc describe "$node" 2>/dev/null | grep -A5 'Allocated resources' | grep cpu | head -1 | awk '{print $2, $3, $4, $5}')
+		req=$(echo "$alloc" | awk '{print $1, $2}')
+		lim=$(echo "$alloc" | awk '{print $3, $4}')
+		printf "  %-45s  %16s  %16s\n" "$nname" "$req" "$lim"
 	done
 else
 	info "No ODF-labelled nodes found (cluster.ocs.openshift.io/openshift-storage)."
@@ -177,9 +228,9 @@ fi
 # ======================================================================
 hdr "PVC INVENTORY (openshift-storage)"
 # ======================================================================
-oc get pvc -n openshift-storage -o custom-columns=\
-'NAME:.metadata.name,SIZE:.spec.resources.requests.storage,SC:.spec.storageClassName,STATUS:.status.phase' \
-	--no-headers 2>/dev/null | sort -k2 -h
+oc get pvc -n openshift-storage --no-headers -o custom-columns=\
+'NAME:.metadata.name,CAPACITY:.status.capacity.storage,SC:.spec.storageClassName,STATUS:.status.phase' \
+	2>/dev/null | sort -k2 -h
 
 # ======================================================================
 hdr "RADOSGW BUCKET USAGE"
@@ -200,7 +251,7 @@ except Exception:
 fi
 
 if ! ${CEPH_TOOLS}; then
-	info "Ceph tools pod not available. Enable it for RGW bucket breakdown."
+	info "Ceph tools pod not available. Enable it for bucket breakdown."
 elif [[ -z "${RGW_ZONE}" ]]; then
 	info "No RGW zone detected. Skipping bucket breakdown."
 else
@@ -327,6 +378,25 @@ print(f'  {\"TOTAL\":<{w_name}}  {pretty(total_size):>10}  '
 fi
 
 # ======================================================================
+hdr "OBJECT BUCKET CLAIMS"
+# ======================================================================
+OBC_DATA=$(oc get obc -A \
+	-o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.spec.storageClassName}{"\n"}{end}' 2>/dev/null || true)
+if [[ -n "${OBC_DATA}" ]]; then
+	printf "  %-30s  %-45s  %s\n" "NAMESPACE/OBC" "BUCKET" "STORAGE CLASS"
+	echo "  $(printf '%0.s-' {1..95})"
+	echo "${OBC_DATA}" | \
+	while IFS='|' read -r ns name sc; do
+		[[ -z "${ns}" ]] && continue
+		bucket=$(oc get configmap "${name}" -n "${ns}" \
+			-o jsonpath='{.data.BUCKET_NAME}' 2>/dev/null || echo "?")
+		printf "  %-30s  %-45s  %s\n" "${ns}/${name}" "${bucket}" "${sc}"
+	done
+else
+	info "No ObjectBucketClaims found."
+fi
+
+# ======================================================================
 # QUAY SECTION — only if Quay is deployed
 # ======================================================================
 # Auto-detect Quay namespace: "quay" on hubs, "quay-enterprise" on pops
@@ -340,9 +410,9 @@ done
 if [[ -n "${QUAY_NS}" ]]; then
 
 	hdr "PVC INVENTORY (${QUAY_NS} namespace)"
-	oc get pvc -n "${QUAY_NS}" -o custom-columns=\
-	'NAME:.metadata.name,SIZE:.spec.resources.requests.storage,SC:.spec.storageClassName,STATUS:.status.phase' \
-		--no-headers 2>/dev/null | sort -k2 -h
+	oc get pvc -n "${QUAY_NS}" --no-headers -o custom-columns=\
+'NAME:.metadata.name,CAPACITY:.status.capacity.storage,SC:.spec.storageClassName,STATUS:.status.phase' \
+		2>/dev/null | sort -k2 -h
 
 	hdr "REGIONAL QUAY — PER-ORG STORAGE BREAKDOWN (${QUAY_NS})"
 
@@ -414,9 +484,9 @@ if [[ -n "${QUAY_NS}" ]]; then
 
 			echo ""
 			echo "  Top 10 largest repositories:"
-			echo "  $(printf '%0.s-' {1..80})"
-			printf "  %-40s  %-15s  %12s\n" "REPOSITORY" "ORG" "SIZE"
-			echo "  $(printf '%0.s-' {1..80})"
+			echo "  $(printf '%0.s-' {1..100})"
+			printf "  %-64s  %-15s  %12s\n" "REPOSITORY" "ORG" "SIZE"
+			echo "  $(printf '%0.s-' {1..100})"
 			oc exec "${DB_POD}" -n "${QUAY_NS}" -- psql -U postgres -d "${QUAY_DB}" \
 				-P pager=off -t -A -F'|' -c "
 				SELECT u.username || '/' || r.name AS fullname,
@@ -432,13 +502,68 @@ if [[ -n "${QUAY_NS}" ]]; then
 				ORDER BY coalesce(sum(DISTINCT s.image_size), 0) DESC
 				LIMIT 10;" 2>/dev/null | \
 			while IFS='|' read -r fullname org size raw; do
-				printf "  %-40s  %-15s  %12s\n" "${fullname}" "${org}" "${size}"
+				printf "  %-64s  %-15s  %12s\n" "${fullname}" "${org}" "${size}"
 			done
 		fi
 	fi
 else
 	info "Quay namespace not found. Skipping Quay breakdown."
 fi
+
+# ======================================================================
+hdr "CEPH POOL TOTALS"
+# ======================================================================
+if ${CEPH_TOOLS}; then
+	RGW_POOL="${SC_NAME}-cephobjectstore.rgw.buckets.data"
+	BLOCK_POOL="${SC_NAME}-cephblockpool"
+	RGW_POOL_BYTES=$(ceph_cmd rados df -p "${RGW_POOL}" 2>/dev/null | \
+		awk -v p="${RGW_POOL}" '$0 ~ p {print $2}')
+	RGW_POOL_UNIT=$(ceph_cmd rados df -p "${RGW_POOL}" 2>/dev/null | \
+		awk -v p="${RGW_POOL}" '$0 ~ p {print $3}')
+	BLOCK_USED=$(ceph_cmd rados df -p "${BLOCK_POOL}" 2>/dev/null | \
+		awk -v p="${BLOCK_POOL}" '$0 ~ p {print $2, $3}')
+	RGW_REPLICA=$(ceph_cmd ceph osd pool get "${RGW_POOL}" size 2>/dev/null | awk '{print $2}')
+	RGW_REPLICA=${RGW_REPLICA:-3}
+
+	echo "  Ceph RGW pool (raw, ${RGW_REPLICA}x replicated):  ${RGW_POOL_BYTES:-?} ${RGW_POOL_UNIT}"
+
+	if [[ -n "${DB_POD}" && -n "${QUAY_DB}" ]]; then
+		QUAY_LOGICAL=$(oc exec "${DB_POD}" -n "${QUAY_NS}" -- psql -U postgres -d "${QUAY_DB}" \
+			-t -c "SELECT coalesce(sum(size_bytes),0) FROM quotanamespacesize;" 2>/dev/null | tr -d ' ')
+		if [[ -n "${QUAY_LOGICAL}" && "${QUAY_LOGICAL}" -gt 0 ]] 2>/dev/null; then
+			python3 -c "
+rgw_raw_str = '${RGW_POOL_BYTES} ${RGW_POOL_UNIT}'.strip()
+quay_logical = ${QUAY_LOGICAL}
+replica = ${RGW_REPLICA}
+
+units = {'B':1, 'KiB':1024, 'MiB':1024**2, 'GiB':1024**3, 'TiB':1024**4}
+parts = rgw_raw_str.split()
+if len(parts) == 2:
+    rgw_raw = float(parts[0]) * units.get(parts[1], 1)
+else:
+    rgw_raw = 0
+
+def pretty(b):
+    if b >= 1024**4: return f'{b/1024**4:.1f} TiB'
+    if b >= 1024**3: return f'{b/1024**3:.1f} GiB'
+    if b >= 1024**2: return f'{b/1024**2:.0f} MiB'
+    return f'{b/1024:.0f} KiB'
+
+quay_raw = quay_logical * replica
+other_raw = max(rgw_raw - quay_raw, 0)
+other_logical = other_raw / replica
+print(f'  ├─ Quay registry (logical):          {pretty(quay_logical)}  (~{pretty(quay_raw)} raw)')
+print(f'  └─ Other (ACM metrics, etcd, etc.):  ~{pretty(other_logical)}  (~{pretty(other_raw)} raw)')
+" 2>/dev/null
+		fi
+	fi
+
+	echo "  Ceph block pool (all RBD PVCs):      ${BLOCK_USED:-unknown}"
+else
+	info "Ceph tools pod not available. Enable it for pool totals."
+fi
+
+fi # HAS_STORAGECLUSTER
 
 # ======================================================================
 # ACM SECTION — only if ACM Observability is deployed
@@ -552,70 +677,6 @@ for grp in ['Alertmanager','Thanos','Other']:
 print(f'  {\"TOTAL\":<20s}  {sum(v[0] for v in totals.values())} PVCs  allocated {pretty(grand)}')
 " 2>/dev/null
 
-	# Object Bucket Claims (cluster-wide, shows all S3 consumers)
-	OBC_DATA=$(oc get obc -A \
-		-o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.spec.storageClassName}{"\n"}{end}' 2>/dev/null || true)
-	if [[ -n "${OBC_DATA}" ]]; then
-		echo ""
-		echo "  Object Bucket Claims (S3 via RGW/NooBaa):"
-		echo "  $(printf '%0.s-' {1..95})"
-		printf "  %-30s  %-45s  %s\n" "NAMESPACE/OBC" "BUCKET" "STORAGE CLASS"
-		echo "  $(printf '%0.s-' {1..95})"
-		echo "${OBC_DATA}" | \
-		while IFS='|' read -r ns name sc; do
-			[[ -z "${ns}" ]] && continue
-			bucket=$(oc get configmap "${name}" -n "${ns}" -o jsonpath='{.data.BUCKET_NAME}' 2>/dev/null || echo "?")
-			printf "  %-30s  %-45s  %s\n" "${ns}/${name}" "${bucket}" "${sc}"
-		done
-	fi
-
-	# Pool-level totals with Quay breakdown (requires ceph tools)
-	if ${CEPH_TOOLS}; then
-		echo ""
-		RGW_POOL_BYTES=$(ceph_cmd rados df -p ocs-storagecluster-cephobjectstore.rgw.buckets.data 2>/dev/null | \
-			awk '/ocs-storagecluster-cephobjectstore.rgw.buckets.data/{print $2}')
-		RGW_POOL_UNIT=$(ceph_cmd rados df -p ocs-storagecluster-cephobjectstore.rgw.buckets.data 2>/dev/null | \
-			awk '/ocs-storagecluster-cephobjectstore.rgw.buckets.data/{print $3}')
-		BLOCK_USED=$(ceph_cmd rados df -p ocs-storagecluster-cephblockpool 2>/dev/null | \
-			awk '/ocs-storagecluster-cephblockpool/{print $2, $3}')
-		RGW_REPLICA=$(ceph_cmd ceph osd pool get ocs-storagecluster-cephobjectstore.rgw.buckets.data size 2>/dev/null | awk '{print $2}')
-		RGW_REPLICA=${RGW_REPLICA:-3}
-
-		echo "  Ceph RGW pool (raw, ${RGW_REPLICA}x replicated):  ${RGW_POOL_BYTES:-?} ${RGW_POOL_UNIT}"
-
-		if [[ -n "${DB_POD}" && -n "${QUAY_DB}" ]]; then
-			QUAY_LOGICAL=$(oc exec "${DB_POD}" -n "${QUAY_NS}" -- psql -U postgres -d "${QUAY_DB}" \
-				-t -c "SELECT coalesce(sum(size_bytes),0) FROM quotanamespacesize;" 2>/dev/null | tr -d ' ')
-			if [[ -n "${QUAY_LOGICAL}" && "${QUAY_LOGICAL}" -gt 0 ]] 2>/dev/null; then
-				python3 -c "
-rgw_raw_str = '${RGW_POOL_BYTES} ${RGW_POOL_UNIT}'.strip()
-quay_logical = ${QUAY_LOGICAL}
-replica = ${RGW_REPLICA}
-
-units = {'B':1, 'KiB':1024, 'MiB':1024**2, 'GiB':1024**3, 'TiB':1024**4}
-parts = rgw_raw_str.split()
-if len(parts) == 2:
-    rgw_raw = float(parts[0]) * units.get(parts[1], 1)
-else:
-    rgw_raw = 0
-
-def pretty(b):
-    if b >= 1024**4: return f'{b/1024**4:.1f} TiB'
-    if b >= 1024**3: return f'{b/1024**3:.1f} GiB'
-    if b >= 1024**2: return f'{b/1024**2:.0f} MiB'
-    return f'{b/1024:.0f} KiB'
-
-quay_raw = quay_logical * replica
-other_raw = max(rgw_raw - quay_raw, 0)
-other_logical = other_raw / replica
-print(f'  ├─ Quay registry (logical):          {pretty(quay_logical)}  (~{pretty(quay_raw)} raw)')
-print(f'  └─ Other (ACM metrics, etcd, etc.):  ~{pretty(other_logical)}  (~{pretty(other_raw)} raw)')
-" 2>/dev/null
-			fi
-		fi
-
-		echo "  Ceph block pool (all RBD PVCs):      ${BLOCK_USED:-unknown}"
-	fi
 else
 	info "ACM Observability not deployed. Skipping spoke metrics section."
 fi
@@ -639,8 +700,10 @@ if ${CEPH_TOOLS}; then
 	echo "  Raw capacity:     ${TOTAL_RAW}"
 	echo "  Used:             ${TOTAL_USED} (${PCT}%)"
 	echo "  Available:        ${TOTAL_AVAIL}"
-else
+elif ${HAS_STORAGECLUSTER}; then
 	echo "  Ceph tools:       not available (enable for capacity details)"
+else
+	echo "  ODF:              not deployed"
 fi
 
 if [[ -n "${DB_POD}" ]]; then
