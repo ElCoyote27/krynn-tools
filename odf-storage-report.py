@@ -276,16 +276,33 @@ def gather_ceph_data(ceph: CephTools | None) -> dict:
     if not ceph:
         return {}
     progress("Gathering data... [ceph]")
+
+    def with_retry(fn, retries=1):
+        """Retry a ceph call once if it returns empty (tools pod busy)."""
+        result = fn()
+        for _ in range(retries):
+            if result is not None and result != "":
+                break
+            import time; time.sleep(2)
+            result = fn()
+        return result
+
     tasks = {
-        "status":     lambda: ceph.run("ceph", "status"),
-        "df":         lambda: ceph.run("ceph", "df"),
-        "osd_tree":   lambda: ceph.run("ceph", "osd", "df", "tree"),
-        "pool_detail": lambda: ceph.run_json(
-            "ceph", "osd", "pool", "ls", "detail", "-f", "json"),
-        "health":     lambda: ceph.run("ceph", "health"),
-        "osd_stat":   lambda: ceph.run("ceph", "osd", "stat"),
+        "status":     lambda: with_retry(
+            lambda: ceph.run("ceph", "status")),
+        "df":         lambda: with_retry(
+            lambda: ceph.run("ceph", "df")),
+        "osd_tree":   lambda: with_retry(
+            lambda: ceph.run("ceph", "osd", "df", "tree")),
+        "pool_detail": lambda: with_retry(
+            lambda: ceph.run_json(
+                "ceph", "osd", "pool", "ls", "detail", "-f", "json")),
+        "health":     lambda: with_retry(
+            lambda: ceph.run("ceph", "health")),
+        "osd_stat":   lambda: with_retry(
+            lambda: ceph.run("ceph", "osd", "stat")),
     }
-    return gather(tasks)
+    return gather(tasks, max_workers=3)
 
 
 def gather_odf_data(has_sc: bool, sc_name: str) -> dict:
@@ -507,7 +524,7 @@ def gather_pool_totals(ceph: CephTools | None, sc_name: str) -> dict:
         "rgw_size": lambda: ceph.run(
             "ceph", "osd", "pool", "get", rgw_pool, "size"),
     }
-    result = gather(tasks)
+    result = gather(tasks, max_workers=3)
     result["rgw_pool"] = rgw_pool
     result["block_pool"] = block_pool
     return result
@@ -603,14 +620,19 @@ def render_ceph_sections(ceph_data: dict, hub_short: str) -> list[str]:
     if not ceph_data:
         return lines
 
+    NO_DATA = "  (ceph data not available — cluster may be busy)"
+
     lines.append(hdr(f"CEPH CLUSTER HEALTH \u2014 {hub_short}"))
-    lines.append(ceph_data.get("status", "").rstrip())
+    status = (ceph_data.get("status") or "").rstrip()
+    lines.append(status if status else NO_DATA)
 
     lines.append(hdr("CEPH POOL USAGE"))
-    lines.append(ceph_data.get("df", "").rstrip())
+    df = (ceph_data.get("df") or "").rstrip()
+    lines.append(df if df else NO_DATA)
 
     lines.append(hdr("OSD DISTRIBUTION & UTILISATION"))
-    lines.append(ceph_data.get("osd_tree", "").rstrip())
+    osd_tree = (ceph_data.get("osd_tree") or "").rstrip()
+    lines.append(osd_tree if osd_tree else NO_DATA)
 
     lines.append(hdr("POOL PG DISTRIBUTION"))
     pools = ceph_data.get("pool_detail") or []
@@ -916,13 +938,13 @@ def render_pool_totals(
             "Ceph tools pod not available. Enable it for pool totals."))
         return lines
 
-    rgw_pool = pool_data.get("rgw_pool", "")
-    rados_rgw = pool_data.get("rados_rgw", "")
+    rgw_pool = pool_data.get("rgw_pool") or ""
+    rados_rgw = pool_data.get("rados_rgw") or ""
 
     # Parse RGW pool size from rados df output
     rgw_bytes_str = rgw_unit = ""
     for line in rados_rgw.splitlines():
-        if rgw_pool in line:
+        if rgw_pool and rgw_pool in line:
             parts = line.split()
             if len(parts) >= 3:
                 rgw_bytes_str = parts[1]
@@ -930,18 +952,18 @@ def render_pool_totals(
             break
 
     # Parse block pool usage
-    block_pool = pool_data.get("block_pool", "")
-    rados_block = pool_data.get("rados_block", "")
+    block_pool = pool_data.get("block_pool") or ""
+    rados_block = pool_data.get("rados_block") or ""
     block_used = "unknown"
     for line in rados_block.splitlines():
-        if block_pool in line:
+        if block_pool and block_pool in line:
             parts = line.split()
             if len(parts) >= 3:
                 block_used = f"{parts[1]} {parts[2]}"
             break
 
     # Parse replica count
-    rgw_size_out = pool_data.get("rgw_size", "")
+    rgw_size_out = pool_data.get("rgw_size") or ""
     replica = 3
     if rgw_size_out:
         parts = rgw_size_out.strip().split()
@@ -1087,14 +1109,13 @@ def render_summary(
             pass
 
     if ceph and ceph_data:
-        health_out = ceph_data.get("health", "")
-        health = health_out.split()[0] if health_out else "?"
-        df_out = ceph_data.get("df", "")
+        health_out = ceph_data.get("health") or ""
+        health = health_out.split()[0] if health_out.strip() else "?"
+        df_out = ceph_data.get("df") or ""
         total_raw = total_avail = total_used = pct = "?"
         for line in df_out.splitlines():
             if "TOTAL" in line:
                 parts = line.split()
-                # TOTAL  <raw> <unit>  <avail> <unit>  <used> <unit>  <pct>
                 if len(parts) >= 8:
                     total_raw = f"{parts[1]} {parts[2]}"
                     total_avail = f"{parts[3]} {parts[4]}"
@@ -1102,8 +1123,8 @@ def render_summary(
                     pct = parts[-1]
                 break
 
-        osd_stat = ceph_data.get("osd_stat", "")
-        osd_count = osd_stat.split()[0] if osd_stat else "?"
+        osd_stat = ceph_data.get("osd_stat") or ""
+        osd_count = osd_stat.split()[0] if osd_stat.strip() else "?"
 
         lines.append(f"  Health:           {health}")
         lines.append(
