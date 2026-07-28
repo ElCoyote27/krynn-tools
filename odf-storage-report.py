@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 # odf-storage-report.py v2.00
 #
 # ODF storage consumption breakdown for OpenShift clusters.
