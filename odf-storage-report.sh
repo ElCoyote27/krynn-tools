@@ -1,5 +1,5 @@
 #!/bin/bash
-# odf-storage-report.sh v1.04
+# odf-storage-report.sh v1.06
 #
 # ODF storage consumption breakdown for OpenShift clusters.
 #
@@ -77,38 +77,43 @@ info "Connected to: ${HUB_SHORT} (${HUB_API})"
 # --- Discover ceph tools pod ---
 TOOLS_POD=$(oc get pods -n openshift-storage -l app=rook-ceph-tools \
 	-o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+CEPH_TOOLS=true
 if [[ -z "${TOOLS_POD}" ]]; then
-	err "No rook-ceph-tools pod found. Is ODF deployed and ceph tools enabled?"
-	err "launch the following command for more information "
-	err ""
-        err "$ oc explain storageclusters.ocs.openshift.io.spec.enableCephTools"
-        err "$ oc get -A storageclusters.ocs.openshift.io"
-	exit 1
+	CEPH_TOOLS=false
+	warn "No rook-ceph-tools pod found."
+	warn "Enable it for deeper Ceph and RGW bucket insights:"
+	warn "  oc patch storagecluster ocs-storagecluster -n openshift-storage \\"
+	warn "    --type merge -p '{\"spec\":{\"enableCephTools\":true}}'"
+	warn "For more information:"
+	warn "  oc explain storageclusters.ocs.openshift.io.spec.enableCephTools"
 fi
 
 ceph_cmd() {
+	if ! ${CEPH_TOOLS}; then return 1; fi
 	oc exec -n openshift-storage "${TOOLS_POD}" -- "$@" 2>/dev/null
 }
 
-# ======================================================================
-hdr "CEPH CLUSTER HEALTH — ${HUB_SHORT}"
-# ======================================================================
-ceph_cmd ceph status
+if ${CEPH_TOOLS}; then
+	# ==================================================================
+	hdr "CEPH CLUSTER HEALTH — ${HUB_SHORT}"
+	# ==================================================================
+	ceph_cmd ceph status
 
-# ======================================================================
-hdr "CEPH POOL USAGE"
-# ======================================================================
-ceph_cmd ceph df
+	# ==================================================================
+	hdr "CEPH POOL USAGE"
+	# ==================================================================
+	ceph_cmd ceph df
 
-# ======================================================================
-hdr "OSD DISTRIBUTION & UTILISATION"
-# ======================================================================
-ceph_cmd ceph osd df tree
+	# ==================================================================
+	hdr "OSD DISTRIBUTION & UTILISATION"
+	# ==================================================================
+	ceph_cmd ceph osd df tree
 
-# ======================================================================
-hdr "PG AUTOSCALE STATUS"
-# ======================================================================
-ceph_cmd ceph osd pool autoscale-status
+	# ==================================================================
+	hdr "PG AUTOSCALE STATUS"
+	# ==================================================================
+	ceph_cmd ceph osd pool autoscale-status
+fi
 
 # ======================================================================
 hdr "STORAGECLUSTER RESOURCES"
@@ -175,6 +180,151 @@ hdr "PVC INVENTORY (openshift-storage)"
 oc get pvc -n openshift-storage -o custom-columns=\
 'NAME:.metadata.name,SIZE:.spec.resources.requests.storage,SC:.spec.storageClassName,STATUS:.status.phase' \
 	--no-headers 2>/dev/null | sort -k2 -h
+
+# ======================================================================
+hdr "RADOSGW BUCKET USAGE"
+# ======================================================================
+RGW_ZONE=""
+if ${CEPH_TOOLS}; then
+	RGW_ZONE=$(ceph_cmd radosgw-admin zone list 2>/dev/null | \
+		python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    zones = [z for z in d.get('zones', []) if z != 'default']
+    if zones:
+        print(zones[0])
+except Exception:
+    pass
+" 2>/dev/null)
+fi
+
+if ! ${CEPH_TOOLS}; then
+	info "Ceph tools pod not available. Enable it for RGW bucket breakdown."
+elif [[ -z "${RGW_ZONE}" ]]; then
+	info "No RGW zone detected. Skipping bucket breakdown."
+else
+	BUCKET_JSON=$(ceph_cmd radosgw-admin bucket stats \
+		--rgw-zone="${RGW_ZONE}" 2>/dev/null)
+
+	# Collect NooBaa backing-store target buckets (CRD may not exist)
+	NOOBAA_BS_JSON=$(oc get backingstore -n openshift-storage \
+		-o json 2>/dev/null || echo '{"items":[]}')
+	# Collect OBCs cluster-wide for consumer mapping (CRD may not exist)
+	OBC_JSON=$(oc get obc -A -o json 2>/dev/null || echo '{"items":[]}')
+	# Collect OBC ConfigMaps for bucket-name resolution
+	OBC_BUCKETS=""
+	for obc_line in $(echo "${OBC_JSON}" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for i in data.get('items', []):
+    ns = i['metadata']['namespace']
+    nm = i['metadata']['name']
+    sc = i['spec'].get('storageClassName','')
+    print(f'{ns}|{nm}|{sc}')
+" 2>/dev/null); do
+		obc_ns=$(echo "${obc_line}" | cut -d'|' -f1)
+		obc_nm=$(echo "${obc_line}" | cut -d'|' -f2)
+		obc_sc=$(echo "${obc_line}" | cut -d'|' -f3)
+		obc_bkt=$(oc get configmap "${obc_nm}" -n "${obc_ns}" \
+			-o jsonpath='{.data.BUCKET_NAME}' 2>/dev/null || true)
+		OBC_BUCKETS="${OBC_BUCKETS}${obc_ns}|${obc_nm}|${obc_sc}|${obc_bkt}"$'\n'
+	done
+
+	echo "${BUCKET_JSON}" | python3 -c "
+import json, sys, os
+
+def pretty(b):
+    if b >= 1024**4: return f'{b/1024**4:.2f} TiB'
+    if b >= 1024**3: return f'{b/1024**3:.1f} GiB'
+    if b >= 1024**2: return f'{b/1024**2:.0f} MiB'
+    if b >= 1024:    return f'{b/1024:.0f} KiB'
+    return f'{b} B'
+
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = []
+
+if not data:
+    print('  (no buckets found in this zone)')
+    sys.exit(0)
+
+# NooBaa backing-store target buckets
+noobaa_targets = set()
+try:
+    bs = json.loads('''${NOOBAA_BS_JSON}''')
+    for item in bs.get('items', []):
+        tb = item.get('spec',{}).get('s3Compatible',{}).get('targetBucket','')
+        if tb:
+            noobaa_targets.add(tb)
+except Exception:
+    pass
+
+# OBC consumer mapping: bucket_name -> [ns/obc-name, ...]
+obc_map = {}       # direct RGW bucket -> consumer label
+noobaa_obcs = []   # OBCs going through NooBaa
+obc_lines = '''${OBC_BUCKETS}'''.strip().splitlines()
+for line in obc_lines:
+    parts = line.split('|', 3)
+    if len(parts) < 4:
+        continue
+    ns, nm, sc, bkt = parts
+    label = f'{ns}/{nm}'
+    if 'noobaa' in sc:
+        noobaa_obcs.append(label)
+    elif bkt:
+        obc_map[bkt] = label
+
+def identify(bucket_name, owner):
+    # Direct RGW OBC match
+    if bucket_name in obc_map:
+        return obc_map[bucket_name]
+    # NooBaa backing-store bucket
+    if bucket_name in noobaa_targets:
+        consumers = ', '.join(noobaa_obcs) if noobaa_obcs else ''
+        tag = 'NooBaa backing store'
+        if consumers:
+            tag += f' ({consumers})'
+        return tag
+    # Heuristic fallback from owner/name
+    if 'prometheus' in owner or bucket_name.startswith('grafana-'):
+        return 'Grafana/Prometheus'
+    return owner
+
+buckets = []
+for b in data:
+    name   = b.get('bucket', '?')
+    owner  = b.get('owner', '?')
+    usage  = b.get('usage', {}).get('rgw.main', {})
+    size   = usage.get('size', 0)
+    objs   = usage.get('num_objects', 0)
+    consumer = identify(name, owner)
+    buckets.append((size, objs, consumer, name))
+
+buckets.sort(key=lambda x: x[0], reverse=True)
+
+w_name = max(max(len(t[3]) for t in buckets), 6)
+w_cons = max(max(len(t[2]) for t in buckets), 8)
+
+hdr = f'  {\"BUCKET\":<{w_name}}  {\"SIZE\":>10}  ' \
+      f'{\"OBJECTS\":>9}  {\"CONSUMER\":<{w_cons}}'
+print(hdr)
+print('  ' + '-' * (len(hdr) - 2))
+
+total_size = 0
+total_objs = 0
+for size, objs, consumer, name in buckets:
+    total_size += size
+    total_objs += objs
+    print(f'  {name:<{w_name}}  {pretty(size):>10}  '
+          f'{objs:>9}  {consumer:<{w_cons}}')
+
+print('  ' + '-' * (len(hdr) - 2))
+print(f'  {\"TOTAL\":<{w_name}}  {pretty(total_size):>10}  '
+      f'{total_objs:>9}  ({len(buckets)} buckets)')
+" 2>/dev/null
+fi
 
 # ======================================================================
 # QUAY SECTION — only if Quay is deployed
@@ -403,37 +553,41 @@ print(f'  {\"TOTAL\":<20s}  {sum(v[0] for v in totals.values())} PVCs  allocated
 " 2>/dev/null
 
 	# Object Bucket Claims (cluster-wide, shows all S3 consumers)
-	echo ""
-	echo "  Object Bucket Claims (S3 via RGW/NooBaa):"
-	echo "  $(printf '%0.s-' {1..95})"
-	printf "  %-30s  %-45s  %s\n" "NAMESPACE/OBC" "BUCKET" "STORAGE CLASS"
-	echo "  $(printf '%0.s-' {1..95})"
-	oc get obc -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.spec.storageClassName}{"\n"}{end}' 2>/dev/null | \
-	while IFS='|' read -r ns name sc; do
-		bucket=$(oc get configmap "${name}" -n "${ns}" -o jsonpath='{.data.BUCKET_NAME}' 2>/dev/null || echo "?")
-		printf "  %-30s  %-45s  %s\n" "${ns}/${name}" "${bucket}" "${sc}"
-	done
+	OBC_DATA=$(oc get obc -A \
+		-o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.spec.storageClassName}{"\n"}{end}' 2>/dev/null || true)
+	if [[ -n "${OBC_DATA}" ]]; then
+		echo ""
+		echo "  Object Bucket Claims (S3 via RGW/NooBaa):"
+		echo "  $(printf '%0.s-' {1..95})"
+		printf "  %-30s  %-45s  %s\n" "NAMESPACE/OBC" "BUCKET" "STORAGE CLASS"
+		echo "  $(printf '%0.s-' {1..95})"
+		echo "${OBC_DATA}" | \
+		while IFS='|' read -r ns name sc; do
+			[[ -z "${ns}" ]] && continue
+			bucket=$(oc get configmap "${name}" -n "${ns}" -o jsonpath='{.data.BUCKET_NAME}' 2>/dev/null || echo "?")
+			printf "  %-30s  %-45s  %s\n" "${ns}/${name}" "${bucket}" "${sc}"
+		done
+	fi
 
-	# Pool-level totals with Quay breakdown
-	echo ""
-	RGW_POOL_BYTES=$(ceph_cmd rados df -p ocs-storagecluster-cephobjectstore.rgw.buckets.data 2>/dev/null | \
-		awk '/ocs-storagecluster-cephobjectstore.rgw.buckets.data/{print $2}')
-	RGW_POOL_UNIT=$(ceph_cmd rados df -p ocs-storagecluster-cephobjectstore.rgw.buckets.data 2>/dev/null | \
-		awk '/ocs-storagecluster-cephobjectstore.rgw.buckets.data/{print $3}')
-	BLOCK_USED=$(ceph_cmd rados df -p ocs-storagecluster-cephblockpool 2>/dev/null | \
-		awk '/ocs-storagecluster-cephblockpool/{print $2, $3}')
-	# Get the actual replication size for the RGW buckets data pool from ceph
-	RGW_REPLICA=$(ceph_cmd ceph osd pool get ocs-storagecluster-cephobjectstore.rgw.buckets.data size 2>/dev/null | awk '{print $2}')
-	RGW_REPLICA=${RGW_REPLICA:-3}
+	# Pool-level totals with Quay breakdown (requires ceph tools)
+	if ${CEPH_TOOLS}; then
+		echo ""
+		RGW_POOL_BYTES=$(ceph_cmd rados df -p ocs-storagecluster-cephobjectstore.rgw.buckets.data 2>/dev/null | \
+			awk '/ocs-storagecluster-cephobjectstore.rgw.buckets.data/{print $2}')
+		RGW_POOL_UNIT=$(ceph_cmd rados df -p ocs-storagecluster-cephobjectstore.rgw.buckets.data 2>/dev/null | \
+			awk '/ocs-storagecluster-cephobjectstore.rgw.buckets.data/{print $3}')
+		BLOCK_USED=$(ceph_cmd rados df -p ocs-storagecluster-cephblockpool 2>/dev/null | \
+			awk '/ocs-storagecluster-cephblockpool/{print $2, $3}')
+		RGW_REPLICA=$(ceph_cmd ceph osd pool get ocs-storagecluster-cephobjectstore.rgw.buckets.data size 2>/dev/null | awk '{print $2}')
+		RGW_REPLICA=${RGW_REPLICA:-3}
 
-	echo "  Ceph RGW pool (raw, ${RGW_REPLICA}x replicated):  ${RGW_POOL_BYTES:-?} ${RGW_POOL_UNIT}"
+		echo "  Ceph RGW pool (raw, ${RGW_REPLICA}x replicated):  ${RGW_POOL_BYTES:-?} ${RGW_POOL_UNIT}"
 
-	# If Quay size is known, break down the RGW pool
-	if [[ -n "${DB_POD}" && -n "${QUAY_DB}" ]]; then
-		QUAY_LOGICAL=$(oc exec "${DB_POD}" -n "${QUAY_NS}" -- psql -U postgres -d "${QUAY_DB}" \
-			-t -c "SELECT coalesce(sum(size_bytes),0) FROM quotanamespacesize;" 2>/dev/null | tr -d ' ')
-		if [[ -n "${QUAY_LOGICAL}" && "${QUAY_LOGICAL}" -gt 0 ]] 2>/dev/null; then
-			python3 -c "
+		if [[ -n "${DB_POD}" && -n "${QUAY_DB}" ]]; then
+			QUAY_LOGICAL=$(oc exec "${DB_POD}" -n "${QUAY_NS}" -- psql -U postgres -d "${QUAY_DB}" \
+				-t -c "SELECT coalesce(sum(size_bytes),0) FROM quotanamespacesize;" 2>/dev/null | tr -d ' ')
+			if [[ -n "${QUAY_LOGICAL}" && "${QUAY_LOGICAL}" -gt 0 ]] 2>/dev/null; then
+				python3 -c "
 rgw_raw_str = '${RGW_POOL_BYTES} ${RGW_POOL_UNIT}'.strip()
 quay_logical = ${QUAY_LOGICAL}
 replica = ${RGW_REPLICA}
@@ -457,10 +611,11 @@ other_logical = other_raw / replica
 print(f'  ├─ Quay registry (logical):          {pretty(quay_logical)}  (~{pretty(quay_raw)} raw)')
 print(f'  └─ Other (ACM metrics, etcd, etc.):  ~{pretty(other_logical)}  (~{pretty(other_raw)} raw)')
 " 2>/dev/null
+			fi
 		fi
-	fi
 
-	echo "  Ceph block pool (all RBD PVCs):      ${BLOCK_USED:-unknown}"
+		echo "  Ceph block pool (all RBD PVCs):      ${BLOCK_USED:-unknown}"
+	fi
 else
 	info "ACM Observability not deployed. Skipping spoke metrics section."
 fi
@@ -468,21 +623,25 @@ fi
 # ======================================================================
 hdr "SUMMARY"
 # ======================================================================
-CEPH_HEALTH=$(ceph_cmd ceph health | awk '{print $1}' 2>/dev/null)
-CEPH_DF=$(ceph_cmd ceph df 2>/dev/null)
-TOTAL_RAW=$(echo "${CEPH_DF}" | awk '/TOTAL/{print $2, $3}')
-TOTAL_AVAIL=$(echo "${CEPH_DF}" | awk '/TOTAL/{print $4, $5}')
-TOTAL_USED=$(echo "${CEPH_DF}" | awk '/TOTAL/{print $6, $7}')
-PCT=$(echo "${CEPH_DF}" | awk '/TOTAL/{print $NF}')
-OSD_COUNT=$(ceph_cmd ceph osd stat 2>/dev/null | awk '{print $1}')
 SC_COUNT=$(echo "${SC_JSON}" | python3 -c "import json,sys; print(json.load(sys.stdin)['spec']['storageDeviceSets'][0]['count'])" 2>/dev/null)
-
 echo "  Cluster:          ${HUB_SHORT}"
-echo "  Health:           ${CEPH_HEALTH}"
-echo "  OSDs:             ${OSD_COUNT} (count=${SC_COUNT} x replica=3)"
-echo "  Raw capacity:     ${TOTAL_RAW}"
-echo "  Used:             ${TOTAL_USED} (${PCT}%)"
-echo "  Available:        ${TOTAL_AVAIL}"
+
+if ${CEPH_TOOLS}; then
+	CEPH_HEALTH=$(ceph_cmd ceph health | awk '{print $1}' 2>/dev/null)
+	CEPH_DF=$(ceph_cmd ceph df 2>/dev/null)
+	TOTAL_RAW=$(echo "${CEPH_DF}" | awk '/TOTAL/{print $2, $3}')
+	TOTAL_AVAIL=$(echo "${CEPH_DF}" | awk '/TOTAL/{print $4, $5}')
+	TOTAL_USED=$(echo "${CEPH_DF}" | awk '/TOTAL/{print $6, $7}')
+	PCT=$(echo "${CEPH_DF}" | awk '/TOTAL/{print $NF}')
+	OSD_COUNT=$(ceph_cmd ceph osd stat 2>/dev/null | awk '{print $1}')
+	echo "  Health:           ${CEPH_HEALTH}"
+	echo "  OSDs:             ${OSD_COUNT} (count=${SC_COUNT:-?} x replica=3)"
+	echo "  Raw capacity:     ${TOTAL_RAW}"
+	echo "  Used:             ${TOTAL_USED} (${PCT}%)"
+	echo "  Available:        ${TOTAL_AVAIL}"
+else
+	echo "  Ceph tools:       not available (enable for capacity details)"
+fi
 
 if [[ -n "${DB_POD}" ]]; then
 	QUAY_BYTES=$(oc exec "${DB_POD}" -n "${QUAY_NS}" -- psql -U postgres -d "${QUAY_DB}" \
