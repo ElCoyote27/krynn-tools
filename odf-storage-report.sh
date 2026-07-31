@@ -414,7 +414,7 @@ if [[ -n "${QUAY_NS}" ]]; then
 'NAME:.metadata.name,CAPACITY:.status.capacity.storage,SC:.spec.storageClassName,STATUS:.status.phase' \
 		2>/dev/null | sort -k2 -h
 
-	hdr "REGIONAL QUAY — PER-ORG STORAGE BREAKDOWN (${QUAY_NS})"
+	hdr "QUAY — PER-ORG STORAGE BREAKDOWN (${QUAY_NS})"
 
 	# Discover DB pod — Quay 3.15 uses label quay-component=postgres,
 	# Quay 3.16 may use quay-component=quay-database or postgres.

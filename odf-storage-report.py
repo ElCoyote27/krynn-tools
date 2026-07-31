@@ -865,7 +865,7 @@ def render_quay(quay_ns: str, quay_data: dict, quay_q: dict) -> list[str]:
     else:
         lines.append(info("No PVCs found."))
 
-    lines.append(hdr(f"REGIONAL QUAY \u2014 PER-ORG STORAGE BREAKDOWN ({quay_ns})"))
+    lines.append(hdr(f"QUAY \u2014 PER-ORG STORAGE BREAKDOWN ({quay_ns})"))
 
     db_pod = quay_data.get("db_pod", "")
     if not db_pod:
