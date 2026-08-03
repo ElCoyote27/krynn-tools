@@ -932,6 +932,8 @@ def render_quay(quay_ns: str, quay_data: dict, quay_q: dict) -> list[str]:
 
 def render_pool_totals(
     pool_data: dict, quay_logical_bytes: int,
+    rgw_bucket_stats: list | None = None,
+    noobaa_targets: set | None = None,
 ) -> list[str]:
     lines = [hdr("CEPH POOL TOTALS")]
     if not pool_data:
@@ -978,21 +980,63 @@ def render_pool_totals(
         f"  Ceph RGW pool (raw, {replica}x replicated):  "
         f"{rgw_bytes_str or '?'} {rgw_unit}")
 
-    if quay_logical_bytes > 0 and rgw_bytes_str:
-        try:
-            rgw_raw = float(rgw_bytes_str) * SIZE_UNITS.get(rgw_unit, 1)
-        except ValueError:
-            rgw_raw = 0
-        if rgw_raw > 0:
+    try:
+        rgw_raw = float(rgw_bytes_str) * SIZE_UNITS.get(rgw_unit, 1)
+    except (ValueError, TypeError):
+        rgw_raw = 0
+
+    if rgw_raw > 0:
+        # Compute NooBaa backing bucket size from actual RGW bucket stats.
+        # The Quay DB logical size (quotanamespacesize) only reflects
+        # deduplicated image layers; NooBaa's 4MB block store, multipart
+        # shadow objects, and metadata overhead make the actual RGW usage
+        # significantly larger.
+        noobaa_logical = 0
+        direct_logical = 0
+        if rgw_bucket_stats and noobaa_targets:
+            for b in rgw_bucket_stats:
+                bname = b.get("bucket", "")
+                usage = b.get("usage", {}).get("rgw.main", {})
+                bsize = usage.get("size", 0)
+                if bname in noobaa_targets:
+                    noobaa_logical += bsize
+                else:
+                    direct_logical += bsize
+
+        if noobaa_logical > 0:
+            noobaa_raw = noobaa_logical * replica
+            direct_raw = direct_logical * replica
+            noobaa_overhead = max(noobaa_logical - quay_logical_bytes, 0)
+            lines.append(
+                f"  ├─ NooBaa backing store (Quay):      "
+                f"{pretty_bytes(noobaa_logical)}  "
+                f"(~{pretty_bytes(noobaa_raw)} raw)")
+            lines.append(
+                f"  │   ├─ Quay image data (logical):    "
+                f"{pretty_bytes(quay_logical_bytes)}")
+            lines.append(
+                f"  │   └─ NooBaa block overhead:        "
+                f"~{pretty_bytes(noobaa_overhead)}  "
+                f"(fragmentation, multipart shadows)")
+            if direct_logical > 0:
+                lines.append(
+                    f"  └─ Direct RGW buckets:              "
+                    f"{pretty_bytes(direct_logical)}  "
+                    f"(~{pretty_bytes(direct_raw)} raw)")
+            else:
+                lines.append(
+                    f"  └─ Direct RGW buckets:              "
+                    f"0 B")
+        elif quay_logical_bytes > 0:
             quay_raw = quay_logical_bytes * replica
             other_raw = max(rgw_raw - quay_raw, 0)
             other_logical = other_raw / replica
             lines.append(
-                f"  \u251c\u2500 Quay registry (logical):          "
+                f"  ├─ Quay registry (logical):          "
                 f"{pretty_bytes(quay_logical_bytes)}  "
                 f"(~{pretty_bytes(quay_raw)} raw)")
             lines.append(
-                f"  \u2514\u2500 Other (ACM metrics, etcd, etc.):  "
+                f"  └─ Other (ACM metrics, etcd, etc.):  "
                 f"~{pretty_bytes(other_logical)}  "
                 f"(~{pretty_bytes(other_raw)} raw)")
 
@@ -1275,7 +1319,22 @@ def main():
         output.extend(render_rgw_buckets(ceph, rgw_data, obc_bucket_map))
         output.extend(render_obc(obc_items, obc_bucket_map))
         output.extend(render_quay(quay_ns, quay_data, quay_q))
-        output.extend(render_pool_totals(pool_data, quay_logical_bytes))
+
+        # Build NooBaa target set for accurate pool totals
+        _noobaa_targets: set[str] = set()
+        _bs_data = rgw_data.get("backingstore") or {"items": []}
+        for _item in _bs_data.get("items", []):
+            _tb = (_item.get("spec", {})
+                   .get("s3Compatible", {})
+                   .get("targetBucket", ""))
+            if _tb:
+                _noobaa_targets.add(_tb)
+        _rgw_bucket_stats = rgw_data.get("bucket_stats") or []
+
+        output.extend(render_pool_totals(
+            pool_data, quay_logical_bytes,
+            rgw_bucket_stats=_rgw_bucket_stats,
+            noobaa_targets=_noobaa_targets))
 
     output.extend(render_acm(acm_ns, acm_data, acm_pvc_usage))
     output.extend(render_summary(

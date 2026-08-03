@@ -2,13 +2,19 @@
 # Fix ACM Observability when Thanos S3 storage is full.
 #
 # What it does:
-#   1. Scales down all Thanos/observability writers to stop ingestion
-#   2. Purges the existing bucket (drops all metrics)
-#   3. Recreates a clean empty bucket
-#   4. Patches the thanos-object-storage secret with valid credentials
-#   5. Restarts all observability pods cleanly
+#   1. Checks Ceph health, raises full ratios if cluster is full, boosts recovery speed
+#   2. Scales down all Thanos/observability writers to stop ingestion
+#   3. Fetches RGW credentials (OBC or prometheus-user)
+#   4. Purges the existing RGW bucket (drops all metrics) + RGW garbage collection
+#   5. Checks NooBaa DB for orphaned dedup blocks from deleted NooBaa buckets
+#   6. Deletes observability PVCs to free block storage
+#   7. Recreates a clean empty bucket + patches thanos-object-storage secret
+#   8. Restarts all observability pods cleanly, resets Ceph recovery speed
 #
 # WARNING: This DESTROYS all historical Thanos metrics.
+#
+# NOTE: For Quay NooBaa bucket cleanup (orphaned sha256 blobs and stale
+# upload objects from Ceph-full incidents), use quay-s3-gc.sh instead.
 #
 # Usage: KUBECONFIG=/path/to/kubeconfig ./bfg-acm-thanos-s3.sh
 set -euo pipefail
@@ -40,16 +46,40 @@ echo ""
 read -p "This will DELETE all Thanos metrics and recreate the bucket. Continue? [y/N] " CONFIRM
 [[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
 
-# --- Step 1: Check Ceph health ---
+# --- Step 1: Check Ceph health and unblock if full ---
 echo ""
-echo "=== [1/6] Checking Ceph cluster health ==="
+echo "=== [1/8] Checking Ceph cluster health ==="
 oc exec -n "$NS_STOR" "$TOOLS" -- ceph status 2>&1 | head -20 || true
 echo ""
 oc exec -n "$NS_STOR" "$TOOLS" -- ceph df 2>&1 | head -15 || true
 echo ""
 
+# If any OSDs are full/backfillfull, temporarily raise ratios to unblock I/O
+CEPH_HEALTH=$(oc exec -n "$NS_STOR" "$TOOLS" -- ceph health 2>/dev/null || true)
+if echo "$CEPH_HEALTH" | grep -qiE "full osd|pool.*full"; then
+  echo "  WARNING: Ceph cluster has full OSDs/pools — raising ratios temporarily"
+  echo "  Saving current ratios..."
+  ORIG_FULL=$(oc exec -n "$NS_STOR" "$TOOLS" -- ceph osd dump 2>/dev/null | awk '/^full_ratio/{print $2}' || true)
+  ORIG_BACKFILL=$(oc exec -n "$NS_STOR" "$TOOLS" -- ceph osd dump 2>/dev/null | awk '/^backfillfull_ratio/{print $2}' || true)
+  ORIG_NEAR=$(oc exec -n "$NS_STOR" "$TOOLS" -- ceph osd dump 2>/dev/null | awk '/^nearfull_ratio/{print $2}' || true)
+  echo "  Current: full=$ORIG_FULL backfillfull=$ORIG_BACKFILL nearfull=$ORIG_NEAR"
+  oc exec -n "$NS_STOR" "$TOOLS" -- ceph osd set-full-ratio 0.95 2>&1 || true
+  oc exec -n "$NS_STOR" "$TOOLS" -- ceph osd set-backfillfull-ratio 0.92 2>&1 || true
+  oc exec -n "$NS_STOR" "$TOOLS" -- ceph osd set-nearfull-ratio 0.90 2>&1 || true
+  echo "  Ratios raised to 0.95/0.92/0.90 — I/O should be unblocked."
+  echo ""
+fi
+
+# Speed up Ceph recovery for the duration of this cleanup
+echo "  Boosting Ceph recovery speed (temporary)..."
+oc exec -n "$NS_STOR" "$TOOLS" -- ceph config set osd osd_mclock_override_recovery_settings true 2>&1 || true
+oc exec -n "$NS_STOR" "$TOOLS" -- ceph config set osd osd_recovery_max_active 16 2>&1 || true
+oc exec -n "$NS_STOR" "$TOOLS" -- ceph config set osd osd_max_backfills 8 2>&1 || true
+CEPH_RECOVERY_BOOSTED=true
+echo ""
+
 # --- Step 2: Scale down writers to stop filling storage ---
-echo "=== [2/6] Scaling down Thanos writers ==="
+echo "=== [2/8] Scaling down Thanos writers ==="
 # Stop thanos-receive and thanos-compact to prevent new writes
 for COMP in receive compact rule store-gateway; do
   DEPLOY=$(oc get deploy,statefulset -n "$NS_OBS" -o name 2>/dev/null | grep -i "thanos.*${COMP}" || true)
@@ -68,7 +98,7 @@ sleep 10
 
 # --- Step 3: Get credentials (prometheus-user or OBC user) ---
 echo ""
-echo "=== [3/6] Fetching RGW credentials ==="
+echo "=== [3/8] Fetching RGW credentials ==="
 
 # Try to get the OBC-generated user first
 OBC_SECRET=$(oc get obc "$OBC_NAME" -n "$NS_OBS" -o jsonpath='{.spec.secretName}' 2>/dev/null || true)
@@ -150,7 +180,7 @@ echo "  Access Key: $AK"
 
 # --- Step 4: Identify and purge the bucket ---
 echo ""
-echo "=== [4/6] Purging existing bucket ==="
+echo "=== [4/8] Purging existing bucket ==="
 
 BUCKET=$(oc get secret thanos-object-storage -n "$NS_OBS" \
   -o jsonpath='{.data.thanos\.yaml}' 2>/dev/null | base64 -d | awk '/bucket:/{print $2}' || true)
@@ -196,9 +226,65 @@ oc exec -n "$NS_STOR" "$TOOLS" -- radosgw-admin gc process --rgw-realm="$REALM" 
 oc exec -n "$NS_STOR" "$TOOLS" -- radosgw-admin gc process 2>&1 || true
 echo "  GC processed."
 
-# --- Step 5: Delete observability PVCs (free block storage) ---
+# --- Step 4b: Verify no orphaned NooBaa blocks remain ---
+# When Thanos was stored via NooBaa (OBC with openshift-storage.noobaa.io),
+# the RGW purge above only cleans the direct RGW bucket. NooBaa dedup blocks
+# live in a separate backing bucket. Query the NooBaa DB to check for orphans.
 echo ""
-echo "=== [5/7] Deleting observability PVCs ==="
+echo "=== [5/8] Checking NooBaa for orphaned blocks ==="
+
+NOOBAA_CORE=$(oc get pods -n "$NS_STOR" -l noobaa-core=noobaa \
+  -o name 2>/dev/null | head -1)
+NOOBAA_DB=$(oc get pods -n "$NS_STOR" -l noobaa-db=noobaa \
+  -o name 2>/dev/null | head -1)
+
+if [ -n "$NOOBAA_DB" ]; then
+  # Check which NooBaa buckets own blocks, and whether any are orphaned
+  echo "  Querying NooBaa DB for block ownership..."
+  BLOCK_OWNERS=$(oc exec -n "$NS_STOR" "$NOOBAA_DB" -- \
+    psql -U noobaa -d nbcore -t -c "
+      SELECT b.data->>'bucket' AS bucket_id,
+             COALESCE(bkt.data->>'name', '<DELETED>') AS bucket_name,
+             COUNT(*) AS blocks,
+             pg_size_pretty(SUM((b.data->>'size')::bigint)) AS total_size
+      FROM datablocks b
+      LEFT JOIN buckets bkt ON bkt.data->>'_id' = b.data->>'bucket'
+      GROUP BY b.data->>'bucket', bkt.data->>'name'
+      ORDER BY blocks DESC;
+    " 2>/dev/null || true)
+  echo "$BLOCK_OWNERS" | while read -r line; do
+    [ -n "$line" ] && echo "    $line"
+  done
+
+  # Check for deleted-but-not-reclaimed blocks (pending GC)
+  PENDING_GC=$(oc exec -n "$NS_STOR" "$NOOBAA_DB" -- \
+    psql -U noobaa -d nbcore -t -c "
+      SELECT COUNT(*) AS blocks,
+             pg_size_pretty(COALESCE(SUM((data->>'size')::bigint),0)) AS size
+      FROM datablocks
+      WHERE data ? 'deleted' AND NOT data ? 'reclaimed';
+    " 2>/dev/null || true)
+  echo "  Deleted blocks pending reclaim: $PENDING_GC"
+
+  # If any blocks point to a <DELETED> bucket, they are true orphans.
+  # The NooBaa blocks_reclaimer should clean these, but if Ceph was full
+  # it may have been blocked. Restart NooBaa core to trigger a fresh sweep.
+  if echo "$BLOCK_OWNERS" | grep -q '<DELETED>'; then
+    echo ""
+    echo "  WARNING: Found orphaned blocks belonging to deleted NooBaa buckets!"
+    echo "  Restarting NooBaa core to trigger blocks reclaimer sweep..."
+    oc delete pod -n "$NS_STOR" -l noobaa-core=noobaa --wait=false 2>/dev/null || true
+    echo "  Monitor with: oc logs -n $NS_STOR -l noobaa-core=noobaa -c core -f | grep -i reclaim"
+  else
+    echo "  No orphaned NooBaa blocks found — all blocks belong to active buckets."
+  fi
+else
+  echo "  NooBaa DB pod not found, skipping orphan check."
+fi
+
+# --- Step 6: Delete observability PVCs (free block storage) ---
+echo ""
+echo "=== [6/8] Deleting observability PVCs ==="
 echo "  Current PVCs:"
 oc get pvc -n "$NS_OBS" --no-headers 2>/dev/null | awk '{printf "    %-60s %s\n", $1, $4}' || true
 echo ""
@@ -206,9 +292,9 @@ echo "  Deleting all PVCs in $NS_OBS..."
 oc delete pvc --all -n "$NS_OBS" --wait=false 2>/dev/null || true
 echo "  PVCs marked for deletion (Ceph will reclaim space shortly)."
 
-# --- Step 6: Create fresh bucket and patch secret ---
+# --- Step 7: Create fresh bucket and patch secret ---
 echo ""
-echo "=== [6/7] Creating fresh bucket and patching secret ==="
+echo "=== [7/8] Creating fresh bucket and patching secret ==="
 
 NEW_BUCKET="${OBC_NAME}-$(date +%Y%m%d-%H%M%S)"
 echo "  New bucket: $NEW_BUCKET"
@@ -259,9 +345,9 @@ else
 fi
 echo "  Secret updated."
 
-# --- Step 7: Restart all observability components ---
+# --- Step 8: Restart all observability components ---
 echo ""
-echo "=== [7/7] Restarting observability stack ==="
+echo "=== [8/8] Restarting observability stack ==="
 
 # Delete the OBC and recreate so the operator reconciles
 oc delete obc "$OBC_NAME" -n "$NS_OBS" --ignore-not-found 2>/dev/null || true
@@ -279,6 +365,19 @@ echo "=== Verifying Ceph space freed ==="
 sleep 5
 oc exec -n "$NS_STOR" "$TOOLS" -- ceph df 2>&1 | head -10 || true
 
+# Reset Ceph recovery speed to defaults
+if [ "${CEPH_RECOVERY_BOOSTED:-}" = "true" ]; then
+  echo ""
+  echo "=== Resetting Ceph recovery speed to defaults ==="
+  oc exec -n "$NS_STOR" "$TOOLS" -- ceph config rm osd osd_mclock_override_recovery_settings 2>&1 || true
+  oc exec -n "$NS_STOR" "$TOOLS" -- ceph config rm osd osd_recovery_max_active 2>&1 || true
+  oc exec -n "$NS_STOR" "$TOOLS" -- ceph config rm osd osd_max_backfills 2>&1 || true
+  echo "  Recovery speed reset to defaults."
+fi
+
+# Archive any crash reports left behind
+oc exec -n "$NS_STOR" "$TOOLS" -- ceph crash archive-all 2>/dev/null || true
+
 echo ""
 echo "============================================="
 echo " DONE. All Thanos metrics have been purged."
@@ -286,4 +385,10 @@ echo " New bucket: $NEW_BUCKET"
 echo " Pods are restarting — check with:"
 echo "   oc get pods -n $NS_OBS"
 echo "   oc exec -n $NS_STOR $TOOLS -- ceph df"
+if [ -n "${ORIG_FULL:-}" ]; then
+echo ""
+echo " NOTE: Ceph full ratios were raised to 0.95/0.92/0.90."
+echo " ODF operator may reconcile them. Original values were:"
+echo "   full=$ORIG_FULL backfillfull=$ORIG_BACKFILL nearfull=$ORIG_NEAR"
+fi
 echo "============================================="
