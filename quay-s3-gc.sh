@@ -108,6 +108,17 @@ if [[ -z "$NOOBAA_POD" ]]; then
     exit 1
 fi
 
+# Verify NooBaa pod is Running and Ready
+NOOBAA_PHASE=$(oc get pod "$NOOBAA_POD" -n openshift-storage \
+    -o jsonpath='{.status.phase}' 2>/dev/null) || true
+NOOBAA_READY=$(oc get pod "$NOOBAA_POD" -n openshift-storage \
+    -o jsonpath='{.status.containerStatuses[?(@.name=="core")].ready}' 2>/dev/null) || true
+if [[ "$NOOBAA_PHASE" != "Running" || "$NOOBAA_READY" != "true" ]]; then
+    echo "(EE) NooBaa core pod $NOOBAA_POD is not ready (phase=$NOOBAA_PHASE, ready=$NOOBAA_READY)."
+    echo "    Wait for NooBaa to be healthy before running this script."
+    exit 1
+fi
+
 # Find the Quay OBC and its bucket name
 QUAY_OBC=$(oc get obc -n "$QUAY_NS" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) || true
 if [[ -z "$QUAY_OBC" ]]; then
@@ -351,9 +362,16 @@ TOTAL_TO_DELETE=$(wc -l < "$DELETE_KEYS")
 echo "  Deleting $ORPHAN_COUNT orphaned sha256 blobs + $S3_UPLOAD_COUNT stale uploads..."
 echo ""
 
-# Process in batches
-while IFS= read -r batch; do
-    BATCH_JSON=$(echo "$batch" | python3 -c "
+# Process in batches — read BATCH_SIZE lines at a time
+while true; do
+    BATCH_LINES=()
+    for (( i=0; i<BATCH_SIZE; i++ )); do
+        IFS= read -r line || break
+        [[ -n "$line" ]] && BATCH_LINES+=("$line")
+    done
+    [[ ${#BATCH_LINES[@]} -eq 0 ]] && break
+
+    BATCH_JSON=$(printf '%s\n' "${BATCH_LINES[@]}" | python3 -c "
 import sys, json
 keys = [line.strip() for line in sys.stdin if line.strip()]
 print(json.dumps(keys))
@@ -400,7 +418,7 @@ print(f'BATCH_RESULT ok={ok} fail={fail}')
     FAILED=$((FAILED + ${batch_fail:-0}))
     echo "  Progress: $DELETED / $TOTAL_TO_DELETE deleted ($FAILED failures)"
 
-done < <(split -l "$BATCH_SIZE" --filter='cat' "$DELETE_KEYS")
+done < "$DELETE_KEYS"
 
 echo ""
 echo "  =========================================="
