@@ -11,6 +11,7 @@ A collection of system administration and diagnostic tools for Linux environment
 | **lshp** | List hugepages in use, showing processes and KVM guest names |
 | **lsthp** | List transparent hugepages usage by process |
 | **lskfds** | List killed (deleted) file descriptors preventing disk space recovery |
+| **lsinotify** | List inotify watches per process and map inodes to filesystem paths |
 | **lsNVMe.py** | NVMe device health and temperature monitor with SMART attributes |
 | **lsPCISpeeds.py** | PCI device speed analyzer showing max/negotiated speeds and lane config |
 | **megaclisas-status** | LSI MegaRAID SAS controller status checker |
@@ -99,6 +100,13 @@ A collection of system administration and diagnostic tools for Linux environment
 # File descriptor analysis
 ./lsfd -t 80               # Show processes using >80% of FD limit
 ./lskfds --size --sort     # Show killed FDs sorted by wasted space
+./lsinotify                # Show inotify instances/watches per process
+./lsinotify -p $(pgrep -x kubelet)
+./lsinotify -p $(pgrep lsyncd)   # whole-FS trees: counts only, no walk
+# OpenShift node (one file, stdlib only):
+#   scp lsinotify core@worker:
+#   ssh -t core@worker 'sudo python3 ./lsinotify -p $(pgrep -x kubelet)'
+#   sudo /usr/libexec/platform-python ./lsinotify   # RHCOS fallback
 
 # System monitoring
 ./CPU_temp.py --by-socket  # Group temperature by CPU socket
