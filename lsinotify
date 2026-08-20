@@ -7,6 +7,8 @@
 #   ssh -t core@worker 'sudo python3 ./lsinotify -p $(pgrep -x kubelet)'
 # RHCOS/RHEL if python3 is not in PATH:
 #   sudo /usr/libexec/platform-python ./lsinotify -p $(pgrep -x kubelet)
+# RHEL 7: python3 or python36 from the extras/SCL python36 package:
+#   sudo python36 ./lsinotify -p $(pgrep lsyncd)
 
 import argparse
 import ctypes
@@ -110,6 +112,17 @@ def decode_mask(mask: int) -> str:
 def decode_sdev(sdev: int) -> Tuple[int, int]:
     """Decode fdinfo sdev (kernel dev_t: major<<20 | minor)."""
     return sdev >> 20, sdev & 0xFFFFF
+
+
+def detect_wd_base(lines) -> int:
+    """Older kernels print wd in decimal (%d); current ones use hex (wd:d)."""
+    for line in lines:
+        if not line.startswith('inotify '):
+            continue
+        m = re.match(r'^inotify wd:([0-9a-fA-F]+)', line)
+        if m and re.search(r'[a-fA-F]', m.group(1)):
+            return 16
+    return 10
 
 
 def unescape_mount(path: str) -> str:
@@ -271,7 +284,7 @@ class InotifyLister:
             return []
         return sorted(fds)
 
-    def parse_watch_line(self, line: str) -> Optional[dict]:
+    def parse_watch_line(self, line: str, wd_base: int = 16) -> Optional[dict]:
         m = WATCH_RE.match(line.strip())
         if not m:
             return None
@@ -279,7 +292,7 @@ class InotifyLister:
         sdev = int(sdev_h, 16)
         major, minor = decode_sdev(sdev)
         watch = {
-            'wd': int(wd, 16),
+            'wd': int(wd, wd_base),
             'wd_hex': wd.lower(),
             'ino': int(ino_h, 16),
             'ino_hex': ino_h.lower(),
@@ -304,21 +317,25 @@ class InotifyLister:
         path = f'/proc/{pid}/fdinfo/{fd}'
         try:
             with open(path, 'r') as f:
-                for line in f:
-                    if not line.startswith('inotify '):
-                        continue
-                    if skip_devs:
-                        m = SDEV_RE.match(line)
-                        if m:
-                            major, minor = decode_sdev(int(m.group(1), 16))
-                            if (major, minor) in skip_devs:
-                                continue
-                    w = self.parse_watch_line(line)
-                    if w:
-                        w['fd'] = fd
-                        watches.append(w)
+                lines = f.readlines()
         except OSError as e:
             self.debug_print(f'cannot read {path}: {e}')
+            return watches
+
+        wd_base = detect_wd_base(lines)
+        for line in lines:
+            if not line.startswith('inotify '):
+                continue
+            if skip_devs:
+                m = SDEV_RE.match(line)
+                if m:
+                    major, minor = decode_sdev(int(m.group(1), 16))
+                    if (major, minor) in skip_devs:
+                        continue
+            w = self.parse_watch_line(line, wd_base=wd_base)
+            if w:
+                w['fd'] = fd
+                watches.append(w)
         return watches
 
     def summarize_fdinfo(self, pid: int, fd: int) -> Tuple[int, dict]:
@@ -1042,8 +1059,11 @@ Copy to an OpenShift node (stdlib only; sudo as core -> root):
   scp lsinotify core@<node>:
   ssh -t core@<node> 'sudo python3 ./lsinotify'
   ssh -t core@<node> 'sudo python3 ./lsinotify -p $(pgrep -x kubelet)'
-  # RHCOS / RHEL 8 without python3 in PATH:
+  # RHCOS / RHEL 8+ without python3 in PATH:
   sudo /usr/libexec/platform-python ./lsinotify -p $(pgrep -x kubelet)
+  # RHEL 7 (python3 or python36 from extras / SCL):
+  sudo python3 ./lsinotify
+  sudo python36 ./lsinotify -p $(pgrep lsyncd)
         """
     )
 
