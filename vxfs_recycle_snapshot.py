@@ -8,12 +8,16 @@ It's useful for testing VXFS snapshot functionality.
 Author: Converted from bash script
 """
 
-# $Id: vxfs_recycle_snapshot.py,v 1.01 2025/09/02 18:20:00 python-conversion Exp $
-__version__ = "vxfs_recycle_snapshot.py,v 1.01 2025/09/02 18:20:00 python-conversion Exp"
+# $Id: vxfs_recycle_snapshot.py,v 1.02 2026/08/22 12:06:00 python-conversion Exp $
+__version__ = "vxfs_recycle_snapshot.py,v 1.02 2026/08/22 12:06:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.02 (2026-08-22): InfoScale 9.2.1 snapshot teardown
+#   - vxsnap unprepare now uses -f to remove v30 DCO/DRL
+#   - Fail closed if vxsnap make does not create the snapshot device
 #
 # v1.01 (2025-09-02): Version synchronization with rsync_KVM_OS.py
 #   - Bumped version to match main rsync_KVM_OS.py script
@@ -147,15 +151,20 @@ class VXFSSnapshotRecycler:
             raise
 
     def create_snapshot(self, vxdg, vxlv, vxsnap_lv):
-        """Create VXFS snapshot - no error handling like bash script."""
-        # Prepare volume - let it fail naturally
+        """Create VXFS snapshot. Returns False if make did not create the volume."""
         self.run_command(['vxsnap', '-g', vxdg, 'prepare', vxlv], capture_output=False)
 
-        # Create snapshot - let it fail naturally  
-        self.run_command([
+        result = self.run_command([
             'vxsnap', '-g', vxdg, 'make',
             f'source={vxlv}/newvol={vxsnap_lv}/{self.vxsnap_opts}'
         ], capture_output=False)
+        if getattr(result, 'returncode', 0) != 0:
+            return False
+        snapdev = f'/dev/vx/dsk/{vxdg}/{vxsnap_lv}'
+        if not self.debug and not os.path.exists(snapdev):
+            logger.error(f"Snapshot device {snapdev} was not created")
+            return False
+        return True
 
     def mount_snapshot(self, vxdg, vxsnap_lv, vxsnap_mnt):
         """Mount the VXFS snapshot - no error handling like bash script."""
@@ -202,7 +211,7 @@ class VXFSSnapshotRecycler:
         self.run_command(['vxedit', '-g', vxdg, '-fr', 'rm', vxsnap_lv], capture_output=False)
 
         # Unprepare volume - let it fail naturally
-        self.run_command(['vxsnap', '-g', vxdg, 'unprepare', vxlv], capture_output=False)
+        self.run_command(['vxsnap', '-g', vxdg, '-f', 'unprepare', vxlv], capture_output=False)
 
     def run_test(self):
         """Run the complete snapshot test cycle - no error handling like bash script."""
@@ -238,8 +247,13 @@ class VXFSSnapshotRecycler:
             logger.error(f"Failed to get VXFS info: {e}")
             return 1
 
-        # Run all commands like bash script - no error handling
-        self.create_snapshot(vxdg, vxlv, vxsnap_lv)
+        if not self.create_snapshot(vxdg, vxlv, vxsnap_lv):
+            self.run_command(
+                ['vxsnap', '-g', vxdg, '-f', 'unprepare', vxlv],
+                capture_output=False
+            )
+            return 1
+
         self.mount_snapshot(vxdg, vxsnap_lv, vxsnap_mnt)
         self.cleanup_snapshot(vxdg, vxlv, vxsnap_lv, vxsnap_mnt)
 

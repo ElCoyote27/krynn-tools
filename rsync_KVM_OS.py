@@ -10,12 +10,16 @@ hypervisor-specific configurations.
 Author: Vincent S. Cojot
 """
 
-# $Id: rsync_KVM_OS.py,v 1.20 2026/07/25 08:41:44 root Exp root $
-__version__ = "rsync_KVM_OS.py,v 1.19 2026/06/27 02:00:00 python-conversion Exp"
+# $Id: rsync_KVM_OS.py,v 1.21 2026/08/22 10:24:05 root Exp root $
+__version__ = "rsync_KVM_OS.py,v 1.21 2026/08/22 12:06:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.21 (2026-08-22): InfoScale 9.2.1 snapshot teardown
+#   - vxsnap unprepare now uses -f to remove v30 DCO/DRL
+#   - Fail closed if vxsnap make does not create the snapshot device
 #
 # v1.18 (2026-01-29): Ignore emulator path differences in XML comparison
 #   - Added emulator path normalization to normalize_xml_content()
@@ -1206,10 +1210,27 @@ done'''
             # Try to prepare volume - it's OK if it's already prepared
             self.run_command(['vxsnap', '-g', vxdg, 'prepare', vxlv], check=False)
 
-            # Try to create snapshot - it's OK if it already exists
-            self.run_command(['vxsnap', '-g', vxdg, 'make', 
-                             f'source={vxlv}/newvol={vxsnap_lv}/{self.vxsnap_opts}'], 
-                             check=False)
+            make_result = self.run_command(
+                ['vxsnap', '-g', vxdg, 'make',
+                 f'source={vxlv}/newvol={vxsnap_lv}/{self.vxsnap_opts}'],
+                check=False
+            )
+            if getattr(make_result, 'returncode', 0) != 0:
+                err = (getattr(make_result, 'stderr', None) or
+                       getattr(make_result, 'stdout', None) or '').strip()
+                logger.error(f"vxsnap make failed: {err}")
+                self.run_command(
+                    ['vxsnap', '-g', vxdg, '-f', 'unprepare', vxlv], check=False
+                )
+                return None
+
+            snapdev = f'/dev/vx/dsk/{vxdg}/{vxsnap_lv}'
+            if not os.path.exists(snapdev):
+                logger.error(f"Snapshot device {snapdev} was not created")
+                self.run_command(
+                    ['vxsnap', '-g', vxdg, '-f', 'unprepare', vxlv], check=False
+                )
+                return None
 
             # Create mount directory
             os.makedirs(vxsnap_mnt, exist_ok=True)
@@ -1249,23 +1270,27 @@ done'''
             return
 
         try:
-            # Check if mounted
             result = self.run_command(['findmnt', '-o', 'FSTYPE', vxsnap_mnt], check=False)
+            mounted = False
             if hasattr(result, 'returncode') and result.returncode == 0 and result.stdout.strip():
                 lines = result.stdout.strip().split('\n')
-                if len(lines) > 1:
-                    fs_type = lines[1].strip()
-                    if fs_type == 'vxfs':
-                        # Unmount
-                        result = self.run_command(['umount', vxsnap_mnt], check=False)
-                        if hasattr(result, 'returncode') and result.returncode == 0:
-                            logger.info(f"Destroying VXFS snapshot for {vxdg}/{vxlv}...")
-                            self.run_command(['vxsnap', '-g', vxdg, 'dis', vxsnap_lv])
-                            self.run_command(['vxedit', '-g', vxdg, '-fr', 'rm', vxsnap_lv])
-                            self.run_command(['vxsnap', '-g', vxdg, 'unprepare', vxlv])
-                        else:
-                            logger.warning(f"Failed umounting {vxsnap_mnt}, skipping snapshot deletion...")
-                # If not mounted or not vxfs, no cleanup needed
+                if len(lines) > 1 and lines[1].strip() == 'vxfs':
+                    mounted = True
+
+            if mounted:
+                umount_result = self.run_command(['umount', vxsnap_mnt], check=False)
+                if getattr(umount_result, 'returncode', 1) != 0:
+                    logger.warning(
+                        f"Failed umounting {vxsnap_mnt}, skipping snapshot deletion..."
+                    )
+                    return
+
+            logger.info(f"Destroying VXFS snapshot for {vxdg}/{vxlv}...")
+            self.run_command(['vxsnap', '-g', vxdg, 'dis', vxsnap_lv], check=False)
+            self.run_command(['vxedit', '-g', vxdg, '-fr', 'rm', vxsnap_lv], check=False)
+            self.run_command(
+                ['vxsnap', '-g', vxdg, '-f', 'unprepare', vxlv], check=False
+            )
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to destroy VXFS snapshot: {e}")
         except Exception as e:

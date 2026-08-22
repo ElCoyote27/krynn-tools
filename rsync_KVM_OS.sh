@@ -509,7 +509,12 @@ do
 					# Start snapshot process
 					echo "(II) Creating VXFS snapshot for ${VXDG}/${VXLV}..."
 					/usr/sbin/vxsnap -g ${VXDG} prepare ${VXLV}
-					/usr/sbin/vxsnap -g ${VXDG} make source=${VXLV}/newvol=${VXSNAP_LV}/${VXSNAP_OPTS}
+					if ! /usr/sbin/vxsnap -g ${VXDG} make source=${VXLV}/newvol=${VXSNAP_LV}/${VXSNAP_OPTS}
+					then
+						echo "(**) vxsnap make failed, unpreparing ${VXDG}/${VXLV}..."
+						/usr/sbin/vxsnap -g ${VXDG} -f unprepare ${VXLV}
+						exit 125
+					fi
 
 					# Create snapshot mount dir
 					if [[ ! -d ${VXSNAP_MNT} ]]; then
@@ -558,7 +563,7 @@ do
 						echo "(II) Destroying VXFS snapshot for ${VXDG}/${VXLV}..."
 						/usr/sbin/vxsnap -g ${VXDG} dis ${VXSNAP_LV}
 						/usr/sbin/vxedit -g ${VXDG} -fr rm ${VXSNAP_LV}
-						/usr/sbin/vxsnap -g ${VXDG} unprepare ${VXLV}
+						/usr/sbin/vxsnap -g ${VXDG} -f unprepare ${VXLV}
 					else
 						echo "(**) Failed umounting ${VXSNAP_MNT}, skipping snapshot deletion..."
 					fi
