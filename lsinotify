@@ -550,6 +550,15 @@ class InotifyLister:
                 pass
         return path
 
+    def display_path(self, pid: int, path: str) -> str:
+        """Strip /proc/<pid>/root and prefer the path the process sees."""
+        prefix = f'/proc/{pid}/root'
+        if path == prefix:
+            path = '/'
+        elif path.startswith(prefix + '/'):
+            path = path[len(prefix):]
+        return self.prefer_visible_path(pid, path)
+
     def cache_key(self, watch: dict) -> Tuple[int, int, int]:
         return (watch['major'], watch['minor'], watch['ino'])
 
@@ -906,32 +915,18 @@ class InotifyLister:
             print(f"    {'FD':>4}  {'WATCHES':>7}  DEVICE")
             for stt in fd_stats:
                 sdevs = stt.get('sdevs') or {}
-                if sdevs:
-                    parts = []
-                    for (maj, minr), n in sorted(sdevs.items(),
-                                                 key=lambda x: -x[1]):
-                        extra = ''
-                        if (maj, minr) in skip:
-                            extra = ' [skip]'
-                        parts.append(
-                            f'{n} on {self.describe_dev(pid, maj, minr)}'
-                            f'{extra}'
-                        )
-                    loc = '; '.join(parts)
-                else:
-                    loc = '(no watches)'
-                print(f"    {stt['fd']:4d}  {stt['watches']:7d}  {loc}")
+                if not sdevs:
+                    print(f"    {stt['fd']:4d}  {0:7d}  (no watches)")
+                    continue
+                for (maj, minr), n in sorted(sdevs.items(),
+                                             key=lambda x: -x[1]):
+                    extra = ''
+                    if (maj, minr) in skip:
+                        extra = ' [skip]'
+                    print(f"    {stt['fd']:4d}  {n:7d}  "
+                          f"{self.describe_dev(pid, maj, minr)}{extra}")
 
         watches = info.get('watch_list') or []
-        if skip:
-            print()
-            for maj, minr in sorted(skip,
-                                    key=lambda d: -info['sdev_counts'].get(d, 0)):
-                n = info['sdev_counts'].get((maj, minr), 0)
-                why = 'virtual FS' if (maj, minr) in virt else \
-                    'whole-FS / recursive tree'
-                print(f'  skipped {n} watches on '
-                      f'{self.describe_dev(pid, maj, minr)} ({why})')
 
         if not watches:
             return
@@ -946,6 +941,8 @@ class InotifyLister:
             if shown >= limit:
                 break
             path = w.get('path') or f"[ino=0x{w['ino_hex']} unresolved]"
+            if not path.startswith('[ino='):
+                path = self.display_path(pid, path)
             ftype = w.get('ftype') or '?'
             extra = ''
             if self.show_events:
