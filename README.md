@@ -12,6 +12,7 @@ A collection of system administration and diagnostic tools for Linux environment
 | **lsthp** | List transparent hugepages usage by process |
 | **lskfds** | List killed (deleted) file descriptors preventing disk space recovery |
 | **lsinotify** | List inotify watches per process and map inodes to filesystem paths |
+| **filewatch** | Watch a file or directory tree for reads/writes/metadata and dump caller's full process ancestry with cmdlines (eBPF) |
 | **lsNVMe.py** | NVMe device health and temperature monitor with SMART attributes |
 | **lsPCISpeeds.py** | PCI device speed analyzer showing max/negotiated speeds and lane config |
 | **megaclisas-status** | LSI MegaRAID SAS controller status checker |
@@ -107,6 +108,15 @@ A collection of system administration and diagnostic tools for Linux environment
 #   scp lsinotify core@worker:
 #   ssh -t core@worker 'sudo python3 ./lsinotify -p $(pgrep -x kubelet)'
 #   sudo /usr/libexec/platform-python ./lsinotify   # RHCOS fallback
+
+# File access tracing (requires python3-bcc, root)
+sudo ./filewatch /etc/fstab            # watch one file (writes)
+sudo ./filewatch /etc/                 # watch entire dir tree
+sudo ./filewatch -a /etc/fstab         # all: reads+writes+metadata
+sudo ./filewatch -rw /etc/             # reads+writes, whole tree
+sudo ./filewatch -m /etc/passwd        # metadata only (touch/chmod)
+sudo ./filewatch -w /etc/fstab -d 1.0  # debounce 1s per PID
+sudo ./filewatch -rw /etc/hosts -k     # include kernel stacks
 
 # System monitoring
 ./CPU_temp.py --by-socket  # Group temperature by CPU socket
