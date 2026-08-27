@@ -1,57 +1,41 @@
-#!/usr/bin/env python3
-# $Id: filewatch.py,v 1.4 2026/08/26 00:00:00 Exp $
-
-# Watch a specific file — or every file under a directory tree — for
-# VFS reads, writes, and/or metadata changes, then dump the full
-# process ancestry (with command lines) of whatever touched it.
+#!/usr/bin/python3
+# @lint-avoid-python-3-compatibility-imports
+#
+# filewatch    Watch a file or directory tree for VFS reads, writes,
+#              metadata changes, creation, and deletion, then dump
+#              the full process ancestry with command lines.
+#              For Linux, uses BCC, eBPF. Embedded C.
 #
 # Filesystem-agnostic: hooks the VFS layer, so it works on ext4,
 # btrfs, ZFS (OpenZFS), VxFS, XFS, tmpfs, NFS, ...
 #
-# Matches by inode+device — immune to bind mounts, hardlinks, and
+# Matches by inode+device -- immune to bind mounts, hardlinks, and
 # relative-path tricks.  When pointed at a directory, walks the
 # dentry parent chain in-kernel so files at any depth are caught.
 #
-# The caller's own cmdline is captured **inside the BPF probe**
+# The caller's own cmdline is captured inside the BPF probe
 # (via mm->arg_start), so even a short-lived "bash -c '...'" that
-# exits right after the I/O is fully recorded.  Parent processes are
-# enriched from /proc in userspace (they are long-lived: sshd,
-# systemd, ansible, crond, ...).
+# exits right after the I/O is fully recorded.  Parent processes
+# are enriched from /proc in userspace.
 #
-# Requires: python3-bcc (or bcc-tools), root, kernel >= 5.12
-# Install:  dnf install python3-bcc      (Fedora/RHEL)
-#           apt install python3-bpfcc     (Debian/Ubuntu)
+# USAGE: filewatch [-h] [-r] [-w] [-m] [-c] [-u] [-a] [-k]
+#                  [-d SEC] [--ebpf] path
 #
-# Usage:
-#   sudo ./filewatch /etc/fstab           # watch one file (writes)
-#   sudo ./filewatch /etc/                # watch entire dir tree
-#   sudo ./filewatch -rw /etc/            # reads + writes, tree
-#   sudo ./filewatch -r  /etc/shadow      # reads only, one file
-#   sudo ./filewatch -m  /etc/passwd      # metadata (touch/chmod/…)
-#   sudo ./filewatch -c  /tmp/            # creation only (dir)
-#   sudo ./filewatch -u  /etc/hosts       # unlink only (file)
-#   sudo ./filewatch -a  /etc/            # all: r+w+m+c+u
-#   sudo ./filewatch -w  /path -d 1.0     # writes, debounce 1s
-#   sudo ./filewatch -rwk /etc/hosts      # include kernel stacks
+# Copyright (c) 2026 Vincent S. Cojot.
+# Licensed under the Apache License, Version 2.0 (the "License")
+#
+# 26-Aug-2026   Vincent S. Cojot   Created this.
 
+from __future__ import print_function
+from bcc import BPF
 import argparse
 import ctypes as ct
 import os
 import pwd
 import re
-import signal
 import stat
 import sys
 import time
-
-try:
-    from bcc import BPF
-except ImportError:
-    sys.exit(
-        "error: python3-bcc is required.\n"
-        "  Fedora/RHEL:    dnf install python3-bcc\n"
-        "  Debian/Ubuntu:  apt install python3-bpfcc"
-    )
 
 MAX_ANCESTORS = 20
 MAX_DIR_DEPTH = 24
@@ -59,7 +43,7 @@ MAX_PATH_COMP = 8
 PATH_COMP_LEN = 48
 
 # ── BPF C program ───────────────────────────────────────────────────
-BPF_PROGRAM = r"""
+bpf_text = r"""
 #include <uapi/linux/ptrace.h>
 #include <linux/build_bug.h>
 
@@ -179,7 +163,7 @@ fill_event(struct event_t *event, struct dentry *de, u8 op)
         }
     }
 
-    /* --- walk dentry chain for full path (child → root) ---------- */
+    /* --- walk dentry chain for full path (child -> root) ---------- */
     struct dentry *_walk = de;
     int _wdone = 0;
     #pragma unroll
@@ -330,7 +314,7 @@ do_trace_lifecycle(struct pt_regs *ctx, struct dentry *dentry, u8 op)
     return 0;
 }
 
-/* ── create probe (security_inode_create: stable args on all kernels) */
+/* ── create probe (security_inode_create) ─────────────────────────── */
 
 int trace_security_create(struct pt_regs *ctx)
 {
@@ -339,7 +323,7 @@ int trace_security_create(struct pt_regs *ctx)
     return do_trace_lifecycle(ctx, dentry, OP_CREATE);
 }
 
-/* ── delete probe (security_inode_unlink: stable args on all kernels) */
+/* ── delete probe (security_inode_unlink) ─────────────────────────── */
 
 int trace_security_unlink(struct pt_regs *ctx)
 {
@@ -348,7 +332,7 @@ int trace_security_unlink(struct pt_regs *ctx)
     return do_trace_lifecycle(ctx, dentry, OP_DELETE);
 }
 
-/* ── mkdir probe (security_inode_mkdir: same signature as create) ── */
+/* ── mkdir probe (security_inode_mkdir) ───────────────────────────── */
 
 int trace_security_mkdir(struct pt_regs *ctx)
 {
@@ -357,7 +341,7 @@ int trace_security_mkdir(struct pt_regs *ctx)
     return do_trace_lifecycle(ctx, dentry, OP_CREATE);
 }
 
-/* ── rmdir probe (security_inode_rmdir: same signature as unlink) ── */
+/* ── rmdir probe (security_inode_rmdir) ───────────────────────────── */
 
 int trace_security_rmdir(struct pt_regs *ctx)
 {
@@ -408,7 +392,7 @@ MATCH_FILE_CREATE = r"""
 """
 
 MATCH_DIR_CREATE = r"""
-    /* For creation, dentry->d_inode is NULL — walk from parent. */
+    /* For creation, dentry->d_inode is NULL -- walk from parent. */
     struct dentry *_parent = dentry->d_parent;
     if (!_parent) return 0;
     dev_t _dev = _parent->d_inode->i_sb->s_dev;
@@ -445,8 +429,20 @@ OP_LABEL = {
 
 TASK_COMM_LEN = 16
 
+ATTR_FLAGS = [
+    (0x0001, "MODE"),       # chmod
+    (0x0002, "UID"),        # chown
+    (0x0004, "GID"),        # chgrp
+    (0x0008, "SIZE"),       # truncate
+    (0x0010, "ATIME"),      # access time
+    (0x0020, "MTIME"),      # modification time
+    (0x0040, "CTIME"),      # change time
+    (0x0080, "ATIME_SET"),  # utimes (explicit)
+    (0x0100, "MTIME_SET"),  # utimes (explicit)
+]
 
-# Manual ctypes layout — BCC can't auto-detect struct arrays.
+
+# Manual ctypes layout -- BCC can't auto-detect struct arrays.
 class AncestorT(ct.Structure):
     _fields_ = [
         ("tgid", ct.c_uint32),
@@ -473,18 +469,6 @@ class EventT(ct.Structure):
                             * MAX_PATH_COMP),
     ]
 
-ATTR_FLAGS = [
-    (0x0001, "MODE"),       # chmod
-    (0x0002, "UID"),        # chown
-    (0x0004, "GID"),        # chgrp
-    (0x0008, "SIZE"),       # truncate
-    (0x0010, "ATIME"),      # access time
-    (0x0020, "MTIME"),      # modification time
-    (0x0040, "CTIME"),      # change time
-    (0x0080, "ATIME_SET"),  # utimes (explicit)
-    (0x0100, "MTIME_SET"),  # utimes (explicit)
-]
-
 
 # ── helpers ─────────────────────────────────────────────────────────
 def _kernel_version():
@@ -494,12 +478,16 @@ def _kernel_version():
 
 
 def _resolve_sb_dev(path):
-    """Return (major, minor) of the superblock device for *path*.
+    """Return (major, minor, mount_point) for the superblock of *path*.
 
     Filesystems like btrfs and ZFS override stat()->st_dev to a
     per-subvolume anonymous device, which differs from the kernel's
     i_sb->s_dev.  /proc/self/mountinfo always reports s_dev, so we
     parse that to get the value the BPF probe will see.
+
+    mount_point is returned so that dentry-based paths (which are
+    relative to the filesystem root) can be prefixed to form the
+    real absolute path.
     """
     abs_path = os.path.realpath(path)
     best_mount = ""
@@ -525,7 +513,7 @@ def _resolve_sb_dev(path):
         st = os.stat(path)
         best_major = os.major(st.st_dev)
         best_minor = os.minor(st.st_dev)
-    return best_major, best_minor
+    return best_major, best_minor, best_mount
 
 
 def decode_ia_valid(val):
@@ -563,16 +551,14 @@ def uid_to_name(uid):
 
 def build_bpf(target_ino, target_dev, dir_mode, want_stacks):
     """Substitute placeholders in the BPF C source."""
-    src = BPF_PROGRAM
+    src = bpf_text
 
     src = src.replace("MAXANC_PLACEHOLDER", str(MAX_ANCESTORS))
     src = src.replace("MAXDIRDEPTH_PLACEHOLDER", str(MAX_DIR_DEPTH))
 
-    # Target inode/dev in top-level source (notify_change etc.)
     src = src.replace("TARGET_INO_PLACEHOLDER", str(target_ino))
     src = src.replace("TARGET_DEV_PLACEHOLDER", str(target_dev))
 
-    # Match-check fragment (read/write/meta/delete)
     match_code = MATCH_DIR if dir_mode else MATCH_FILE
     match_code = match_code.replace(
         "TARGET_INO_PLACEHOLDER", str(target_ino))
@@ -580,7 +566,6 @@ def build_bpf(target_ino, target_dev, dir_mode, want_stacks):
         "TARGET_DEV_PLACEHOLDER", str(target_dev))
     src = src.replace("MATCH_CHECK_PLACEHOLDER", match_code)
 
-    # Match-check fragment (create — dentry has no inode yet)
     match_create = MATCH_DIR_CREATE if dir_mode else MATCH_FILE_CREATE
     match_create = match_create.replace(
         "TARGET_INO_PLACEHOLDER", str(target_ino))
@@ -588,22 +573,18 @@ def build_bpf(target_ino, target_dev, dir_mode, want_stacks):
         "TARGET_DEV_PLACEHOLDER", str(target_dev))
     src = src.replace("MATCH_CREATE_CHECK_PLACEHOLDER", match_create)
 
-    # notify_change argument positions (varies by kernel version)
     kver = _kernel_version()
     if kver >= (5, 12):
-        # arg0 = mnt_idmap/mnt_userns, arg1 = dentry, arg2 = iattr
         src = src.replace("NOTIFY_PARM_DENTRY_PLACEHOLDER",
                           "PT_REGS_PARM2")
         src = src.replace("NOTIFY_PARM_ATTR_PLACEHOLDER",
                           "PT_REGS_PARM3")
     else:
-        # arg0 = dentry, arg1 = iattr
         src = src.replace("NOTIFY_PARM_DENTRY_PLACEHOLDER",
                           "PT_REGS_PARM1")
         src = src.replace("NOTIFY_PARM_ATTR_PLACEHOLDER",
                           "PT_REGS_PARM2")
 
-    # Kernel stack capture
     if want_stacks:
         src = src.replace(
             "STACK_TABLE_PLACEHOLDER",
@@ -619,366 +600,331 @@ def build_bpf(target_ino, target_dev, dir_mode, want_stacks):
     return src
 
 
-# ── main ────────────────────────────────────────────────────────────
-def main():
-    parser = argparse.ArgumentParser(
-        description=(
-            "Watch a file (or directory tree) for VFS reads, writes, "
-            "and/or metadata changes, then dump the full process "
-            "ancestry with command lines.  Works on any filesystem "
-            "(ext4, btrfs, ZFS, VxFS, XFS, NFS, ...)."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "examples:\n"
-            "  sudo ./filewatch /etc/fstab        "
-            "# watch one file, writes\n"
-            "  sudo ./filewatch /etc/             "
-            "# watch entire /etc/ tree\n"
-            "  sudo ./filewatch -rw /etc/         "
-            "# reads + writes, tree\n"
-            "  sudo ./filewatch -r /etc/shadow    "
-            "# reads only, one file\n"
-            "  sudo ./filewatch -m /etc/passwd    "
-            "# metadata (touch/chmod/…)\n"
-            "  sudo ./filewatch -c /tmp/          "
-            "# creation only (dir mode)\n"
-            "  sudo ./filewatch -u /etc/hosts     "
-            "# unlink only\n"
-            "  sudo ./filewatch -a /etc/          "
-            "# all: r+w+m+create+unlink\n"
-            "  sudo ./filewatch -w /path -d 1.0   "
-            "# writes, debounce 1s\n"
-            "  sudo ./filewatch -rwk /etc/hosts   "
-            "# include kernel stacks\n"
-        ),
-    )
-    parser.add_argument(
-        "path",
-        help="file or directory to watch (directories are recursive)")
-    parser.add_argument(
-        "-r", "--reads", action="store_true",
-        help="trace reads (vfs_read / vfs_readv)")
-    parser.add_argument(
-        "-w", "--writes", action="store_true",
-        help="trace writes (vfs_write / vfs_writev)")
-    parser.add_argument(
-        "-m", "--meta", action="store_true",
-        help="trace metadata changes: touch, chmod, chown, truncate "
-             "(notify_change)")
-    parser.add_argument(
-        "-c", "--create", action="store_true",
-        help="trace file creation (directory mode only)")
-    parser.add_argument(
-        "-u", "--unlink", action="store_true",
-        help="trace file deletion (unlink)")
-    parser.add_argument(
-        "-a", "--all", action="store_true",
-        help="trace everything: reads + writes + metadata "
-             "+ create + unlink")
-    parser.add_argument(
-        "-d", "--debounce", type=float, default=0.0, metavar="SEC",
-        help="minimum seconds between reports for same PID+op "
-             "(default: 0 = every event)")
-    parser.add_argument(
-        "-k", "--kstack", action="store_true",
-        help="capture and display kernel stack traces")
-    parser.add_argument(
-        "--debug", action="store_true",
-        help="print BPF compilation diagnostics")
-    args = parser.parse_args()
+# ── argument parsing ────────────────────────────────────────────────
+examples = """examples:
+    ./filewatch /etc/fstab            # watch one file (writes)
+    ./filewatch /etc/                 # watch entire /etc/ tree
+    ./filewatch -rw /etc/             # reads + writes, tree
+    ./filewatch -r  /etc/shadow       # reads only, one file
+    ./filewatch -m  /etc/passwd       # metadata (touch/chmod/...)
+    ./filewatch -c  /tmp/             # creation only (dir mode)
+    ./filewatch -u  /etc/hosts        # unlink only
+    ./filewatch -a  /etc/             # all: r+w+m+create+unlink
+    ./filewatch -w  /path -d 1.0      # writes, debounce 1s
+    ./filewatch -rwk /etc/hosts       # include kernel stacks
+"""
 
-    if args.all:
-        args.reads = args.writes = args.meta = True
-        args.create = args.unlink = True
-    if (not args.reads and not args.writes and not args.meta
-            and not args.create and not args.unlink):
-        args.writes = True
+parser = argparse.ArgumentParser(
+    description="Watch a file or directory tree for VFS access and "
+    "dump the full process ancestry with command lines.  Works on "
+    "any filesystem (ext4, btrfs, ZFS, VxFS, XFS, NFS, ...).",
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+    epilog=examples)
+parser.add_argument("path",
+    help="file or directory to watch (directories are recursive)")
+parser.add_argument("-r", "--reads", action="store_true",
+    help="trace reads (vfs_read / vfs_readv)")
+parser.add_argument("-w", "--writes", action="store_true",
+    help="trace writes (vfs_write / vfs_writev)")
+parser.add_argument("-m", "--meta", action="store_true",
+    help="trace metadata changes: touch, chmod, chown, truncate")
+parser.add_argument("-c", "--create", action="store_true",
+    help="trace file/directory creation (directory mode only)")
+parser.add_argument("-u", "--unlink", action="store_true",
+    help="trace file/directory deletion (unlink/rmdir)")
+parser.add_argument("-a", "--all", action="store_true",
+    help="trace everything: reads + writes + metadata + create "
+         "+ unlink")
+parser.add_argument("-d", "--debounce", type=float, default=0.0,
+    metavar="SEC",
+    help="minimum seconds between reports for same PID+op "
+         "(default: 0 = every event)")
+parser.add_argument("-k", "--kstack", action="store_true",
+    help="capture and display kernel stack traces")
+parser.add_argument("--ebpf", action="store_true",
+    help=argparse.SUPPRESS)
+args = parser.parse_args()
 
-    if os.geteuid() != 0:
-        sys.exit("error: must be run as root (for BPF)")
+if args.all:
+    args.reads = args.writes = args.meta = True
+    args.create = args.unlink = True
+if (not args.reads and not args.writes and not args.meta
+        and not args.create and not args.unlink):
+    args.writes = True
 
-    filter_name = None
+if os.geteuid() != 0:
+    print("error: must be run as root (for BPF)", file=sys.stderr)
+    exit(1)
+
+filter_name = None
+try:
+    st = os.stat(args.path)
+except FileNotFoundError:
+    parent = os.path.dirname(os.path.abspath(args.path))
+    basename = os.path.basename(os.path.abspath(args.path))
     try:
-        st = os.stat(args.path)
-    except FileNotFoundError:
-        parent = os.path.dirname(os.path.abspath(args.path))
-        basename = os.path.basename(os.path.abspath(args.path))
-        try:
-            st = os.stat(parent)
-        except (FileNotFoundError, PermissionError):
-            sys.exit("error: %s: not found and parent dir "
-                     "does not exist" % args.path)
-        if not stat.S_ISDIR(st.st_mode):
-            sys.exit("error: %s: not found" % args.path)
-        args.path = parent
-        args.create = True
-        filter_name = basename
-    except PermissionError:
-        sys.exit("error: %s: permission denied" % args.path)
+        st = os.stat(parent)
+    except (FileNotFoundError, PermissionError):
+        print("error: %s: not found and parent dir "
+              "does not exist" % args.path, file=sys.stderr)
+        exit(1)
+    if not stat.S_ISDIR(st.st_mode):
+        print("error: %s: not found" % args.path, file=sys.stderr)
+        exit(1)
+    args.path = parent
+    args.create = True
+    filter_name = basename
+except PermissionError:
+    print("error: %s: permission denied" % args.path,
+          file=sys.stderr)
+    exit(1)
 
-    dir_mode = stat.S_ISDIR(st.st_mode)
+dir_mode = stat.S_ISDIR(st.st_mode)
 
-    if args.create and not dir_mode:
-        print("  *** -c/--create ignored for file targets "
-              "(use a directory for creation tracing) ***",
+if args.create and not dir_mode:
+    print("  *** -c/--create ignored for file targets "
+          "(use a directory for creation tracing) ***",
+          file=sys.stderr)
+    args.create = False
+
+target_ino = st.st_ino
+st_major, st_minor, mount_point = _resolve_sb_dev(args.path)
+target_dev = (st_major << 20) | st_minor
+abs_path = os.path.abspath(args.path)
+
+modes = []
+if args.reads:
+    modes.append("reads")
+if args.writes:
+    modes.append("writes")
+if args.meta:
+    modes.append("metadata")
+if args.create and dir_mode:
+    modes.append("create")
+if args.unlink:
+    modes.append("unlink")
+
+print("filewatch - VFS file access tracer")
+if dir_mode:
+    print("  dir   : %s  (recursive)" % abs_path)
+else:
+    print("  file  : %s" % abs_path)
+print("  inode : %d" % target_ino)
+print("  dev   : major=%d, minor=%d (kernel_dev=%d)" % (
+    st_major, st_minor, target_dev))
+print("  mode  : %s" % " + ".join(modes))
+if dir_mode:
+    print("  depth : up to %d levels" % MAX_DIR_DEPTH)
+if filter_name:
+    print("  filter: %s (waiting for creation)" % filter_name)
+if args.debounce > 0:
+    print("  debounce: %.1fs per PID" % args.debounce)
+print("Hit Ctrl-C to end.\n")
+
+print("Loading probes...")
+src = build_bpf(target_ino, target_dev, dir_mode, args.kstack)
+
+if args.ebpf:
+    print(src)
+    exit()
+
+b = BPF(text=src,
+        cflags=["-Wno-missing-declarations"])
+
+attached = []
+if args.reads:
+    b.attach_kprobe(event="vfs_read", fn_name="trace_vfs_read")
+    attached.append("vfs_read")
+    try:
+        b.attach_kprobe(event="vfs_readv",
+                        fn_name="trace_vfs_readv")
+        attached.append("vfs_readv")
+    except Exception:
+        pass
+if args.writes:
+    b.attach_kprobe(event="vfs_write", fn_name="trace_vfs_write")
+    attached.append("vfs_write")
+    try:
+        b.attach_kprobe(event="vfs_writev",
+                        fn_name="trace_vfs_writev")
+        attached.append("vfs_writev")
+    except Exception:
+        pass
+if args.meta:
+    try:
+        b.attach_kprobe(event="notify_change",
+                        fn_name="trace_notify_change")
+        attached.append("notify_change")
+    except Exception as e:
+        print("warning: could not attach to notify_change: %s" %
+              e, file=sys.stderr)
+        print("  metadata tracing (-m) will not work on this "
+              "kernel", file=sys.stderr)
+if args.create and dir_mode:
+    try:
+        b.attach_kprobe(event="security_inode_create",
+                        fn_name="trace_security_create")
+        attached.append("security_inode_create")
+    except Exception as e:
+        print("warning: could not attach to "
+              "security_inode_create: %s" % e,
               file=sys.stderr)
-        args.create = False
+    try:
+        b.attach_kprobe(event="security_inode_mkdir",
+                        fn_name="trace_security_mkdir")
+        attached.append("security_inode_mkdir")
+    except Exception as e:
+        print("warning: could not attach to "
+              "security_inode_mkdir: %s" % e,
+              file=sys.stderr)
+if args.unlink:
+    try:
+        b.attach_kprobe(event="security_inode_unlink",
+                        fn_name="trace_security_unlink")
+        attached.append("security_inode_unlink")
+    except Exception as e:
+        print("warning: could not attach to "
+              "security_inode_unlink: %s" % e,
+              file=sys.stderr)
+    try:
+        b.attach_kprobe(event="security_inode_rmdir",
+                        fn_name="trace_security_rmdir")
+        attached.append("security_inode_rmdir")
+    except Exception as e:
+        print("warning: could not attach to "
+              "security_inode_rmdir: %s" % e,
+              file=sys.stderr)
 
-    target_ino = st.st_ino
+print("Attached probes: %s" % ", ".join(attached))
+print()
 
-    # Resolve the *superblock* device (i_sb->s_dev) for BPF matching.
-    # On btrfs/ZFS, stat()->st_dev is a per-subvolume anonymous device
-    # that differs from the kernel's i_sb->s_dev.  _resolve_sb_dev()
-    # reads /proc/self/mountinfo to get the real s_dev value.
-    st_major, st_minor = _resolve_sb_dev(args.path)
-    target_dev = (st_major << 20) | st_minor
+last_seen = {}
+exiting = [False]
 
-    abs_path = os.path.abspath(args.path)
 
-    modes = []
-    if args.reads:
-        modes.append("reads")
-    if args.writes:
-        modes.append("writes")
-    if args.meta:
-        modes.append("metadata")
-    if args.create and dir_mode:
-        modes.append("create")
-    if args.unlink:
-        modes.append("unlink")
+def print_event(cpu, data, size):
+    ev = ct.cast(data, ct.POINTER(EventT)).contents
+    now = time.time()
 
-    print("filewatch — VFS file access tracer (v1.4)")
-    if dir_mode:
-        print("  dir   : %s  (recursive)" % abs_path)
-    else:
-        print("  file  : %s" % abs_path)
-    print("  inode : %d" % target_ino)
-    print("  dev   : major=%d, minor=%d (kernel_dev=%d)" % (
-        st_major, st_minor, target_dev))
-    print("  mode  : %s" % " + ".join(modes))
-    if dir_mode:
-        print("  depth : up to %d levels" % MAX_DIR_DEPTH)
     if filter_name:
-        print("  filter: %s (waiting for creation)" % filter_name)
+        evname = ev.fname.decode("utf-8", "replace")
+        if evname != filter_name:
+            return
+
     if args.debounce > 0:
-        print("  debounce: %.1fs per PID" % args.debounce)
-    print("Hit Ctrl-C to stop.\n")
+        key = (ev.pid, ev.op)
+        prev = last_seen.get(key, 0)
+        if now - prev < args.debounce:
+            return
+        last_seen[key] = now
 
-    print("Loading probes...")
-    src = build_bpf(target_ino, target_dev, dir_mode, args.kstack)
+    ts = time.strftime("%H:%M:%S")
+    fname = ev.fname.decode("utf-8", "replace")
+    dirpath = ev.dirpath.decode("utf-8", "replace")
+    user = uid_to_name(ev.uid)
+    op = OP_LABEL.get(ev.op, "?")
 
-    if args.debug:
-        print("--- BPF source ---")
-        for i, line in enumerate(src.splitlines(), 1):
-            print("%4d  %s" % (i, line))
-        print("--- end ---\n")
+    if dir_mode and dirpath and dirpath != "/":
+        display_path = "%s/%s" % (dirpath, fname)
+    else:
+        display_path = fname
 
-    b = BPF(text=src,
-            cflags=["-Wno-missing-declarations"])
+    full_path = ""
+    if ev.npath > 0:
+        parts = []
+        for i in range(ev.npath):
+            comp = ev.fpath[i].value.decode("utf-8", "replace")
+            if comp and comp != "/":
+                parts.append(comp)
+        parts.reverse()
+        dentry_path = "/" + "/".join(parts)
+        if mount_point and mount_point != "/":
+            full_path = mount_point + dentry_path
+        else:
+            full_path = dentry_path
+    elif not dir_mode:
+        full_path = abs_path
 
-    attached = []
-    if args.reads:
-        b.attach_kprobe(event="vfs_read", fn_name="trace_vfs_read")
-        attached.append("vfs_read")
+    raw = ev.caller_cmdline
+    bpf_cmdline = (raw.replace(b"\0", b" ")
+                   .decode("utf-8", "replace").strip()) or None
+
+    print("=" * 72)
+    if ev.op == OP_META:
+        attrs = decode_ia_valid(ev.bytes)
+        print("%-6s %s  file=%s  attrs=%s  user=%s" % (
+            op, ts, display_path, attrs, user))
+    elif ev.op in (OP_CREATE, OP_DELETE):
+        print("%-6s %s  file=%s  user=%s" % (
+            op, ts, display_path, user))
+    else:
+        print("%-6s %s  file=%s  bytes=%d  user=%s" % (
+            op, ts, display_path, ev.bytes, user))
+    if full_path:
+        print("       path: %s" % full_path)
+    target_unlinked = False
+    if ev.op == OP_DELETE:
+        if not dir_mode:
+            if fname == os.path.basename(abs_path):
+                target_unlinked = True
+        elif full_path and full_path == abs_path:
+            target_unlinked = True
+    print("Process tree (caller first):\n")
+
+    for i in range(ev.depth):
+        a = ev.chain[i]
+        pid  = a.tgid
+        comm = a.comm.decode("utf-8", "replace")
+
+        if i == 0 and bpf_cmdline:
+            cmdline = bpf_cmdline
+        else:
+            cmdline = read_proc(pid, "cmdline")
+
+        exe = read_proc(pid, "exe")
+        indent = "  " * i
+        tag = ">>>" if i == 0 else "   "
+
+        line = "%s %s[%d] %s" % (tag, indent, pid, comm)
+        if cmdline and cmdline != comm:
+            line += "\n    %scmdline: %s" % (indent, cmdline)
+        if exe:
+            line += "\n    %sexe:     %s" % (indent, exe)
+        if i == 0:
+            cwd = read_proc(pid, "cwd")
+            if cwd:
+                line += "\n    %scwd:     %s" % (indent, cwd)
+        if pid <= 1:
+            line += "  (init)"
+        if read_proc(pid, "cmdline") is None and i > 0:
+            line += "  [exited]"
+        print(line)
+
+    if args.kstack:
         try:
-            b.attach_kprobe(event="vfs_readv",
-                            fn_name="trace_vfs_readv")
-            attached.append("vfs_readv")
+            stack_id = ev.kstack_id
+            if stack_id >= 0:
+                stack = list(b["stack_traces"].walk(stack_id))
+                if stack:
+                    print("\n    Kernel stack:")
+                    for addr in stack:
+                        sym = b.ksym(addr).decode(
+                            "utf-8", "replace")
+                        print("      %s" % sym)
         except Exception:
             pass
-    if args.writes:
-        b.attach_kprobe(event="vfs_write", fn_name="trace_vfs_write")
-        attached.append("vfs_write")
-        try:
-            b.attach_kprobe(event="vfs_writev",
-                            fn_name="trace_vfs_writev")
-            attached.append("vfs_writev")
-        except Exception:
-            pass
-    if args.meta:
-        try:
-            b.attach_kprobe(event="notify_change",
-                            fn_name="trace_notify_change")
-            attached.append("notify_change")
-        except Exception as e:
-            print("warning: could not attach to notify_change: %s" %
-                  e, file=sys.stderr)
-            print("  metadata tracing (-m) will not work on this "
-                  "kernel", file=sys.stderr)
-    if args.create and dir_mode:
-        try:
-            b.attach_kprobe(event="security_inode_create",
-                            fn_name="trace_security_create")
-            attached.append("security_inode_create")
-        except Exception as e:
-            print("warning: could not attach to "
-                  "security_inode_create: %s" % e,
-                  file=sys.stderr)
-        try:
-            b.attach_kprobe(event="security_inode_mkdir",
-                            fn_name="trace_security_mkdir")
-            attached.append("security_inode_mkdir")
-        except Exception as e:
-            print("warning: could not attach to "
-                  "security_inode_mkdir: %s" % e,
-                  file=sys.stderr)
-    if args.unlink:
-        try:
-            b.attach_kprobe(event="security_inode_unlink",
-                            fn_name="trace_security_unlink")
-            attached.append("security_inode_unlink")
-        except Exception as e:
-            print("warning: could not attach to "
-                  "security_inode_unlink: %s" % e,
-                  file=sys.stderr)
-        try:
-            b.attach_kprobe(event="security_inode_rmdir",
-                            fn_name="trace_security_rmdir")
-            attached.append("security_inode_rmdir")
-        except Exception as e:
-            print("warning: could not attach to "
-                  "security_inode_rmdir: %s" % e,
-                  file=sys.stderr)
 
-    print("Attached probes: %s" % ", ".join(attached))
     print()
 
-    last_seen = {}   # (pid, op) -> timestamp
-    running = [True]
-
-    def handle_event(cpu, data, size):
-        ev = ct.cast(data, ct.POINTER(EventT)).contents
-        now = time.time()
-
-        if filter_name:
-            evname = ev.fname.decode("utf-8", "replace")
-            if evname != filter_name:
-                return
-
-        if args.debounce > 0:
-            key = (ev.pid, ev.op)
-            prev = last_seen.get(key, 0)
-            if now - prev < args.debounce:
-                return
-            last_seen[key] = now
-
-        ts = time.strftime("%H:%M:%S")
-        fname = ev.fname.decode("utf-8", "replace")
-        dirpath = ev.dirpath.decode("utf-8", "replace")
-        user = uid_to_name(ev.uid)
-        op = OP_LABEL.get(ev.op, "?")
-
-        if dir_mode and dirpath and dirpath != "/":
-            display_path = "%s/%s" % (dirpath, fname)
-        else:
-            display_path = fname
-
-        # Reconstruct full path from dentry chain (child → root)
-        if ev.npath > 0:
-            parts = []
-            for i in range(ev.npath):
-                comp = ev.fpath[i].value.decode("utf-8", "replace")
-                if comp and comp != "/":
-                    parts.append(comp)
-            parts.reverse()
-            full_path = "/" + "/".join(parts)
-        elif not dir_mode:
-            full_path = abs_path
-        else:
-            full_path = ""
-
-        raw = ev.caller_cmdline
-        bpf_cmdline = (raw.replace(b"\0", b" ")
-                       .decode("utf-8", "replace").strip()) or None
-
-        print("=" * 72)
-        if ev.op == OP_META:
-            attrs = decode_ia_valid(ev.bytes)
-            print("%-6s %s  file=%s  attrs=%s  user=%s" % (
-                op, ts, display_path, attrs, user))
-        elif ev.op in (OP_CREATE, OP_DELETE):
-            print("%-6s %s  file=%s  user=%s" % (
-                op, ts, display_path, user))
-        else:
-            print("%-6s %s  file=%s  bytes=%d  user=%s" % (
-                op, ts, display_path, ev.bytes, user))
-        if full_path:
-            print("       path: %s" % full_path)
-        target_unlinked = False
-        if ev.op == OP_DELETE:
-            if not dir_mode:
-                if fname == os.path.basename(abs_path):
-                    target_unlinked = True
-            elif full_path and full_path == abs_path:
-                target_unlinked = True
-        print("Process tree (caller first):\n")
-
-        for i in range(ev.depth):
-            a = ev.chain[i]
-            pid  = a.tgid
-            comm = a.comm.decode("utf-8", "replace")
-
-            if i == 0 and bpf_cmdline:
-                cmdline = bpf_cmdline
-            else:
-                cmdline = read_proc(pid, "cmdline")
-
-            exe = read_proc(pid, "exe")
-            indent = "  " * i
-            tag = ">>>" if i == 0 else "   "
-
-            line = "%s %s[%d] %s" % (tag, indent, pid, comm)
-            if cmdline and cmdline != comm:
-                line += "\n    %scmdline: %s" % (indent, cmdline)
-            if exe:
-                line += "\n    %sexe:     %s" % (indent, exe)
-            if i == 0:
-                cwd = read_proc(pid, "cwd")
-                if cwd:
-                    line += "\n    %scwd:     %s" % (indent, cwd)
-            if pid <= 1:
-                line += "  (init)"
-            if read_proc(pid, "cmdline") is None and i > 0:
-                line += "  [exited]"
-            print(line)
-
-        if args.kstack:
-            try:
-                stack_id = ev.kstack_id
-                if stack_id >= 0:
-                    stack = list(b["stack_traces"].walk(stack_id))
-                    if stack:
-                        print("\n    Kernel stack:")
-                        for addr in stack:
-                            sym = b.ksym(addr).decode(
-                                "utf-8", "replace")
-                            print("      %s" % sym)
-            except Exception:
-                pass
-
-        print()
-
-        if target_unlinked:
-            print("  *** target file was unlinked — exiting ***")
-            running[0] = False
-
-    b["events"].open_perf_buffer(handle_event, page_cnt=64)
-
-    def stop(signum, frame):
-        running[0] = False
-
-    signal.signal(signal.SIGINT, stop)
-    signal.signal(signal.SIGTERM, stop)
-
-    while running[0]:
-        try:
-            b.perf_buffer_poll(timeout=100)
-        except KeyboardInterrupt:
-            break
-
-    print("\nDone.")
+    if target_unlinked:
+        print("  *** target was unlinked -- exiting ***")
+        exiting[0] = True
 
 
-if __name__ == "__main__":
-    main()
+b["events"].open_perf_buffer(print_event, page_cnt=64)
+
+while not exiting[0]:
+    try:
+        b.perf_buffer_poll(timeout=100)
+    except KeyboardInterrupt:
+        exit()
