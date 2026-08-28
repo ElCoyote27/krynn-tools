@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
 #
-# $Id: lsNVMe.py,v 1.04 2025/09/06 18:00:00 serials-by-default Exp $
+# $Id: lsNVMe.py,v 1.05 2026/08/28 10:00:00 nvme-cli-2x-compat Exp $
 #
 # NVMe Device Health and Temperature Monitor
 # Shows NVMe devices with temperature, health status, and SMART attributes
 # Uses nvme smart-log and smartctl commands to extract comprehensive health data
 
-__version__ = "lsNVMe.py 1.04 2025/09/06 18:00:00 serials-by-default Exp"
+__version__ = "lsNVMe.py 1.05 2026/08/28 10:00:00 nvme-cli-2x-compat Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v1.05 (2026-08-28): nvme-cli 2.x compatibility (Fedora 43+, kernel 7.x)
+#   - Temperature: handle new "37 °C (310 K, 98 °F)" format alongside old "37 Celsius"
+#   - Parse media_errors and num_err_log_entries from nvme smart-log output
+#   - Derive health status (PASSED/WARNING) from critical_warning when smartctl is absent
+#   - Handle both hex (0x00) and plain decimal (0) critical_warning formats
+#   - Accept both underscore and space variants in nvme field names (nvme-cli 2.x)
+#   - Add °C temperature pattern to smartctl parsing for newer smartmontools
+#   - Full backward compatibility with nvme-cli 1.x and older kernels
 #
 # v1.04 (2025-09-06): Serial numbers by default and enhanced UX
 #   - Serial numbers now shown by default for complete device identification
@@ -282,55 +291,95 @@ class NVMeHealthAnalyzer:
         return None
 
     def parse_nvme_smart_log(self, smart_output: str) -> Dict[str, str]:
-        """Parse nvme smart-log output"""
+        """Parse nvme smart-log output.
+
+        Handles both legacy nvme-cli 1.x format ("37 Celsius") and
+        modern nvme-cli 2.x format ("37 °C (310 K, 98 °F)").
+        Also extracts media_errors and critical_warning to derive
+        health/error status when smartctl is not available.
+        """
         data = {}
 
         if not smart_output:
             return data
 
-        self.debug_print("Parsing nvme smart-log output for wear information")
+        self.debug_print("Parsing nvme smart-log output")
 
-        # Parse temperature
-        temp_match = re.search(r'temperature\s*:\s*(\d+)\s*Celsius', smart_output, re.IGNORECASE)
-        if temp_match:
-            data['temperature'] = f"{temp_match.group(1)}°C"
-
-        # Parse percentage used (wear level) - try multiple formats
-        wear_patterns = [
-            r'percentage_used\s*:\s*(\d+)%',  # percentage_used : X%
-            r'percentage\s+used\s*:\s*(\d+)%',  # percentage used : X%
-            r'percentage_used\s*:\s*(\d+)\s*%',  # percentage_used : X %
-            r'percentage\s+used\s*:\s*(\d+)\s*%',  # percentage used : X %
+        # Parse temperature -- match the first "temperature" line,
+        # which is the composite temp.  "Temperature Sensor N" lines
+        # will NOT match because the text between the field name and
+        # the colon contains non-whitespace ("Sensor 1").
+        temp_patterns = [
+            r'temperature\s*:\s*(\d+)\s*°C',
+            r'temperature\s*:\s*(\d+)\s*Celsius',
         ]
+        for pattern in temp_patterns:
+            temp_match = re.search(pattern, smart_output, re.IGNORECASE)
+            if temp_match:
+                data['temperature'] = f"{temp_match.group(1)}°C"
+                self.debug_print(f"Found temperature {temp_match.group(1)}°C")
+                break
 
-        wear_found = False
+        # Parse percentage used (wear level)
+        wear_patterns = [
+            r'percentage[_ ]used\s*:\s*(\d+)\s*%',
+        ]
         for pattern in wear_patterns:
             wear_match = re.search(pattern, smart_output, re.IGNORECASE)
             if wear_match:
-                wear_value = wear_match.group(1)
-                data['wear_level'] = f"{wear_value}%"
-                self.debug_print(f"Found wear level {wear_value}% using pattern: {pattern}")
-                wear_found = True
+                data['wear_level'] = f"{wear_match.group(1)}%"
+                self.debug_print(f"Found wear level {wear_match.group(1)}%")
                 break
 
-        if not wear_found:
-            self.debug_print("No wear level found in nvme smart-log output")
-
-        # Parse data units written
-        written_match = re.search(r'data_units_written\s*:\s*([\d,]+)', smart_output, re.IGNORECASE)
+        # Parse data units written (both underscore and space forms)
+        written_match = re.search(
+            r'data[_ ]units[_ ]written\s*:\s*([\d,]+)',
+            smart_output, re.IGNORECASE)
         if written_match:
             data['data_written'] = written_match.group(1)
 
-        # Parse critical warnings
-        warning_match = re.search(r'critical_warning\s*:\s*0x([0-9a-fA-F]+)', smart_output, re.IGNORECASE)
+        # Parse critical_warning (hex "0x00" or plain decimal "0")
+        warning_match = re.search(
+            r'critical[_ ]warning\s*:\s*(?:0x)?([0-9a-fA-F]+)',
+            smart_output, re.IGNORECASE)
         if warning_match:
             warning_val = int(warning_match.group(1), 16)
-            data['critical_warning'] = f"0x{warning_val:02x}"
+            data['critical_warning'] = warning_val
+            self.debug_print(f"Found critical_warning = {warning_val}")
 
-        # Parse power on hours
-        power_match = re.search(r'power_on_hours\s*:\s*([\d,]+)', smart_output, re.IGNORECASE)
+        # Parse power on hours (underscore and space forms)
+        power_match = re.search(
+            r'power[_ ]on[_ ]hours\s*:\s*([\d,]+)',
+            smart_output, re.IGNORECASE)
         if power_match:
             data['power_hours'] = power_match.group(1)
+
+        # Parse media_errors (nvme-cli 2.x field)
+        media_match = re.search(
+            r'media[_ ]errors\s*:\s*(\d+)',
+            smart_output, re.IGNORECASE)
+        if media_match:
+            data['error_count'] = media_match.group(1)
+            self.debug_print(f"Found media_errors = {media_match.group(1)}")
+
+        # Parse num_err_log_entries as fallback for error count
+        if 'error_count' not in data:
+            errlog_match = re.search(
+                r'num[_ ]err[_ ]log[_ ]entries\s*:\s*(\d+)',
+                smart_output, re.IGNORECASE)
+            if errlog_match:
+                data['error_count'] = errlog_match.group(1)
+                self.debug_print(
+                    f"Found num_err_log_entries = {errlog_match.group(1)}")
+
+        # Derive health from critical_warning when smartctl is absent
+        if 'critical_warning' in data:
+            if data['critical_warning'] == 0:
+                data['health'] = 'PASSED'
+            else:
+                data['health'] = 'WARNING'
+            self.debug_print(
+                f"Derived health = {data['health']} from critical_warning")
 
         return data
 
@@ -372,9 +421,10 @@ class NVMeHealthAnalyzer:
                 data['serial'] = serial_match.group(1).strip()
                 break
 
-        # Parse temperature (multiple possible formats)
+        # Parse temperature (handles both old "Celsius" and new "°C" formats)
         temp_patterns = [
             r'Temperature:\s*(\d+)\s*Celsius',
+            r'Temperature:\s*(\d+)\s*°C',
             r'Current Drive Temperature:\s*(\d+)\s*C',
             r'Temperature_Celsius\s*\S+\s*\S+\s*\S+\s*\S+\s*\S+\s*\S+\s*(\d+)'
         ]
@@ -727,19 +777,12 @@ class NVMeHealthAnalyzer:
                     info['model'] = (model_match.group(1) or model_match.group(2)).strip()
 
         # Merge data (priority: nvme id-ctrl > nvme smart-log > smartctl)
-        for key in ['temperature', 'wear_level', 'power_hours']:
+        for key in ['temperature', 'wear_level', 'power_hours',
+                     'error_count', 'health']:
             if key in smartctl_data:
                 info[key] = smartctl_data[key]
             if key in nvme_data:  # nvme smart-log data overrides smartctl
                 info[key] = nvme_data[key]
-
-        # Health status from smartctl
-        if 'health' in smartctl_data:
-            info['health'] = smartctl_data['health']
-
-        # Error count from smartctl
-        if 'error_count' in smartctl_data:
-            info['error_count'] = smartctl_data['error_count']
 
         # Model, firmware, and serial from nvme id-ctrl (highest priority) or smartctl
         if 'model' in nvme_id_data:
