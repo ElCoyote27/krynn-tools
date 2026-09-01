@@ -12,7 +12,8 @@ oc patch hyperconverged kubevirt-hyperconverged -n openshift-cnv \
 --type json -p '[{"op": "replace", "path": "/spec/featureGates/enableCommonBootImageImport", "value": false}]'
 
 # Unset channel
-oc patch clusterversion version --type=json -p='[{"op": "remove", "path": "/spec/channel"}]'
+#oc patch clusterversion version --type=json -p='[{"op": "remove", "path": "/spec/channel"}]'
+#oc patch clusterversion version --type=merge -p '{"spec":{"channel":"stable-4.20"}}'
 
 # oc patch clusterversion/version --patch '{"spec":{"upstream":"https://openshift-release.apps.ci.l2s4.p1.openshiftapps.com/graph"}}' --type=merge
 # Set upstream to none for disconnected:
