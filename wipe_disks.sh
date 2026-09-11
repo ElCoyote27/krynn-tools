@@ -512,30 +512,32 @@ for ip in ${unique_ips}; do
     done  # End of disk processing loop
 
     # Post-wipe verification: confirm no Ceph/bluestore signatures remain
-    # This catches cases where metadata was re-written during the wipe (e.g. by active Ceph OSDs)
-    echo "################## Post-wipe verification for node: ${ip}"
-    verification_failed=0
-    for disk in ${discovered_disks}; do
-        if ! is_valid_disk_name "$disk"; then
-            continue
+    # Only run when actual wiping was performed (skip in debug/simulation mode)
+    if [[ $debug_mode -eq 0 ]]; then
+        echo "################## Post-wipe verification for node: ${ip}"
+        verification_failed=0
+        for disk in ${discovered_disks}; do
+            if ! is_valid_disk_name "$disk"; then
+                continue
+            fi
+            if [[ "${disk}" == "${rootdisk}" && "${skip_rootdisk}" -eq 1 ]]; then
+                continue
+            fi
+            # Check for any remaining filesystem/bluestore signatures
+            remaining_sigs=$(ssh ${ssh_opts} ${ip} "sudo wipefs -n /dev/${disk} 2>/dev/null" 2>/dev/null)
+            remaining_sigs=$(sanitize_output "$remaining_sigs")
+            if [[ -n "${remaining_sigs}" ]] && echo "${remaining_sigs}" | grep -qiE "ceph|bluestore|LVM|ext|xfs|swap"; then
+                echo -e "  ${COLOR_RED}VERIFY FAILED: /dev/${disk} still has signatures after wipe: ${remaining_sigs}${COLOR_RESET}"
+                verification_failed=1
+            else
+                echo -e "  ${COLOR_GREEN}VERIFY OK: /dev/${disk} is clean${COLOR_RESET}"
+            fi
+        done
+        if [[ ${verification_failed} -eq 1 ]]; then
+            echo -e "  ${COLOR_RED}ERROR: Some disks on ${ip} still have signatures after wipe!${COLOR_RESET}"
+            echo -e "  ${COLOR_RED}ERROR: This usually means Ceph/ODF was active during the wipe.${COLOR_RESET}"
+            echo -e "  ${COLOR_YELLOW}ACTION: Stop ODF, then re-run this script.${COLOR_RESET}"
         fi
-        if [[ "${disk}" == "${rootdisk}" && "${skip_rootdisk}" -eq 1 ]]; then
-            continue
-        fi
-        # Check for any remaining filesystem/bluestore signatures
-        remaining_sigs=$(ssh ${ssh_opts} ${ip} "sudo wipefs -n /dev/${disk} 2>/dev/null" 2>/dev/null)
-        remaining_sigs=$(sanitize_output "$remaining_sigs")
-        if [[ -n "${remaining_sigs}" ]] && echo "${remaining_sigs}" | grep -qiE "ceph|bluestore|LVM|ext|xfs|swap"; then
-            echo -e "  ${COLOR_RED}VERIFY FAILED: /dev/${disk} still has signatures after wipe: ${remaining_sigs}${COLOR_RESET}"
-            verification_failed=1
-        else
-            echo -e "  ${COLOR_GREEN}VERIFY OK: /dev/${disk} is clean${COLOR_RESET}"
-        fi
-    done
-    if [[ ${verification_failed} -eq 1 ]]; then
-        echo -e "  ${COLOR_RED}ERROR: Some disks on ${ip} still have signatures after wipe!${COLOR_RESET}"
-        echo -e "  ${COLOR_RED}ERROR: This usually means Ceph/ODF was active during the wipe.${COLOR_RESET}"
-        echo -e "  ${COLOR_YELLOW}ACTION: Stop ODF, then re-run this script.${COLOR_RESET}"
     fi
     echo -e "################## ${COLOR_GREEN}Completed processing node: ${ip}${COLOR_RESET}"
 done  # End of IP processing loop
