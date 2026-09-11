@@ -3,6 +3,13 @@
 # Enhanced ODF/Ceph Disk Wiping Tool
 # 
 # VERSION HISTORY:
+# v1.12 (2026/09/11) - Bugfix: removed blkdiscard entirely — on NVMe drives that don't
+#                guarantee zero-on-read after TRIM (e.g. Dell CM7), blkdiscard was causing
+#                the controller to return stale Ceph bluestore metadata for deallocated
+#                blocks, undoing the dd zero writes. Added final wipefs pass after dd for
+#                belt-and-suspenders. Added pre-wipe ceph-osd container/process kill via
+#                crictl+pkill, added post-wipe verification pass that checks each wiped
+#                disk for remaining Ceph/bluestore/filesystem signatures
 # v1.11 (2026/07/02) - Robustness: added is_valid_disk_name() validation to prevent SSH warning
 #                messages (e.g. "Warning: Permanently added...") from being mistaken as device
 #                names (/dev/Warning, /dev/Permanently), removed redundant ssh-keygen -R
@@ -51,7 +58,7 @@ PATH_SCRIPT="$(cd $(/usr/bin/dirname $(whence -- $0 || echo $0));pwd)"
 cd ${PATH_SCRIPT}
 
 # Script version
-VERSION="1.11"
+VERSION="1.12"
 SCRIPT_NAME="$(basename $0)"
 
 # ANSI color codes (Ansible-style)
@@ -75,7 +82,7 @@ DESCRIPTION:
     - Partition table and filesystem signature removal (wipefs)
     - Targeted Ceph metadata wiping at strategic disk locations (0, 1GB, 10GB, 100GB, 1000GB)
     - End-of-disk metadata wiping (~200KB at end of disk)
-    - Block discard operations (when supported)
+    - Final wipefs verification pass
 
     Reads unique IP addresses from nodes.txt (first column) and processes all
     discoverable disks on each node, INCLUDING root disks by default.
@@ -162,7 +169,7 @@ done
 ssh_opts="-l core -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5"
 
 # Enhanced disk wiping for ODF/Ceph cleanup
-# This script now uses wipefs, targeted Ceph metadata wiping, and blkdiscard
+# This script uses wipefs, targeted Ceph metadata wiping via dd at strategic offsets
 block_size=4       # Block size in KB (used for all dd operations)
 metadata_count=$((200 / block_size))    # Number of blocks to wipe ~200KB at each location
 
@@ -228,6 +235,43 @@ for ip in ${unique_ips}; do
     echo -e "  ${COLOR_GREEN}SSH connectivity OK${COLOR_RESET}"
 
     ssh ${ssh_opts} -qt ${ip} sudo /sbin/setenforce 0
+
+    # Pre-wipe Ceph cleanup: detect and kill running Ceph OSD processes/containers
+    # Running ceph-osd can re-write bluestore metadata after wipe, so we stop them first.
+    ceph_osd_procs=$(ssh ${ssh_opts} ${ip} "pgrep -c ceph-osd 2>/dev/null" 2>/dev/null || echo "0")
+    ceph_osd_procs=$(sanitize_output "$ceph_osd_procs")
+    if [[ "${ceph_osd_procs}" =~ ^[0-9]+$ ]] && [[ "${ceph_osd_procs}" -gt 0 ]]; then
+        echo -e "  ${COLOR_YELLOW}WARNING: ${ceph_osd_procs} ceph-osd process(es) detected on ${ip} — stopping them before wipe${COLOR_RESET}"
+        # Stop ceph-osd: try crictl (OCP/k8s nodes), then fall back to pkill (bare metal/VMs)
+        if [[ $debug_mode -eq 0 ]]; then
+            # Try crictl if available (OCP/RHCOS nodes with CRI-O)
+            if ssh ${ssh_opts} ${ip} "command -v crictl >/dev/null 2>&1" 2>/dev/null; then
+                ceph_containers=$(ssh ${ssh_opts} ${ip} "sudo crictl ps -q --name ceph-osd 2>/dev/null" 2>/dev/null)
+                ceph_containers=$(sanitize_output "$ceph_containers")
+                if [[ -n "${ceph_containers}" ]]; then
+                    for cid in ${ceph_containers}; do
+                        ssh ${ssh_opts} ${ip} "sudo crictl stop ${cid} 2>/dev/null && sudo crictl rm ${cid} 2>/dev/null" 2>/dev/null
+                    done
+                    echo -e "  ${COLOR_GREEN}Stopped ceph-osd containers via crictl${COLOR_RESET}"
+                fi
+            fi
+            # Kill any remaining ceph-osd processes (works on any Linux node)
+            ssh ${ssh_opts} ${ip} "sudo pkill -9 ceph-osd 2>/dev/null" 2>/dev/null || true
+            sleep 2
+            # Verify they're gone
+            remaining=$(ssh ${ssh_opts} ${ip} "pgrep -c ceph-osd 2>/dev/null" 2>/dev/null || echo "0")
+            remaining=$(sanitize_output "$remaining")
+            if [[ "${remaining}" =~ ^[0-9]+$ ]] && [[ "${remaining}" -gt 0 ]]; then
+                echo -e "  ${COLOR_RED}WARNING: ${remaining} ceph-osd process(es) still running after kill — wipe may be incomplete${COLOR_RESET}"
+            else
+                echo -e "  ${COLOR_GREEN}All ceph-osd processes stopped${COLOR_RESET}"
+            fi
+        else
+            echo "  [DEBUG MODE] Would stop ceph-osd containers and processes"
+        fi
+    else
+        echo -e "  ${COLOR_GREEN}No active ceph-osd processes detected${COLOR_RESET}"
+    fi
 
     # Find rootdisk for this node
     # Multi-method detection with fallbacks for different RHCOS versions and states
@@ -456,9 +500,9 @@ for ip in ${unique_ips}; do
                 fi
             done
 
-            # Step 4: Attempt block discard (if supported by device)
-            echo "Step 4: Attempting block discard (if supported by device)..."
-            execute_or_simulate "ssh ${ssh_opts} -qt ${ip} sudo blkdiscard /dev/${disk} 2>/dev/null" && echo -e "  ${COLOR_GREEN}Block discard successful${COLOR_RESET}" || echo -e "  ${COLOR_YELLOW}Block discard not supported or failed (this is normal for some devices)${COLOR_RESET}"
+            # Step 4: Final wipefs to ensure no signatures survive after dd
+            echo "Step 4: Final signature cleanup..."
+            execute_or_simulate "ssh ${ssh_opts} -qt ${ip} sudo wipefs -fa /dev/${disk}"
 
             # Step 5: Final sync
             ssh ${ssh_opts} -qt ${ip} /bin/sync
@@ -466,5 +510,32 @@ for ip in ${unique_ips}; do
             echo -e "################## Host IP: ${ip}, ${COLOR_GREEN}SKIPPING rootdisk /dev/${disk}${COLOR_RESET}"
         fi
     done  # End of disk processing loop
+
+    # Post-wipe verification: confirm no Ceph/bluestore signatures remain
+    # This catches cases where metadata was re-written during the wipe (e.g. by active Ceph OSDs)
+    echo "################## Post-wipe verification for node: ${ip}"
+    verification_failed=0
+    for disk in ${discovered_disks}; do
+        if ! is_valid_disk_name "$disk"; then
+            continue
+        fi
+        if [[ "${disk}" == "${rootdisk}" && "${skip_rootdisk}" -eq 1 ]]; then
+            continue
+        fi
+        # Check for any remaining filesystem/bluestore signatures
+        remaining_sigs=$(ssh ${ssh_opts} ${ip} "sudo wipefs -n /dev/${disk} 2>/dev/null" 2>/dev/null)
+        remaining_sigs=$(sanitize_output "$remaining_sigs")
+        if [[ -n "${remaining_sigs}" ]] && echo "${remaining_sigs}" | grep -qiE "ceph|bluestore|LVM|ext|xfs|swap"; then
+            echo -e "  ${COLOR_RED}VERIFY FAILED: /dev/${disk} still has signatures after wipe: ${remaining_sigs}${COLOR_RESET}"
+            verification_failed=1
+        else
+            echo -e "  ${COLOR_GREEN}VERIFY OK: /dev/${disk} is clean${COLOR_RESET}"
+        fi
+    done
+    if [[ ${verification_failed} -eq 1 ]]; then
+        echo -e "  ${COLOR_RED}ERROR: Some disks on ${ip} still have signatures after wipe!${COLOR_RESET}"
+        echo -e "  ${COLOR_RED}ERROR: This usually means Ceph/ODF was active during the wipe.${COLOR_RESET}"
+        echo -e "  ${COLOR_YELLOW}ACTION: Stop ODF, then re-run this script.${COLOR_RESET}"
+    fi
     echo -e "################## ${COLOR_GREEN}Completed processing node: ${ip}${COLOR_RESET}"
 done  # End of IP processing loop
