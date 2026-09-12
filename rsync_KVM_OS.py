@@ -10,7 +10,7 @@ hypervisor-specific configurations.
 Author: Vincent S. Cojot
 """
 
-# $Id: rsync_KVM_OS.py,v 1.21 2026/08/22 10:24:05 root Exp root $
+# $Id: rsync_KVM_OS.py,v 1.22 2026/09/12 08:38:59 root Exp root $
 __version__ = "rsync_KVM_OS.py,v 1.21 2026/08/22 12:06:00 python-conversion Exp"
 
 #
@@ -389,7 +389,8 @@ class KVMReplicator:
 
             # Testing hosts (use KVM standard + limited VM lists)
             'rh8x64': {**KVM_STD_CONFIG, 'default_vm_list': "win11-x64 cirros" },
-            'rh9x64': {**KVM_STD_CONFIG, 'default_vm_list': "win11-x64 cirros" }
+            'rh9x64': {**KVM_STD_CONFIG, 'default_vm_list': "win11-x64 cirros" },
+            'rh10x64': {**KVM_STD_CONFIG, 'default_vm_list': "win11-x64 cirros" }
         }
 
         # =============================================================================
