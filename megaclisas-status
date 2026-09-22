@@ -9,12 +9,20 @@ Modernized Python implementation
 A tool to monitor RAID controller status using MegaCLI, perccli, or storcli.
 """
 
-# $Id: megaclisas-status,v 2.21 2025/11/14 20:00:00 formatting-consistency-fix Exp $
-__version__ = "megaclisas-status,v 2.21 2025/11/14 20:00:00 formatting-consistency-fix Exp"
+# $Id: megaclisas-status,v 2.22 2026/09/22 11:00:00 add-device-id-column Exp $
+__version__ = "megaclisas-status,v 2.22 2026/09/22 11:00:00 add-device-id-column Exp"
 
 #
 # VERSION HISTORY:
 # ================
+#
+# v2.22 (2026-09-22): Added DID (Device ID) column to disk information output
+#   - Added DID column between Slot ID and LSI ID in configured and unconfigured disk tables
+#   - DID is the perccli Device ID needed for smartctl passthrough: smartctl -d megaraid,DID /dev/sdX
+#   - For native perccli: parsed from the DID column in the device table output
+#   - For legacy MegaCLI: uses the "Device Id:" field from -PDList output (same as LSI ID)
+#   - Added device_id field to DiskInfo dataclass
+#   - Added device_id to _validate_disk_data for completeness
 #
 # v2.21 (2025-11-14): Output formatting consistency improvements
 #   - Fixed drive model formatting in legacy MegaCli parser to match perccli order
@@ -241,6 +249,7 @@ class DiskInfo:
     enclosure_id: str
     slot_id: str
     lsi_id: str
+    device_id: str  # DID from perccli, needed for smartctl -d megaraid,DID
     media_type: str  # HDD, SSD
     model: str
     size: str
@@ -1470,6 +1479,7 @@ class RAIDParser:
                     if len(parts) >= 11:  # Ensure we have enough parts
                         try:
                             # Parse: EID:Slt, DID, State, DG, Size, Intf, Med, SED, PI, SeSz, Model...
+                            current_disk["device_id"] = parts[1]  # DID column
                             size_idx = 4  # Size is at index 4
                             if parts[size_idx+1] in ["TB", "GB", "MB"]:  # Size + unit
                                 size_str = f"{parts[size_idx]} {parts[size_idx+1]}"
@@ -1592,6 +1602,7 @@ class RAIDParser:
             enclosure_id=drive_info["enclosure"],
             slot_id=drive_info["slot"],
             lsi_id=disk_data.get("lsi_id", drive_info["slot"]),  # Use slot as fallback
+            device_id=disk_data.get("device_id", "N/A"),  # DID for smartctl -d megaraid,DID
             media_type=media_type,
             model=model,
             size=disk_data.get("size", "Unknown"),
@@ -1736,6 +1747,7 @@ class RAIDParser:
             enclosure_id=disk_data.get("enclosure_id", ""),
             slot_id=disk_data.get("slot_id", ""),
             lsi_id=disk_data.get("lsi_id", "Unknown"),
+            device_id=disk_data.get("lsi_id", "N/A"),  # MegaCLI's "Device Id:" is the DID
             media_type=disk_data.get("media_type", "Unknown"),
             model=model,
             size=disk_data.get("size", "Unknown"),
@@ -1761,6 +1773,7 @@ class RAIDParser:
             enclosure_id=disk_data.get("enclosure_id", "Unknown"),
             slot_id=disk_data.get("slot_id", "Unknown"),
             lsi_id=disk_data.get("lsi_id", "Unknown"),
+            device_id=disk_data.get("lsi_id", "N/A"),  # MegaCLI's "Device Id:" is the DID
             media_type=disk_data.get("media_type", "Unknown"),
             model=model,
             size=disk_data.get("size", "Unknown"),
@@ -1939,7 +1952,7 @@ class NormalFormatter(OutputFormatter):
         status_width = max(len("Status"), max(len(d.state) for d in disks))
 
         # Header
-        header_fmt = f"{'-- ID':<{id_width}} | {'Type':<4} | {f'Drive Model':<{model_width}} | {'Size':<{size_width}} | {f'Status':<{status_width}} | {'Speed':<8} | {'Temp':<4} | {'Slot ID':<8} | {'LSI ID':<8}"
+        header_fmt = f"{'-- ID':<{id_width}} | {'Type':<4} | {f'Drive Model':<{model_width}} | {'Size':<{size_width}} | {f'Status':<{status_width}} | {'Speed':<8} | {'Temp':<4} | {'Slot ID':<8} | {'DID':<4} | {'LSI ID':<8}"
         lines.append(header_fmt)
 
         # Disks
@@ -1947,7 +1960,7 @@ class NormalFormatter(OutputFormatter):
             disk_id = f"c{disk.controller_id}u{disk.array_id}p{disk.disk_id}"
             slot_info = f"[{disk.enclosure_id}:{disk.slot_id}]"
 
-            line_fmt = f"{disk_id:<{id_width}} | {disk.media_type:<4} | {disk.model:<{model_width}} | {disk.size:<{size_width}} | {disk.state:<{status_width}} | {disk.speed:<8} | {disk.temperature:<4} | {slot_info:<8} | {disk.lsi_id:<8}"
+            line_fmt = f"{disk_id:<{id_width}} | {disk.media_type:<4} | {disk.model:<{model_width}} | {disk.size:<{size_width}} | {disk.state:<{status_width}} | {disk.speed:<8} | {disk.temperature:<4} | {slot_info:<8} | {disk.device_id:<4} | {disk.lsi_id:<8}"
             lines.append(line_fmt)
 
         lines.append("")
@@ -1967,7 +1980,7 @@ class NormalFormatter(OutputFormatter):
         status_width = max(len("Status"), max(len(d.state) for d in disks))
 
         # Header (same as regular disks but with Path column like legacy)
-        header_fmt = f"{'-- ID':<{id_width}} | {'Type':<4} | {f'Drive Model':<{model_width}} | {'Size':<{size_width}} | {f'Status':<{status_width}} | {'Speed':<8} | {'Temp':<4} | {'Slot ID':<8} | {'LSI ID':<8} | {'Path':<8}"
+        header_fmt = f"{'-- ID':<{id_width}} | {'Type':<4} | {f'Drive Model':<{model_width}} | {'Size':<{size_width}} | {f'Status':<{status_width}} | {'Speed':<8} | {'Temp':<4} | {'Slot ID':<8} | {'DID':<4} | {'LSI ID':<8} | {'Path':<8}"
         lines.append(header_fmt)
 
         # Unconfigured disks
@@ -1975,7 +1988,7 @@ class NormalFormatter(OutputFormatter):
             disk_id = f"c{disk.controller_id}uXp{disk.disk_id}"  # Legacy format for unconfigured
             slot_info = f"[{disk.enclosure_id}:{disk.slot_id}]"
 
-            line_fmt = f"{disk_id:<{id_width}} | {disk.media_type:<4} | {disk.model:<{model_width}} | {disk.size:<{size_width}} | {disk.state:<{status_width}} | {disk.speed:<8} | {disk.temperature:<4} | {slot_info:<8} | {disk.lsi_id:<8} | {'N/A':<8}"
+            line_fmt = f"{disk_id:<{id_width}} | {disk.media_type:<4} | {disk.model:<{model_width}} | {disk.size:<{size_width}} | {disk.state:<{status_width}} | {disk.speed:<8} | {disk.temperature:<4} | {slot_info:<8} | {disk.device_id:<4} | {disk.lsi_id:<8} | {'N/A':<8}"
             lines.append(line_fmt)
 
         lines.append("")
@@ -2445,6 +2458,7 @@ class RAIDStatusChecker:
             validated["speed"] = data.get("speed", "Unknown")
             validated["temperature"] = data.get("temperature", "N/A")
             validated["lsi_id"] = str(data.get("lsi_id", "Unknown"))
+            validated["device_id"] = str(data.get("device_id", "N/A"))
 
         # Log if we had to use defaults
         missing_fields = [k for k, v in validated.items() if v in ["Unknown", "N/A", ""]]
