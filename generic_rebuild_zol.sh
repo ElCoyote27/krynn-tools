@@ -3,9 +3,16 @@
 #
 #   ./generic_rebuild_zol.sh -r 2.4.4
 #   ./generic_rebuild_zol.sh --release 2.3.9 -s
+#   ./generic_rebuild_zol.sh --akmod --source /net/.../zfs   # akmod from fork
+#   ./generic_rebuild_zol.sh -r 2.4.4 --akmod                # akmod from tag
 #
 # Fedora: rpm-utils + rpm-dkms (no kmod; Fedora has no RHEL kABI/KMP stack).
 # EL:     rpm-utils + rpm-kmod + rpm-dkms -> RHEL${major}/kmods/el${major}_${minor}
+#
+# --akmod       Also build the rpm-akmod target (akmod-zfs-kmod package).
+# --source PATH Use a local git repo (e.g. a fork with akmod patches) instead
+#               of cloning from upstream.  When --source is given, --release
+#               is optional; if omitted the version in META is used as-is.
 
 set -euo pipefail
 
@@ -16,16 +23,23 @@ fi
 
 ZFS_GIT="/usr/src/zfs"
 ZFS_ORIGIN="https://github.com/zfsonlinux/zfs.git"
-#ZFS_ORIGIN="https://github.com/tonyhutter/zfs.git"
 PATCH=""
-#PATCH="/net/imladris/export/home/raistlin/World/Vincent/Code/GIT/zfs/zfs-akmod-2.3.z-DUAL-SPEC.patch"
 REPO_ROOT="/net/imladris/export/shared/data/install/RedHat"
 MAKE_JOBS="${MAKE_JOBS:-$(nproc)}"
 SIGN=0
 ZFS_REL=""
+AKMOD=0
+ZFS_SOURCE=""
 
 usage() {
-	echo "Usage: ${0##*/} -r|--release X.Y.Z [-s|--sign]" >&2
+	cat >&2 <<-EOF
+	Usage: ${0##*/} [options]
+	  -r|--release X.Y.Z   ZFS release tag to build (required unless --source)
+	  -s|--sign             Sign the produced RPMs
+	  --akmod               Also build akmod packages (rpm-akmod target)
+	  --source PATH         Use a local git repo instead of upstream clone
+	  -h|--help             This help
+	EOF
 	exit 2
 }
 
@@ -51,6 +65,19 @@ while [[ $# -gt 0 ]]; do
 			ZFS_REL="${1#*=}"
 			shift
 			;;
+		--akmod)
+			AKMOD=1
+			shift
+			;;
+		--source)
+			need_arg "$@"
+			ZFS_SOURCE="$2"
+			shift 2
+			;;
+		--source=*)
+			ZFS_SOURCE="${1#*=}"
+			shift
+			;;
 		-h|--help)
 			usage
 			;;
@@ -59,14 +86,14 @@ while [[ $# -gt 0 ]]; do
 			usage
 			;;
 		*)
-			echo "${0##*/}: unexpected argument: $1 (use -r|--release)" >&2
+			echo "${0##*/}: unexpected argument: $1" >&2
 			usage
 			;;
 	esac
 done
 
-if [[ -z "${ZFS_REL}" ]]; then
-	echo "${0##*/}: --release is required" >&2
+if [[ -z "${ZFS_REL}" && -z "${ZFS_SOURCE}" ]]; then
+	echo "${0##*/}: --release or --source is required" >&2
 	usage
 fi
 
@@ -89,22 +116,50 @@ fi
 el_major="${VERSION_ID%%.*}"
 el_minor="${VERSION_ID#*.}"
 
-echo "ZFS_REL=${ZFS_REL} tag=zfs-${ZFS_REL} distro=${distro} ${VERSION_ID}"
-
-if [[ ! -d "${ZFS_GIT}/.git" ]]; then
-	mkdir -p "$(dirname "${ZFS_GIT}")"
-	git clone "${ZFS_ORIGIN}" "${ZFS_GIT}"
+if [[ -n "${ZFS_REL}" ]]; then
+	echo "ZFS_REL=${ZFS_REL} tag=zfs-${ZFS_REL} distro=${distro} ${VERSION_ID}"
+else
+	echo "ZFS_SOURCE=${ZFS_SOURCE} distro=${distro} ${VERSION_ID}"
 fi
-test -d "${ZFS_GIT}/.git" || exit 1
+
+if [[ -n "${ZFS_SOURCE}" ]]; then
+	# --source mode: rsync a local fork repo into /usr/src/zfs
+	if [[ ! -d "${ZFS_SOURCE}/.git" ]]; then
+		echo "${0##*/}: --source path '${ZFS_SOURCE}' is not a git repo" >&2
+		exit 1
+	fi
+	echo "Syncing source from ${ZFS_SOURCE} -> ${ZFS_GIT} ..."
+	mkdir -p "${ZFS_GIT}"
+	rsync -a --delete --exclude='.git' "${ZFS_SOURCE}/" "${ZFS_GIT}/"
+	# Initialise a throwaway git repo so autogen.sh works (it may call git)
+	if [[ ! -d "${ZFS_GIT}/.git" ]]; then
+		git -C "${ZFS_GIT}" init -q
+		git -C "${ZFS_GIT}" add -A
+		git -C "${ZFS_GIT}" commit -q -m "import from ${ZFS_SOURCE}"
+	fi
+	# Derive version from META if --release was not given
+	if [[ -z "${ZFS_REL}" ]]; then
+		ZFS_REL="$(awk -F: '/^Version:/{gsub(/[[:space:]]/, "", $2); print $2; exit}' "${ZFS_GIT}/META")"
+		echo "Derived ZFS_REL=${ZFS_REL} from META"
+	fi
+else
+	# Standard mode: clone/checkout upstream release tag
+	if [[ ! -d "${ZFS_GIT}/.git" ]]; then
+		mkdir -p "$(dirname "${ZFS_GIT}")"
+		git clone "${ZFS_ORIGIN}" "${ZFS_GIT}"
+	fi
+	test -d "${ZFS_GIT}/.git" || exit 1
+	cd "${ZFS_GIT}"
+	if [[ -f Makefile ]]; then
+		gmake distclean-generic || true
+	fi
+	git reset --hard
+	git fetch origin
+	git checkout "zfs-${ZFS_REL}"
+	git reset --hard "zfs-${ZFS_REL}"
+fi
+
 cd "${ZFS_GIT}"
-if [[ -f Makefile ]]; then
-	gmake distclean-generic || true
-fi
-git reset --hard
-git fetch origin
-git checkout "zfs-${ZFS_REL}"
-git reset --hard "zfs-${ZFS_REL}"
-
 shopt -s nullglob
 /bin/rm -fv ./*.{x86_64,noarch,src}.rpm
 
@@ -112,8 +167,10 @@ if [[ -n "${PATCH}" ]]; then
 	patch -p1 < "${PATCH}"
 fi
 
+# Bump Release for local builds (allows clean upgrades over previous packages)
+sed -i -e 's/^\(Release:[[:space:]]*\).*/\12/' META
 if [[ -n "${el_minor}" ]]; then
-	sed -i -e "/Release:.*1/s/\$/\.${el_minor}/" META
+	sed -i -e "/^Release:/s/$/\.${el_minor}/" META
 	if [[ "${distro}" != Fedora ]]; then
 		sed -i -e 's@BuildRequires:  %kernel_module_package_buildreqs@BuildRequires: kernel-devel@' \
 			rpm/redhat/zfs-kmod.spec.in
@@ -129,6 +186,10 @@ case "${distro}" in
 	Fedora) rpm_targets=(rpm-utils rpm-dkms) ;;
 	*)      rpm_targets=(rpm-utils rpm-kmod rpm-dkms) ;;
 esac
+if (( AKMOD )); then
+	rpm_targets+=(rpm-akmod)
+fi
+echo "Build targets: ${rpm_targets[*]}"
 for target in "${rpm_targets[@]}"; do
 	if make -j"${MAKE_JOBS}" "${target}"; then
 		echo "make ${target}: ok"
