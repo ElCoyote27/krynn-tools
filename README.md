@@ -39,6 +39,8 @@ A collection of system administration and diagnostic tools for Linux environment
 |------|-------------|
 | **odf-storage-report.py** | ODF storage consumption report (Ceph, PVCs, Quay, ACM) |
 | **odf-storage-report.sh** | ODF storage consumption report (legacy shell version) |
+| **quay-sync-tasks.py** | Inspect and manage Quay mirror sync tasks (per-org breakdown, stuck/failed cleanup) |
+| **quay-s3-gc.sh** | Reconcile and clean up orphaned S3 objects in a Quay NooBaa bucket |
 | **wipe_disks.sh** | ODF/Ceph disk wiping tool with LUKS cleanup and multi-method root disk detection |
 | **bfg-acm-thanos-s3.sh** | Fix ACM Observability by purging and recreating a full Thanos S3 bucket |
 | **ocp_disconnected_optouts.sh** | Disable Insights, telemetry, and CDI imports for disconnected OCP clusters |
@@ -132,6 +134,10 @@ sudo ./filewatch -rw /etc/hosts -k     # include kernel stacks
 # OpenShift / ODF
 export KUBECONFIG=/path/to/kubeconfig
 ./odf-storage-report.py            # ODF storage consumption report
+./quay-sync-tasks.py                       # Show Quay mirror sync status per org (read-only)
+./quay-sync-tasks.py --cancel-all-running  # Cancel stuck SYNCING/SYNC_NOW tasks
+./quay-sync-tasks.py --clean-failed-tasks  # Reset FAIL tasks for retry
+./quay-sync-tasks.py --clean-all           # Reset all non-successful tasks
 ./wipe_disks.sh --help              # ODF/Ceph disk wiping
 ./bfg-acm-thanos-s3.sh             # Purge and recreate Thanos S3 bucket
 
