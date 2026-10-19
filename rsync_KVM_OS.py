@@ -10,8 +10,8 @@ hypervisor-specific configurations.
 Author: Vincent S. Cojot
 """
 
-# $Id: rsync_KVM_OS.py,v 1.22 2026/09/12 08:38:59 root Exp root $
-__version__ = "rsync_KVM_OS.py,v 1.21 2026/08/22 12:06:00 python-conversion Exp"
+# $Id: rsync_KVM_OS.py,v 1.25 2026/10/19 13:50:18 root Exp root $
+__version__ = "rsync_KVM_OS.py,v 1.25 2026/10/19 12:06:00 python-conversion Exp"
 
 #
 # VERSION HISTORY:
@@ -223,7 +223,7 @@ DEFAULT_VM_LIST = [
     "bdc416x", "bdc417x", "bdc418x", "bdc419x", "bdc420x", "bdc421x", "bdc422x",
     "bdc423x", "bdc424x", "bdc425x", "bdc426x", "bdc427x", "bdc428x",
     "sat6", "ca8", "idm00", "idm01" ,"mailhost", "registry", "quay3", "vxvom",
-    "kali-x64", "freenas-11", "ubuntu-x64", "dsm7", "ocp4v", "ocp4t",
+    "kali-x64", "freenas-11", "ubuntu-x64", "dsm7", "ocp4v", "ocp4w",
     "rhel3-x86", "rhel4-x86", "rhel5-x86", "rhel5-x64", "rhel6-x86",
     "rhel6-x64", "rhel7-x64", "rhel8-x64", "rhel9-x64", "rhel10-x64",
     "coreos-sno-0", "coreos-sno-1", "coreos-sno-2", "coreos-sno-3",
