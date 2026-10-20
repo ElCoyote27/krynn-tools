@@ -19,9 +19,14 @@ oc patch hyperconverged kubevirt-hyperconverged -n openshift-cnv \
 # Set upstream to none for disconnected:
 oc patch clusterversion/version --patch '{"spec":{"upstream":""}}' --type=merge
 
-# Disable Telemeter client (1/2)
-oc get cm -n openshift-monitoring cluster-monitoring-config -o jsonpath='{.data.config\.yaml}' | \
-sed -E '/^telemeterClient:$/ {N; /\n[[:space:]]{2,}enabled:/ d; }' > /var/tmp/cluster-monitoring-config.yaml
-printf '\ntelemeterClient:\n  enabled: false\n' >> /var/tmp/cluster-monitoring-config.yaml
-jq -n --arg cfg "$(cat /var/tmp/cluster-monitoring-config.yaml)" '{data:{"config.yaml":$cfg}}' > /var/tmp/cluster-monitoring-config-patch.json
-oc patch cm -n openshift-monitoring cluster-monitoring-config --type=merge --patch-file /var/tmp/cluster-monitoring-config-patch.json
+# Disable Telemeter client
+if oc get cm -n openshift-monitoring cluster-monitoring-config >/dev/null 2>&1; then
+  oc get cm -n openshift-monitoring cluster-monitoring-config -o jsonpath='{.data.config\.yaml}' | \
+  sed -E '/^telemeterClient:$/ {N; /\n[[:space:]]{2,}enabled:/ d; }' > /var/tmp/cluster-monitoring-config.yaml
+  printf '\ntelemeterClient:\n  enabled: false\n' >> /var/tmp/cluster-monitoring-config.yaml
+  jq -n --arg cfg "$(cat /var/tmp/cluster-monitoring-config.yaml)" '{data:{"config.yaml":$cfg}}' > /var/tmp/cluster-monitoring-config-patch.json
+  oc patch cm -n openshift-monitoring cluster-monitoring-config --type=merge --patch-file /var/tmp/cluster-monitoring-config-patch.json
+  rm -f /var/tmp/cluster-monitoring-config.yaml /var/tmp/cluster-monitoring-config-patch.json
+else
+  echo "SKIP: cluster-monitoring-config not found (Telemeter not configured)."
+fi
