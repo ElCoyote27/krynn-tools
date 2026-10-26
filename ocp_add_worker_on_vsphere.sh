@@ -26,7 +26,7 @@ ok()   { echo -e "${GREEN} OK: $*${NC}"; }
 warn() { echo -e "${YELLOW}WARNING: $*${NC}"; }
 
 NS="openshift-machine-api"
-WAIT_TIMEOUT=600
+WAIT_TIMEOUT=1800
 
 # ── Arg parsing ──────────────────────────────────
 IP="${1:-}"
