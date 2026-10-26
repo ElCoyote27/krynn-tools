@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# quay-s3-gc.sh v2.00
+# ocp-quay-s3-gc.sh v2.01
 #
 # Reconcile and clean up orphaned S3 objects in a Quay NooBaa bucket.
 #
@@ -23,8 +23,8 @@
 #
 # Usage:
 #   export KUBECONFIG=/path/to/kubeconfig
-#   ./quay-s3-gc.sh                  # dry-run (default)
-#   ./quay-s3-gc.sh --delete         # actually delete orphans
+#   ./ocp-quay-s3-gc.sh                  # dry-run (default)
+#   ./ocp-quay-s3-gc.sh --delete         # actually delete orphans
 #
 # Requirements:
 #   - oc (OpenShift CLI) in PATH
@@ -38,16 +38,21 @@ set -euo pipefail
 
 DELETE_MODE=false
 BATCH_SIZE=100
+QUAY_NS=""
 
-for arg in "$@"; do
-    case "$arg" in
-        --delete) DELETE_MODE=true ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --delete)      DELETE_MODE=true; shift ;;
+        --namespace)   QUAY_NS="$2"; shift 2 ;;
+        --namespace=*) QUAY_NS="${1#*=}"; shift ;;
         --help|-h)
-            echo "Usage: $0 [--delete]"
+            echo "Usage: $0 [--delete] [--namespace <ns>]"
             echo "  Default: dry-run mode (report orphans only)"
-            echo "  --delete: actually delete orphaned S3 objects"
+            echo "  --delete:         actually delete orphaned S3 objects"
+            echo "  --namespace <ns>: Quay namespace (auto-detected)"
             exit 0
             ;;
+        *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
 
@@ -55,50 +60,58 @@ done
 # Pre-flight
 # ---------------------------------------------------------------------------
 
-if [[ -z "${KUBECONFIG:-}" ]]; then
-    echo "(EE) KUBECONFIG is not set."
-    echo "    export KUBECONFIG=/path/to/kubeconfig"
-    exit 1
-fi
-
 HUB_API=$(oc whoami --show-server 2>/dev/null || true)
 if [[ -z "$HUB_API" ]]; then
-    echo "(EE) Cannot reach cluster via KUBECONFIG=$KUBECONFIG"
+    echo "(EE) Cannot reach cluster. Check \$KUBECONFIG or ~/.kube/config."
     exit 1
 fi
 HUB_SHORT=$(echo "$HUB_API" | sed 's|https\?://api\.||; s|:[0-9]*/?$||' | cut -d. -f1)
 echo "(II) Connected to: $HUB_SHORT ($HUB_API)"
 
 # Discover Quay namespace
-QUAY_NS=""
-for ns in quay quay-enterprise; do
-    if oc get namespace "$ns" &>/dev/null; then
-        QUAY_NS="$ns"
-        break
-    fi
-done
 if [[ -z "$QUAY_NS" ]]; then
-    echo "(EE) No Quay namespace found."
+    QUAY_NS=$(oc get quayregistry -A -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null || true)
+    [[ -z "$QUAY_NS" ]] && QUAY_NS=$(oc get pods -A -l quay-component=quay-app \
+        -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null || true)
+    [[ -z "$QUAY_NS" ]] && QUAY_NS=$(oc get pods -A 2>/dev/null \
+        | grep -iE 'quay.*app|quay.*database' | grep -v clair \
+        | awk '{print $1}' | head -1)
+fi
+if [[ -z "$QUAY_NS" ]]; then
+    echo "(EE) No Quay namespace found. Use --namespace to specify."
     exit 1
 fi
 echo "(II) Quay namespace: $QUAY_NS"
 
-# Discover Quay DB pod and database name
+# Discover Quay DB pod
 QUAY_DB_POD=""
 for label in "quay-component=postgres" "quay-component=quay-database"; do
     QUAY_DB_POD=$(oc get pods -n "$QUAY_NS" -l "$label" \
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) || true
     [[ -n "$QUAY_DB_POD" ]] && break
 done
+[[ -z "$QUAY_DB_POD" ]] && QUAY_DB_POD=$(oc get pods -n "$QUAY_NS" -o name 2>/dev/null \
+    | grep -iE 'database|postgres' | grep -v clair | head -1 | sed 's|pod/||')
 if [[ -z "$QUAY_DB_POD" ]]; then
     echo "(EE) No Quay database pod found in $QUAY_NS."
     exit 1
 fi
 
-QUAY_CR=$(oc get quayregistry -n "$QUAY_NS" \
-    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) || true
-QUAY_DB="${QUAY_CR:-regional-quay}-quay-database"
-echo "(II) Quay DB pod: $QUAY_DB_POD  DB: $QUAY_DB"
+# Auto-detect DB user and name
+DB_USER=$(oc exec -n "$QUAY_NS" "$QUAY_DB_POD" -- psql -U postgres -t \
+    -c "SELECT usename FROM pg_user WHERE usename != 'postgres';" 2>/dev/null \
+    | tr -d ' \n\r')
+[[ -z "$DB_USER" ]] && DB_USER="postgres"
+
+QUAY_DB=$(oc exec -n "$QUAY_NS" "$QUAY_DB_POD" -- psql -U "$DB_USER" -t \
+    -c "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres','template0','template1');" 2>/dev/null \
+    | grep -i quay | head -1 | tr -d ' \n\r')
+if [[ -z "$QUAY_DB" ]]; then
+    QUAY_CR=$(oc get quayregistry -n "$QUAY_NS" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) || true
+    QUAY_DB="${QUAY_CR:-regional-quay}-quay-database"
+fi
+echo "(II) Quay DB pod: $QUAY_DB_POD  DB: $QUAY_DB (user: $DB_USER)"
 
 # Discover NooBaa
 NOOBAA_POD=$(oc get pods -n openshift-storage -l noobaa-core=noobaa \
@@ -153,7 +166,7 @@ S3UPLOADS="${TMPDIR}/s3uploads"
 ORPHANS="${TMPDIR}/orphans"
 
 oc exec "$QUAY_DB_POD" -n "$QUAY_NS" -- \
-    psql -U postgres -d "$QUAY_DB" -P pager=off -t -A -c \
+    psql -U "$DB_USER" -d "$QUAY_DB" -P pager=off -t -A -c \
     "SELECT content_checksum FROM imagestorage
      WHERE content_checksum IS NOT NULL;" \
     | sed 's/^sha256://' | sort -u > "$QUAY_HASHES"

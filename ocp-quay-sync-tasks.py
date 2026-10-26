@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-# quay-sync-tasks.py v1.00
+# ocp-quay-sync-tasks.py v1.01
 #
 # Inspect and cancel stuck Quay mirror sync tasks on OpenShift clusters.
 #
@@ -24,16 +24,16 @@ from __future__ import annotations
 #   export KUBECONFIG=/path/to/your-cluster-kubeconfig
 #
 #   # Read-only report (default):
-#   ./quay-sync-tasks.py
+#   ./ocp-quay-sync-tasks.py
 #
 #   # Cancel all stuck tasks (SYNCING/SYNC_NOW):
-#   ./quay-sync-tasks.py --cancel-all-running
+#   ./ocp-quay-sync-tasks.py --cancel-all-running
 #
 #   # Reset all failed tasks (FAIL):
-#   ./quay-sync-tasks.py --clean-failed-tasks
+#   ./ocp-quay-sync-tasks.py --clean-failed-tasks
 #
 #   # Both at once:
-#   ./quay-sync-tasks.py --cancel-all-running --clean-failed-tasks
+#   ./ocp-quay-sync-tasks.py --cancel-all-running --clean-failed-tasks
 #
 # Requirements:
 #   - oc (OpenShift CLI) in PATH
@@ -185,20 +185,9 @@ def progress_clear():
 # ===================================================================
 
 def preflight():
-    kubeconfig = os.environ.get("KUBECONFIG", "")
-    if not kubeconfig:
-        print(err("KUBECONFIG is not set."))
-        print("    Export the cluster kubeconfig before running this script, e.g.:")
-        print("      export KUBECONFIG=/path/to/kubeconfig")
-        sys.exit(1)
-    if not os.path.isfile(kubeconfig):
-        print(err(f"KUBECONFIG={kubeconfig} does not exist."))
-        sys.exit(1)
-
     hub_api = run(["oc", "whoami", "--show-server"]).strip()
     if not hub_api:
-        print(err(f"Cannot reach cluster via KUBECONFIG={kubeconfig}"))
-        print(err("Check your VPN, proxy, and certificate settings."))
+        print(err("Cannot reach cluster. Check $KUBECONFIG or ~/.kube/config."))
         sys.exit(1)
 
     hub_fqdn = re.sub(r"https?://api\.", "", hub_api)
@@ -259,17 +248,51 @@ def discover_quay_registries() -> list[dict]:
                 break
 
         if not db_pod:
+            # Try by pod name pattern
+            all_pods = run([
+                "oc", "get", "pods", "-n", quay_ns, "-o", "name",
+            ]).strip()
+            for pod_line in all_pods.splitlines():
+                pod_name = pod_line.replace("pod/", "").strip()
+                if re.search(r"database|postgres", pod_name, re.I) \
+                        and "clair" not in pod_name.lower():
+                    db_pod = pod_name
+                    break
+
+        if not db_pod:
             print(warn(
                 f"No DB pod found for QuayRegistry '{quay_cr}' "
                 f"in namespace '{quay_ns}'. Skipping."))
             continue
 
-        quay_db = f"{quay_cr}-quay-database"
+        # Auto-detect DB user
+        db_user = run([
+            "oc", "exec", db_pod, "-n", quay_ns, "--",
+            "psql", "-U", "postgres", "-t",
+            "-c", "SELECT usename FROM pg_user WHERE usename != 'postgres';",
+        ]).strip().split("\n")[0].strip()
+        if not db_user:
+            db_user = "postgres"
+
+        # Auto-detect DB name
+        db_names = run([
+            "oc", "exec", db_pod, "-n", quay_ns, "--",
+            "psql", "-U", db_user, "-t",
+            "-c", "SELECT datname FROM pg_database "
+                  "WHERE datname NOT IN ('postgres','template0','template1');",
+        ]).strip()
+        quay_db = ""
+        for line in db_names.splitlines():
+            if "quay" in line.lower():
+                quay_db = line.strip()
+                break
+        if not quay_db:
+            quay_db = f"{quay_cr}-quay-database"
 
         # Validate DB connectivity
         check = run([
             "oc", "exec", db_pod, "-n", quay_ns, "--",
-            "psql", "-U", "postgres", "-d", quay_db, "-c", "SELECT 1;",
+            "psql", "-U", db_user, "-d", quay_db, "-c", "SELECT 1;",
         ])
         if not check:
             print(warn(
@@ -282,6 +305,7 @@ def discover_quay_registries() -> list[dict]:
             "cr":      quay_cr,
             "ver":     quay_ver,
             "db_pod":  db_pod,
+            "db_user": db_user,
             "quay_db": quay_db,
         })
 
@@ -299,10 +323,11 @@ def discover_quay_registries() -> list[dict]:
 # Database helpers
 # ===================================================================
 
-def quay_psql(quay_ns: str, db_pod: str, quay_db: str, sql: str) -> str:
+def quay_psql(quay_ns: str, db_pod: str, quay_db: str, sql: str,
+              db_user: str = "postgres") -> str:
     return run([
         "oc", "exec", db_pod, "-n", quay_ns, "--",
-        "psql", "-U", "postgres", "-d", quay_db,
+        "psql", "-U", db_user, "-d", quay_db,
         "-P", "pager=off", "-t", "-A", "-F|", "-c", sql,
     ])
 
@@ -311,7 +336,8 @@ def quay_psql(quay_ns: str, db_pod: str, quay_db: str, sql: str) -> str:
 # Query sync tasks
 # ===================================================================
 
-def get_stuck_syncs(quay_ns: str, db_pod: str, quay_db: str) -> list[dict]:
+def get_stuck_syncs(quay_ns: str, db_pod: str, quay_db: str,
+                    db_user: str = "postgres") -> list[dict]:
     """Query the database for all mirror configs in SYNC_NOW or SYNCING state."""
     progress("Querying stuck sync tasks...")
 
@@ -331,7 +357,7 @@ def get_stuck_syncs(quay_ns: str, db_pod: str, quay_db: str) -> list[dict]:
         ORDER BY rmc.sync_start_date ASC NULLS FIRST;
     """
 
-    raw = quay_psql(quay_ns, db_pod, quay_db, sql)
+    raw = quay_psql(quay_ns, db_pod, quay_db, sql, db_user)
     progress_clear()
 
     if not raw or not raw.strip():
@@ -357,7 +383,8 @@ def get_stuck_syncs(quay_ns: str, db_pod: str, quay_db: str) -> list[dict]:
     return stuck
 
 
-def get_sync_summary(quay_ns: str, db_pod: str, quay_db: str) -> dict:
+def get_sync_summary(quay_ns: str, db_pod: str, quay_db: str,
+                     db_user: str = "postgres") -> dict:
     """Get a count of all mirror configs by status."""
     sql = """
         SELECT coalesce(rmc.sync_status, -1), count(*)
@@ -365,7 +392,7 @@ def get_sync_summary(quay_ns: str, db_pod: str, quay_db: str) -> dict:
         GROUP BY coalesce(rmc.sync_status, -1)
         ORDER BY coalesce(rmc.sync_status, -1);
     """
-    raw = quay_psql(quay_ns, db_pod, quay_db, sql)
+    raw = quay_psql(quay_ns, db_pod, quay_db, sql, db_user)
     summary = {}
     if raw:
         for line in raw.strip().splitlines():
@@ -378,7 +405,8 @@ def get_sync_summary(quay_ns: str, db_pod: str, quay_db: str) -> dict:
     return summary
 
 
-def get_failed_syncs(quay_ns: str, db_pod: str, quay_db: str) -> list[dict]:
+def get_failed_syncs(quay_ns: str, db_pod: str, quay_db: str,
+                     db_user: str = "postgres") -> list[dict]:
     """Query the database for all mirror configs in FAIL state."""
     progress("Querying failed sync tasks...")
 
@@ -398,7 +426,7 @@ def get_failed_syncs(quay_ns: str, db_pod: str, quay_db: str) -> list[dict]:
         ORDER BY u.username, r.name;
     """
 
-    raw = quay_psql(quay_ns, db_pod, quay_db, sql)
+    raw = quay_psql(quay_ns, db_pod, quay_db, sql, db_user)
     progress_clear()
 
     if not raw or not raw.strip():
@@ -424,14 +452,15 @@ def get_failed_syncs(quay_ns: str, db_pod: str, quay_db: str) -> list[dict]:
     return failed
 
 
-def get_unset_count(quay_ns: str, db_pod: str, quay_db: str) -> int:
+def get_unset_count(quay_ns: str, db_pod: str, quay_db: str,
+                    db_user: str = "postgres") -> int:
     """Count mirror configs with NULL sync_status."""
     sql = """
         SELECT count(*)
         FROM repomirrorconfig
         WHERE sync_status IS NULL;
     """
-    raw = quay_psql(quay_ns, db_pod, quay_db, sql)
+    raw = quay_psql(quay_ns, db_pod, quay_db, sql, db_user)
     if raw and raw.strip().isdigit():
         return int(raw.strip())
     return 0
@@ -439,6 +468,7 @@ def get_unset_count(quay_ns: str, db_pod: str, quay_db: str) -> int:
 
 def reset_null_syncs(
     quay_ns: str, db_pod: str, quay_db: str,
+    db_user: str = "postgres",
 ) -> int:
     """Reset NULL or invalid sync_status to NEVER_RUN (0). Returns affected rows."""
     sql = """
@@ -451,14 +481,15 @@ def reset_null_syncs(
     """
     out = run([
         "oc", "exec", db_pod, "-n", quay_ns, "--",
-        "psql", "-U", "postgres", "-d", quay_db,
+        "psql", "-U", db_user, "-d", quay_db,
         "-c", sql,
     ])
     m = re.search(r"UPDATE\s+(\d+)", out)
     return int(m.group(1)) if m else 0
 
 
-def get_org_breakdown(quay_ns: str, db_pod: str, quay_db: str) -> list[dict]:
+def get_org_breakdown(quay_ns: str, db_pod: str, quay_db: str,
+                      db_user: str = "postgres") -> list[dict]:
     """Get per-org mirror sync status breakdown."""
     progress("Querying per-org mirror breakdown...")
 
@@ -479,7 +510,7 @@ def get_org_breakdown(quay_ns: str, db_pod: str, quay_db: str) -> list[dict]:
         ORDER BY count(*) DESC;
     """
 
-    raw = quay_psql(quay_ns, db_pod, quay_db, sql)
+    raw = quay_psql(quay_ns, db_pod, quay_db, sql, db_user)
     progress_clear()
 
     if not raw or not raw.strip():
@@ -511,6 +542,7 @@ def get_org_breakdown(quay_ns: str, db_pod: str, quay_db: str) -> list[dict]:
 def reset_syncs(
     quay_ns: str, db_pod: str, quay_db: str,
     states: tuple[int, ...],
+    db_user: str = "postgres",
 ) -> int:
     """Reset mirror configs in given states to NEVER_RUN. Returns affected rows."""
     placeholders = ", ".join(str(s) for s in states)
@@ -523,7 +555,7 @@ def reset_syncs(
     """
     out = run([
         "oc", "exec", db_pod, "-n", quay_ns, "--",
-        "psql", "-U", "postgres", "-d", quay_db,
+        "psql", "-U", db_user, "-d", quay_db,
         "-c", sql,
     ])
     m = re.search(r"UPDATE\s+(\d+)", out)
@@ -829,13 +861,14 @@ def process_registry(
     quay_cr = reg["cr"]
     quay_ver = reg["ver"]
     db_pod = reg["db_pod"]
+    db_user = reg.get("db_user", "postgres")
     quay_db = reg["quay_db"]
 
     # Gather data
-    summary = get_sync_summary(quay_ns, db_pod, quay_db)
-    org_data = get_org_breakdown(quay_ns, db_pod, quay_db)
-    stuck = get_stuck_syncs(quay_ns, db_pod, quay_db)
-    failed = get_failed_syncs(quay_ns, db_pod, quay_db)
+    summary = get_sync_summary(quay_ns, db_pod, quay_db, db_user)
+    org_data = get_org_breakdown(quay_ns, db_pod, quay_db, db_user)
+    stuck = get_stuck_syncs(quay_ns, db_pod, quay_db, db_user)
+    failed = get_failed_syncs(quay_ns, db_pod, quay_db, db_user)
     unset_count = summary.get("UNSET", 0)
 
     # Render report (always shown)
@@ -896,7 +929,7 @@ def process_registry(
             sys.exit(0)
         if answer in ("y", "yes"):
             progress("Cancelling stuck sync tasks...")
-            affected = reset_syncs(quay_ns, db_pod, quay_db, (3, 4))
+            affected = reset_syncs(quay_ns, db_pod, quay_db, (3, 4), db_user)
             progress_clear()
             if affected > 0:
                 print(ok(f"Reset {affected} stuck tasks to NEVER_RUN."))
@@ -928,7 +961,7 @@ def process_registry(
             sys.exit(0)
         if answer in ("y", "yes"):
             progress("Resetting failed sync tasks...")
-            affected = reset_syncs(quay_ns, db_pod, quay_db, (2,))
+            affected = reset_syncs(quay_ns, db_pod, quay_db, (2,), db_user)
             progress_clear()
             if affected > 0:
                 print(ok(f"Reset {affected} failed tasks to NEVER_RUN."))
@@ -955,7 +988,7 @@ def process_registry(
             sys.exit(0)
         if answer in ("y", "yes"):
             progress("Resetting unset sync tasks...")
-            affected = reset_null_syncs(quay_ns, db_pod, quay_db)
+            affected = reset_null_syncs(quay_ns, db_pod, quay_db, db_user)
             progress_clear()
             if affected > 0:
                 print(ok(f"Reset {affected} unset tasks to NEVER_RUN."))
@@ -970,7 +1003,7 @@ def process_registry(
     # Show updated summary after any action
     if want_cancel or want_clean:
         print("")
-        new_summary = get_sync_summary(quay_ns, db_pod, quay_db)
+        new_summary = get_sync_summary(quay_ns, db_pod, quay_db, db_user)
         print(hdr(f"UPDATED MIRROR SYNC STATUS{reg_label}"))
         for line in render_summary_table(new_summary):
             print(line)
