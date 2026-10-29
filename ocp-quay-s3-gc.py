@@ -131,7 +131,7 @@ def main():
         check=False)
     db_user = ""
     for line in db_user_out.splitlines():
-        if line.strip():
+        if "quay" in line.lower():
             db_user = line.strip(); break
     if not db_user:
         db_user = "postgres"
@@ -145,7 +145,16 @@ def main():
         if "quay" in line.lower():
             db_name = line.strip(); break
     if not db_name:
-        db_name = "quay"
+        # Try with postgres superuser as fallback
+        db_name_out2 = oc_exec(quay_ns, pg_pod,
+            "psql -U postgres -t -c \"SELECT datname FROM pg_database;\"",
+            check=False)
+        for line in db_name_out2.splitlines():
+            if "quay" in line.lower():
+                db_name = line.strip(); break
+    if not db_name:
+        log_error("Could not detect Quay database name")
+        sys.exit(1)
     log_info(f"Quay DB pod: {pg_pod}  DB: {db_name} (user: {db_user})")
 
     # ─── Discover NooBaa ────────────────────────────────────────────
@@ -194,6 +203,13 @@ def main():
         if h:
             quay_hashes.add(h)
     print(f"  Quay DB has {len(quay_hashes)} unique content checksums.")
+
+    if len(quay_hashes) == 0:
+        log_error("SAFETY CHECK: 0 checksums found in Quay DB — this is likely a "
+                  "database detection error, NOT an empty registry.")
+        log_error(f"Detected DB: {db_name} (user: {db_user}) — verify this is correct!")
+        log_error("Aborting to prevent accidental deletion of all S3 objects.")
+        sys.exit(1)
 
     # ─── Step 2: List S3 objects via NooBaa RPC ─────────────────────
     print("[2/5] Listing all S3 objects in NooBaa bucket (this may take a while)...")
