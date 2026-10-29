@@ -447,47 +447,109 @@ def main():
     json.dump(creds_data, creds_file)
     creds_file.close()
 
-    # ─── Upload and run ─────────────────────────────────────────────
+    # ─── Upload scripts and creds ──────────────────────────────────
     try:
         run(f"oc cp {check_file.name} {quay_ns}/{quay_pod}:/tmp/_integrity_check.py")
-        run(f"oc cp {digest_file.name} {quay_ns}/{quay_pod}:/tmp/_integrity_digests.txt")
         run(f"oc cp {creds_file.name} {quay_ns}/{quay_pod}:/tmp/_integrity_creds.json")
     finally:
         os.unlink(check_file.name)
-        os.unlink(digest_file.name)
         os.unlink(creds_file.name)
 
-    raw_output = oc_exec(quay_ns, quay_pod,
-        "cat /tmp/_integrity_digests.txt | python3 /tmp/_integrity_check.py",
-        check=False, timeout=7200)
+    # ─── Run in chunks to avoid oc exec timeouts on large sets ──────
+    CHUNK_SIZE = 10000
+    all_missing = []
+    total_checked = total_ok = total_errors = 0
 
-    # ─── Parse progress and results ─────────────────────────────────
-    for line in raw_output.splitlines():
-        if line.startswith("PROGRESS "):
-            parts = line.split()
-            if len(parts) >= 4:
-                print(f"\r  Checked: {parts[1]} / {actual_count} | "
-                      f"Missing: {parts[2]} | Errors: {parts[3]}",
-                      end="", flush=True)
+    for chunk_start in range(0, actual_count, CHUNK_SIZE):
+        chunk_end = min(chunk_start + CHUNK_SIZE, actual_count)
+        chunk_lines = digest_lines[chunk_start:chunk_end]
+        chunk_num = chunk_start // CHUNK_SIZE + 1
+        total_chunks = (actual_count + CHUNK_SIZE - 1) // CHUNK_SIZE
+
+        if total_chunks > 1:
+            print(f"  Chunk {chunk_num}/{total_chunks}: ", end="", flush=True)
+
+        # Write chunk to temp file and upload
+        chunk_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt",
+                                                 prefix="quay_chunk_", delete=False)
+        chunk_file.write("\n".join(chunk_lines) + "\n")
+        chunk_file.close()
+        try:
+            run(f"oc cp {chunk_file.name} {quay_ns}/{quay_pod}:/tmp/_integrity_digests.txt")
+        finally:
+            os.unlink(chunk_file.name)
+
+        raw_output = oc_exec(quay_ns, quay_pod,
+            "cat /tmp/_integrity_digests.txt | python3 /tmp/_integrity_check.py",
+            check=False, timeout=3600)
+
+        # Parse progress — show only the last PROGRESS line per chunk
+        last_progress = ""
+        for line in raw_output.splitlines():
+            if line.startswith("PROGRESS "):
+                parts = line.split()
+                if len(parts) >= 4:
+                    done = chunk_start + int(parts[1])
+                    miss = len(all_missing) + int(parts[2])
+                    errs = total_errors + int(parts[3])
+                    last_progress = (f"Checked: {done} / {actual_count} | "
+                                     f"Missing: {miss} | Errors: {errs}")
+        if last_progress:
+            print(last_progress, flush=True)
+
+        # Parse results
+        chunk_results = None
+        capture = False
+        for line in raw_output.splitlines():
+            if line.strip() == "RESULTS_START":
+                capture = True; continue
+            if line.strip() == "RESULTS_END":
+                capture = False; continue
+            if capture:
+                try:
+                    chunk_results = json.loads(line)
+                except json.JSONDecodeError:
+                    pass
+
+        if not chunk_results:
+            log_error(f"Failed to get results for chunk {chunk_num} "
+                      f"(digests {chunk_start+1}-{chunk_end})")
+            log_warn("oc exec may have timed out — retrying this chunk...")
+            # One retry
+            raw_output = oc_exec(quay_ns, quay_pod,
+                "cat /tmp/_integrity_digests.txt | python3 /tmp/_integrity_check.py",
+                check=False, timeout=3600)
+            capture = False
+            for line in raw_output.splitlines():
+                if line.strip() == "RESULTS_START":
+                    capture = True; continue
+                if line.strip() == "RESULTS_END":
+                    capture = False; continue
+                if capture:
+                    try:
+                        chunk_results = json.loads(line)
+                    except json.JSONDecodeError:
+                        pass
+            if not chunk_results:
+                log_error(f"Chunk {chunk_num} failed after retry — aborting")
+                print(raw_output[-2000:] if len(raw_output) > 2000 else raw_output)
+                sys.exit(1)
+
+        total_checked += chunk_results["checked"]
+        total_ok      += chunk_results["ok"]
+        total_errors  += chunk_results["errors"]
+        all_missing.extend(chunk_results.get("missing_digests", []))
+
+    os.unlink(digest_file.name)
     print()
 
-    results_json = None
-    capture = False
-    for line in raw_output.splitlines():
-        if line.strip() == "RESULTS_START":
-            capture = True; continue
-        if line.strip() == "RESULTS_END":
-            capture = False; continue
-        if capture:
-            try:
-                results_json = json.loads(line)
-            except json.JSONDecodeError:
-                pass
-
-    if not results_json:
-        log_error("Failed to get results from integrity check")
-        print(raw_output)
-        sys.exit(1)
+    total_missing = len(all_missing)
+    missing_digests = all_missing
+    results_json = {
+        "checked": total_checked, "ok": total_ok,
+        "missing": total_missing, "errors": total_errors,
+        "missing_digests": missing_digests,
+    }
 
     total_checked = results_json["checked"]
     total_ok      = results_json["ok"]
@@ -514,22 +576,29 @@ def main():
     # ─── List missing blobs ─────────────────────────────────────────
     if total_missing > 0:
         print()
-        log_warn(f"Missing blobs ({total_missing}):")
-        for d in missing_digests:
-            print(f"  {d}")
-        print()
-        log_info("Affected images:")
-        for digest in missing_digests:
-            repos = sql(
-                f"SELECT DISTINCT r.name FROM repository r "
-                f"JOIN manifest m ON m.repository_id = r.id "
-                f"JOIN manifestblob mb ON mb.manifest_id = m.id "
-                f"JOIN imagestorage is2 ON mb.blob_id = is2.id "
-                f"WHERE is2.content_checksum = '{digest}';")
-            for repo in repos.splitlines():
-                repo = repo.strip()
-                if repo:
-                    print(f"  {YELLOW}{digest}{NC} → {repo}")
+        if total_missing <= 50:
+            log_warn(f"Missing blobs ({total_missing}):")
+            for d in missing_digests:
+                print(f"  {d}")
+            print()
+            log_info("Affected images:")
+            for digest in missing_digests:
+                repos = sql(
+                    f"SELECT DISTINCT r.name FROM repository r "
+                    f"JOIN manifest m ON m.repository_id = r.id "
+                    f"JOIN manifestblob mb ON mb.manifest_id = m.id "
+                    f"JOIN imagestorage is2 ON mb.blob_id = is2.id "
+                    f"WHERE is2.content_checksum = '{digest}';")
+                for repo in repos.splitlines():
+                    repo = repo.strip()
+                    if repo:
+                        print(f"  {YELLOW}{digest}{NC} → {repo}")
+        else:
+            log_warn(f"Missing blobs: {total_missing} (too many to list individually)")
+            log_info("First 10:")
+            for d in missing_digests[:10]:
+                print(f"  {d}")
+            log_info("Full list saved in results JSON")
 
     # ─── Fix modes ──────────────────────────────────────────────────
     if args.fix_missing and total_missing > 0:
@@ -555,13 +624,15 @@ def main():
 # ─── Fix: purge stale refs only ──────────────────────────────────────
 def _fix_purge(quay_ns, pg_pod, db_user, db_name, missing_digests, sql):
     print()
-    log_step("Purging stale DB references for missing blobs...")
+    total = len(missing_digests)
+    log_step(f"Purging stale DB references for {total} missing blobs...")
     fixed = 0
-    for digest in missing_digests:
-        blob_id = sql(f"SELECT id FROM imagestorage WHERE content_checksum = '{digest}';",
-                      single=True)
-        if blob_id:
-            try:
+    failed = 0
+    for i, digest in enumerate(missing_digests, 1):
+        try:
+            blob_id = sql(f"SELECT id FROM imagestorage WHERE content_checksum = '{digest}';",
+                          single=True)
+            if blob_id:
                 sql(f"BEGIN; "
                     f"DELETE FROM manifestblob WHERE blob_id = {blob_id}; "
                     f"DELETE FROM imagestorageplacement WHERE storage_id = {blob_id}; "
@@ -569,13 +640,20 @@ def _fix_purge(quay_ns, pg_pod, db_user, db_name, missing_digests, sql):
                     f"DELETE FROM imagestoragesignature WHERE storage_id = {blob_id}; "
                     f"DELETE FROM imagestorage WHERE id = {blob_id}; "
                     f"COMMIT;")
-                log_info(f"Purged: {digest}")
                 fixed += 1
-            except Exception as e:
+            if i % 100 == 0:
+                print(f"\r  Progress: {i}/{total} (purged: {fixed}, failed: {failed})",
+                      end="", flush=True)
+        except Exception as e:
+            failed += 1
+            if failed <= 10:
                 log_warn(f"Failed to purge: {digest} — {e}")
+            elif failed == 11:
+                log_warn("(suppressing further failure messages)")
     print()
-    log_info(f"Purged {fixed} / {len(missing_digests)} stale blob references")
-    log_info("Use --fix-missing for fully automated repair")
+    log_info(f"Purged {fixed} / {total} stale blob references ({failed} failures)")
+    if failed > 0:
+        log_warn("Re-run to retry failures (transient oc exec timeouts)")
 
 
 # ─── Fix: full repair ───────────────────────────────────────────────
@@ -755,6 +833,16 @@ def _fix_missing(args, quay_ns, quay_pod, pg_pod, db_user, db_name,
 
     if authfile_tmp:
         os.unlink(authfile)
+
+    # Purge orphaned blobs that have no live tags (can't be fix-missing'd)
+    repaired_digests = set()
+    for _, _, _, digest in repo_tag_rows:
+        repaired_digests.add(digest)
+    orphaned = [d for d in missing_digests if d not in repaired_digests]
+    if orphaned:
+        print()
+        log_info(f"{len(orphaned)} blobs have no live tags — purging stale DB refs...")
+        _fix_purge(quay_ns, pg_pod, db_user, db_name, orphaned, sql)
 
 
 if __name__ == "__main__":
