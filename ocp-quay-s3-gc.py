@@ -80,7 +80,11 @@ def main():
     parser = argparse.ArgumentParser(
         description="Reconcile and clean up orphaned S3 objects in a Quay NooBaa bucket")
     parser.add_argument("--delete", action="store_true",
-                        help="Actually delete orphaned objects (default: dry-run)")
+                        help="Actually delete orphaned objects (default: dry-run). "
+                             "Requires --force")
+    parser.add_argument("--force", action="store_true",
+                        help="Required with --delete. A digest with no imagestorage "
+                             "row is treated as orphaned even if a manifest still names it")
     parser.add_argument("--namespace", default="",
                         help="Quay namespace (auto-detected)")
     parser.add_argument("--batch-size", type=int, default=100,
@@ -340,9 +344,16 @@ print(f'DONE\t{total}')
         sys.exit(0)
 
     # ─── Step 4: Dry-run or delete ──────────────────────────────────
+    if args.delete and not args.force:
+        log_error("Refusing --delete without --force.")
+        log_error("A missing imagestorage row does not prove the blob is unused.")
+        log_error("A manifest can still name that digest. Re-run a read-only")
+        log_error("integrity check first, then pass --delete --force.")
+        sys.exit(1)
+
     if not args.delete:
         print("[4/5] DRY-RUN mode — no objects deleted.")
-        print(f"  Re-run with --delete to remove {total_orphan_count} orphaned objects.")
+        print(f"  Re-run with --delete --force to remove {total_orphan_count} orphaned objects.")
         print()
         if orphan_hashes:
             print("  Sample orphaned sha256 blobs (first 10):")

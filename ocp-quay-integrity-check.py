@@ -242,9 +242,14 @@ def main():
     parser.add_argument("--list-orgs", action="store_true",
                         help="List organizations and exit")
     parser.add_argument("--fix", action="store_true",
-                        help="Purge stale DB refs for missing blobs")
+                        help="Purge DB rows for missing blobs that no live tag still references")
     parser.add_argument("--fix-missing", action="store_true",
-                        help="Full repair: flip Mirror→Normal, purge, re-sync, verify")
+                        help="Re-copy tags that reference missing blobs. "
+                             "Refuses to run while Quay garbage collection is enabled")
+    parser.add_argument("--allow-with-gc", action="store_true",
+                        help="Run --fix-missing even if FEATURE_GARBAGE_COLLECTION is on. "
+                             "A tag delete is never used; garbage collection can still "
+                             "remove a blob the repair just wrote")
     parser.add_argument("--authfile", default="",
                         help="Auth file for skopeo (auto-extracted if not given)")
     parser.add_argument("--verbose", action="store_true",
@@ -629,8 +634,9 @@ def main():
 
     elif total_missing > 0:
         print()
-        log_warn("Use --fix to purge stale DB references")
-        log_warn("Use --fix-missing for full repair (flip repo, re-sync, verify)")
+        log_warn("Use --fix to drop DB rows that no live tag still references")
+        log_warn("Use --fix-missing to re-copy tagged blobs. "
+                 "It refuses to run while Quay garbage collection is enabled")
 
     # ─── Save results ───────────────────────────────────────────────
     from datetime import datetime
@@ -640,28 +646,140 @@ def main():
     log_info(f"Full results saved to: {save_file}")
 
 
+def _sql_quote(value):
+    return str(value).replace("'", "''")
+
+
+# A blob is still in use when a live tag points at its manifest, or at a
+# parent manifest list. Deleting that row turns a pull into a 404 and the
+# next scan can no longer see the digest.
+_LIVE_TAG = """
+(t.hidden = false OR t.hidden IS NULL)
+AND (t.lifetime_end_ms IS NULL
+     OR t.lifetime_end_ms > (EXTRACT(EPOCH FROM now()) * 1000))
+"""
+
+
+def _digest_tag_query(digest):
+    d = _sql_quote(digest)
+    return f"""
+SELECT DISTINCT r.id, u.username || '/' || r.name, t.name
+FROM imagestorage is2
+JOIN manifestblob mb ON mb.blob_id = is2.id
+JOIN manifest m ON mb.manifest_id = m.id
+JOIN repository r ON m.repository_id = r.id
+JOIN public.user u ON r.namespace_user_id = u.id
+JOIN tag t ON t.manifest_id = m.id
+WHERE is2.content_checksum = '{d}'
+AND {_LIVE_TAG}
+UNION
+SELECT DISTINCT r.id, u.username || '/' || r.name, t.name
+FROM imagestorage is2
+JOIN manifestblob mb ON mb.blob_id = is2.id
+JOIN manifest m ON mb.manifest_id = m.id
+JOIN repository r ON m.repository_id = r.id
+JOIN public.user u ON r.namespace_user_id = u.id
+JOIN manifestchild mc ON mc.child_manifest_id = m.id
+JOIN tag t ON t.manifest_id = mc.manifest_id
+WHERE is2.content_checksum = '{d}'
+AND {_LIVE_TAG}
+"""
+
+
+def _digest_is_referenced(sql, digest):
+    d = _sql_quote(digest)
+    hit = sql(
+        f"SELECT 1 FROM imagestorage is2 "
+        f"JOIN manifestblob mb ON mb.blob_id = is2.id "
+        f"JOIN manifest m ON mb.manifest_id = m.id "
+        f"LEFT JOIN manifestchild mc ON mc.child_manifest_id = m.id "
+        f"JOIN tag t ON t.manifest_id = m.id OR t.manifest_id = mc.manifest_id "
+        f"WHERE is2.content_checksum = '{d}' "
+        f"AND t.name IS NOT NULL AND {_LIVE_TAG} LIMIT 1;",
+        single=True)
+    return bool(hit)
+
+
+def _blob_ids_for_tag(sql, repo_id, tag, digests):
+    if not digests:
+        return []
+    digest_sql = ",".join(f"'{_sql_quote(d)}'" for d in digests)
+    tag_sql = _sql_quote(tag)
+    out = sql(
+        f"SELECT DISTINCT is2.id FROM imagestorage is2 "
+        f"JOIN manifestblob mb ON mb.blob_id = is2.id "
+        f"JOIN manifest m ON mb.manifest_id = m.id "
+        f"LEFT JOIN manifestchild mc ON mc.child_manifest_id = m.id "
+        f"LEFT JOIN tag t_direct ON t_direct.manifest_id = m.id "
+        f"AND t_direct.name = '{tag_sql}' "
+        f"LEFT JOIN tag t_parent ON t_parent.manifest_id = mc.manifest_id "
+        f"AND t_parent.name = '{tag_sql}' "
+        f"WHERE m.repository_id = {int(repo_id)} "
+        f"AND is2.content_checksum IN ({digest_sql}) "
+        f"AND ((t_direct.id IS NOT NULL AND (t_direct.hidden = false OR t_direct.hidden IS NULL) "
+        f"AND (t_direct.lifetime_end_ms IS NULL OR t_direct.lifetime_end_ms > "
+        f"(EXTRACT(EPOCH FROM now()) * 1000))) "
+        f"OR (t_parent.id IS NOT NULL AND (t_parent.hidden = false OR t_parent.hidden IS NULL) "
+        f"AND (t_parent.lifetime_end_ms IS NULL OR t_parent.lifetime_end_ms > "
+        f"(EXTRACT(EPOCH FROM now()) * 1000))));")
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _delete_blob_row(sql, blob_id):
+    blob_id = int(blob_id)
+    sql(f"BEGIN; "
+        f"DELETE FROM manifestblob WHERE blob_id = {blob_id}; "
+        f"DELETE FROM imagestorageplacement WHERE storage_id = {blob_id}; "
+        f"DELETE FROM uploadedblob WHERE blob_id = {blob_id}; "
+        f"DELETE FROM imagestoragesignature WHERE storage_id = {blob_id}; "
+        f"DELETE FROM imagestorage WHERE id = {blob_id}; "
+        f"COMMIT;")
+
+
+def _garbage_collection_enabled(quay_ns, quay_pod):
+    """True unless the running Quay config explicitly disables GC.
+
+    A missing file or an unreadable value stays True: repairing while GC
+    is on can delete the S3 object a recopy just wrote.
+    """
+    cmd = ("grep -E '^FEATURE_GARBAGE_COLLECTION:' "
+           "/quay-registry/conf/stack/config.yaml "
+           "/conf/stack/config.yaml 2>/dev/null || true")
+    out = oc_exec(quay_ns, quay_pod, cmd, check=False)
+    for line in out.splitlines():
+        if "FEATURE_GARBAGE_COLLECTION" not in line or ":" not in line:
+            continue
+        val = line.split(":", 1)[1].strip().strip("\"'").lower()
+        return val in ("true", "yes", "1")
+    return True
+
+
 # ─── Fix: purge stale refs only ──────────────────────────────────────
 def _fix_purge(quay_ns, pg_pod, db_user, db_name, missing_digests, sql):
     print()
     total = len(missing_digests)
-    log_step(f"Purging stale DB references for {total} missing blobs...")
+    log_step(f"Purging unreferenced DB rows for {total} missing blobs...")
     fixed = 0
+    skipped = 0
     failed = 0
     for i, digest in enumerate(missing_digests, 1):
         try:
-            blob_id = sql(f"SELECT id FROM imagestorage WHERE content_checksum = '{digest}';",
-                          single=True)
-            if blob_id:
-                sql(f"BEGIN; "
-                    f"DELETE FROM manifestblob WHERE blob_id = {blob_id}; "
-                    f"DELETE FROM imagestorageplacement WHERE storage_id = {blob_id}; "
-                    f"DELETE FROM uploadedblob WHERE blob_id = {blob_id}; "
-                    f"DELETE FROM imagestoragesignature WHERE storage_id = {blob_id}; "
-                    f"DELETE FROM imagestorage WHERE id = {blob_id}; "
-                    f"COMMIT;")
-                fixed += 1
+            if _digest_is_referenced(sql, digest):
+                skipped += 1
+                if skipped <= 10:
+                    log_warn(f"Keeping {digest}: a live tag still references it")
+                elif skipped == 11:
+                    log_warn("(suppressing further kept-blob messages)")
+            else:
+                blob_id = sql(
+                    f"SELECT id FROM imagestorage WHERE content_checksum = '{_sql_quote(digest)}';",
+                    single=True)
+                if blob_id:
+                    _delete_blob_row(sql, blob_id)
+                    fixed += 1
             if i % 100 == 0:
-                print(f"\r  Progress: {i}/{total} (purged: {fixed}, failed: {failed})",
+                print(f"\r  Progress: {i}/{total} (purged: {fixed}, "
+                      f"kept: {skipped}, failed: {failed})",
                       end="", flush=True)
         except Exception as e:
             failed += 1
@@ -670,7 +788,8 @@ def _fix_purge(quay_ns, pg_pod, db_user, db_name, missing_digests, sql):
             elif failed == 11:
                 log_warn("(suppressing further failure messages)")
     print()
-    log_info(f"Purged {fixed} / {total} stale blob references ({failed} failures)")
+    log_info(f"Purged {fixed} / {total} unreferenced blob rows "
+             f"({skipped} kept, {failed} failures)")
     if failed > 0:
         log_warn("Re-run to retry failures (transient oc exec timeouts)")
 
@@ -686,6 +805,13 @@ def _fix_missing(args, quay_ns, quay_pod, pg_pod, db_user, db_name,
     print("  FIX-MISSING: Full Blob Repair")
     print("========================================")
     print()
+
+    if _garbage_collection_enabled(quay_ns, quay_pod) and not args.allow_with_gc:
+        log_error("Quay garbage collection is enabled (FEATURE_GARBAGE_COLLECTION).")
+        log_error("Refusing --fix-missing. A recopy can lose the S3 object to GC.")
+        log_error("Set FEATURE_GARBAGE_COLLECTION: false and roll the Quay pods,")
+        log_error("or pass --allow-with-gc to run anyway.")
+        return
 
     # Ensure auth file
     authfile = args.authfile
@@ -715,22 +841,11 @@ def _fix_missing(args, quay_ns, quay_pod, pg_pod, db_user, db_name,
                        f"-o jsonpath='{{.items[0].spec.host}}'", check=False)
     log_info(f"Quay registry: {quay_host}")
 
-    # Map missing blobs → repos → tags
+    # Map missing blobs → repos → tags, including tags on a parent manifest list.
     log_step("Mapping missing blobs to repositories and tags...")
     repo_tag_rows = []  # (repo_id, repo_full_name, tag_name, digest)
     for digest in missing_digests:
-        out = sql(
-            f"SELECT DISTINCT r.id, u.username || '/' || r.name, t.name "
-            f"FROM repository r "
-            f"JOIN public.user u ON r.namespace_user_id = u.id "
-            f"JOIN manifest m ON m.repository_id = r.id "
-            f"JOIN manifestblob mb ON mb.manifest_id = m.id "
-            f"JOIN imagestorage is2 ON mb.blob_id = is2.id "
-            f"LEFT JOIN tag t ON t.manifest_id = m.id "
-            f"WHERE is2.content_checksum = '{digest}' "
-            f"AND (t.hidden = false OR t.hidden IS NULL) "
-            f"AND (t.lifetime_end_ms IS NULL OR "
-            f"t.lifetime_end_ms > (EXTRACT(EPOCH FROM now()) * 1000));")
+        out = sql(_digest_tag_query(digest))
         for line in out.splitlines():
             parts = line.strip().split("|")
             if len(parts) >= 3 and parts[0].strip():
@@ -756,6 +871,13 @@ def _fix_missing(args, quay_ns, quay_pod, pg_pod, db_user, db_name,
             f"WHERE repository_id = {repo_id};", single=True)
         orig_state = sql(
             f"SELECT state FROM repository WHERE id = {repo_id};", single=True)
+        # Quay repository.state: 0 NORMAL, 1 READ_ONLY, 2 MIRROR.
+        # An empty read falls back to MIRROR, matching the previous restore.
+        state_names = {"0": "NORMAL", "1": "READ_ONLY", "2": "MIRROR"}
+        orig_state = (orig_state or "").strip()
+        restore_state = orig_state if orig_state else "2"
+        state_name = state_names.get(restore_state, f"state {restore_state}")
+        was_normal = restore_state == "0"
 
         tags = sorted(set(tag for rid, _, tag, _ in repo_tag_rows
                           if rid == repo_id and tag))
@@ -774,65 +896,63 @@ def _fix_missing(args, quay_ns, quay_pod, pg_pod, db_user, db_name,
             repos_failed += 1
             continue
 
-        # Flip to NORMAL
-        log_info("Switching repo to NORMAL...")
-        sql(f"UPDATE repository SET state = 0 WHERE id = {repo_id};")
-
+        # Accept pushes only when the repo is not already NORMAL.
+        # Already-NORMAL repos stay quiet: there is no state change to report.
+        # The tag is not deleted. skopeo delete is what hands the digest to GC.
+        # The stale DB row is removed so Quay actually stores the blob again.
+        flipped = False
         repo_ok = True
-        for tag in tags:
-            if not tag:
-                continue
-            print(f"  Tag {tag}: ", end="", flush=True)
+        try:
+            if not was_normal:
+                log_info(f"Switching from {state_name} to NORMAL...")
+                sql(f"UPDATE repository SET state = 0 WHERE id = {repo_id};")
+                flipped = True
 
-            # Purge stale blob refs
-            digest_list_sql = ",".join(f"'{d}'" for d in repo_digests)
-            blob_ids_out = sql(
-                f"SELECT DISTINCT is2.id FROM imagestorage is2 "
-                f"JOIN manifestblob mb ON mb.blob_id = is2.id "
-                f"JOIN manifest m ON mb.manifest_id = m.id "
-                f"JOIN tag t ON t.manifest_id = m.id "
-                f"WHERE t.name = '{tag}' AND m.repository_id = {repo_id} "
-                f"AND is2.content_checksum IN ({digest_list_sql});", single=True)
-            for blob_id in blob_ids_out.splitlines():
-                blob_id = blob_id.strip()
-                if blob_id:
+            for tag in tags:
+                if not tag:
+                    continue
+                print(f"  Tag {tag}: ", end="", flush=True)
+
+                for blob_id in _blob_ids_for_tag(sql, repo_id, tag, repo_digests):
                     try:
-                        sql(f"BEGIN; "
-                            f"DELETE FROM manifestblob WHERE blob_id = {blob_id}; "
-                            f"DELETE FROM imagestorageplacement WHERE storage_id = {blob_id}; "
-                            f"DELETE FROM uploadedblob WHERE blob_id = {blob_id}; "
-                            f"DELETE FROM imagestoragesignature WHERE storage_id = {blob_id}; "
-                            f"DELETE FROM imagestorage WHERE id = {blob_id}; "
-                            f"COMMIT;")
-                    except Exception:
-                        pass
+                        _delete_blob_row(sql, blob_id)
+                    except Exception as e:
+                        log_warn(f"could not drop blob row {blob_id}: {e}")
 
-            run(f'skopeo delete --authfile {authfile} '
-                f'"docker://{quay_host}/{repo_full_name}:{tag}"', check=False)
-
-            rc = subprocess.run(
-                ["skopeo", "copy", "--authfile", authfile, "--all",
-                 f"docker://{mirror_url}:{tag}",
-                 f"docker://{quay_host}/{repo_full_name}:{tag}"],
-                capture_output=True, text=True, timeout=600)
-
-            if rc.returncode == 0:
-                verify = subprocess.run(
-                    ["skopeo", "inspect", "--authfile", authfile,
+                rc = subprocess.run(
+                    ["skopeo", "copy", "--authfile", authfile, "--all",
+                     "--src-tls-verify=false", "--dest-tls-verify=false",
+                     f"docker://{mirror_url}:{tag}",
                      f"docker://{quay_host}/{repo_full_name}:{tag}"],
-                    capture_output=True, text=True, timeout=60)
-                if verify.returncode == 0:
-                    print(f"{GREEN}OK{NC}")
-                    tags_restored += 1
-                else:
-                    print(f"{YELLOW}PUSHED but verify failed{NC}")
-                    tags_failed += 1; repo_ok = False
-            else:
-                print(f"{RED}FAILED{NC}")
-                tags_failed += 1; repo_ok = False
+                    capture_output=True, text=True, timeout=600)
 
-        # Flip back
-        sql(f"UPDATE repository SET state = {orig_state or 2} WHERE id = {repo_id};")
+                if rc.returncode == 0:
+                    verify = subprocess.run(
+                        ["skopeo", "inspect", "--authfile", authfile,
+                         "--tls-verify=false",
+                         f"docker://{quay_host}/{repo_full_name}:{tag}"],
+                        capture_output=True, text=True, timeout=60)
+                    if verify.returncode == 0:
+                        print(f"{GREEN}OK{NC}")
+                        tags_restored += 1
+                    else:
+                        print(f"{YELLOW}PUSHED but verify failed{NC}")
+                        tags_failed += 1; repo_ok = False
+                else:
+                    print(f"{RED}FAILED{NC}")
+                    detail = (rc.stderr or rc.stdout or "").strip().splitlines()
+                    if detail:
+                        print(f"    {detail[-1][:200]}")
+                    tags_failed += 1; repo_ok = False
+        finally:
+            if flipped:
+                try:
+                    sql(f"UPDATE repository SET state = {restore_state} "
+                        f"WHERE id = {repo_id};")
+                    log_info(f"Resetting back to {state_name}")
+                except Exception as e:
+                    log_error(f"FAILED to restore {repo_full_name} "
+                              f"to {state_name}: {e}")
         if repo_ok:
             log_info("✓ repaired")
             repos_fixed += 1
@@ -853,10 +973,12 @@ def _fix_missing(args, quay_ns, quay_pod, pg_pod, db_user, db_name,
     if authfile_tmp:
         os.unlink(authfile)
 
-    # Purge orphaned blobs that have no live tags (can't be fix-missing'd)
+    # Digests with no live tag, direct or through a parent manifest list.
+    # _fix_purge checks again immediately before each delete.
     repaired_digests = set()
-    for _, _, _, digest in repo_tag_rows:
-        repaired_digests.add(digest)
+    for _, _, tag, digest in repo_tag_rows:
+        if tag:
+            repaired_digests.add(digest)
     orphaned = [d for d in missing_digests if d not in repaired_digests]
     if orphaned:
         print()
