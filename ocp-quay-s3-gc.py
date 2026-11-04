@@ -44,6 +44,13 @@ def log_warn(msg):  print(f"(WW) {msg}", flush=True)
 def log_error(msg): print(f"(EE) {msg}", flush=True)
 
 
+def cluster_short(hub_api):
+    """api.hub-uat-services.example:6443 -> hub-uat-services."""
+    host = hub_api.replace("https://", "").replace("http://", "").split(":")[0]
+    host = host.replace("api.", "", 1)
+    return host.split(".")[0]
+
+
 def run(cmd, check=True, timeout=300):
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
     if check and r.returncode != 0:
@@ -85,8 +92,11 @@ def main():
     if not hub_api:
         log_error("Cannot reach cluster. Check $KUBECONFIG or ~/.kube/config.")
         sys.exit(1)
-    hub_short = hub_api.replace("https://", "").replace("http://", "").split(":")[0]
-    hub_short = hub_short.replace("api.", "").split(".")[0]
+    hub_short = cluster_short(hub_api)
+    print()
+    print("=== Quay S3 GC (OCP) ===")
+    print(f"  Cluster:          {hub_short}")
+    print()
     log_info(f"Connected to: {hub_short} ({hub_api})")
 
     # ─── Discover Quay namespace ────────────────────────────────────

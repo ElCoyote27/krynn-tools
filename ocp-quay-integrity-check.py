@@ -48,6 +48,19 @@ def log_error(msg): print(f"{RED}[ERROR]{NC} {msg}")
 def log_step(msg):  print(f"{CYAN}[STEP]{NC} {msg}")
 
 
+def cluster_short():
+    """Short cluster name from `oc whoami --show-server`.
+
+    api.hub-uat-services.example:6443 -> hub-uat-services
+    """
+    hub_api = oc("whoami --show-server", check=False)
+    if not hub_api:
+        return "", ""
+    host = hub_api.replace("https://", "").replace("http://", "").split(":")[0]
+    host = host.replace("api.", "", 1)
+    return host.split(".")[0], hub_api
+
+
 # ─── Shell helpers ───────────────────────────────────────────────────
 def run(cmd, check=True, capture=True):
     """Run a shell command, return stdout string."""
@@ -249,6 +262,9 @@ def main():
 
     print()
     print("=== Quay Blob Integrity Check (OCP) ===")
+    hub_short, hub_api = cluster_short()
+    if hub_short:
+        print(f"  Cluster:          {hub_short}")
     print()
 
     # ─── Verify cluster access ──────────────────────────────────────
@@ -257,7 +273,10 @@ def main():
     except Exception:
         log_error("Cannot connect to cluster. Check $KUBECONFIG or ~/.kube/config.")
         sys.exit(1)
-    log_info("Cluster access: OK")
+    if not hub_short:
+        log_error("Cannot identify cluster. Check $KUBECONFIG or ~/.kube/config.")
+        sys.exit(1)
+    log_info(f"Cluster access: OK ({hub_short}, {hub_api})")
 
     # ─── Auto-detect namespace ──────────────────────────────────────
     if not quay_ns:

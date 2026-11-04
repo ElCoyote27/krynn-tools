@@ -1014,6 +1014,8 @@ def main():
 
     # Pre-flight
     hub_api, hub_fqdn, hub_short = preflight()
+    print(hdr("QUAY MIRROR SYNC"))
+    print(f"  Cluster:          {hub_short}")
     print(info(f"Connected to: {hub_short} ({hub_api})"))
 
     # Discover all QuayRegistry instances
