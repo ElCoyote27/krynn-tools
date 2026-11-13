@@ -15,9 +15,7 @@ Tags, manifests, linked blobs, and the uploads/ prefix are left in place.
 
 Usage:
   python3 rhel-quay-s3-gc.py cquay3
-  python3 rhel-quay-s3-gc.py cquay3 --delete --force
-
-cquay0 is treated as production and refuses --delete unless --allow-prod.
+  python3 rhel-quay-s3-gc.py cquay3 --delete
 """
 
 import argparse
@@ -33,8 +31,6 @@ NC = "\033[0m"
 
 # Docker's empty layer. Quay refuses to delete this even when unreferenced.
 EMPTY_LAYER = "a3ed95caeb02ffe68cdd9fd84406680ae93d633cb16422d00e8a7c22955b46d4"
-PROD_HOSTS = {"cquay0"}
-
 ORPHAN_WHERE = f"""
 NOT EXISTS (SELECT 1 FROM manifestblob m WHERE m.blob_id = i.id)
 AND NOT EXISTS (SELECT 1 FROM uploadedblob u WHERE u.blob_id = i.id)
@@ -552,19 +548,7 @@ def main():
     parser.add_argument("host", help="SSH target, for example cquay3")
     parser.add_argument("--delete", action="store_true",
                         help="Delete unlinked database rows and their S3 objects")
-    parser.add_argument("--force", action="store_true",
-                        help="Required with --delete")
-    parser.add_argument("--allow-prod", action="store_true",
-                        help="Allow --delete on cquay0")
     args = parser.parse_args()
-
-    if args.delete and not args.force:
-        log_error("Refusing --delete without --force.")
-        log_error("Dry-run first, then pass --delete --force.")
-        sys.exit(1)
-    if args.delete and args.host in PROD_HOSTS and not args.allow_prod:
-        log_error(f"{args.host} is production. Pass --allow-prod to delete there.")
-        sys.exit(1)
 
     print()
     print("=== Quay S3 garbage collection (RHEL) ===")
@@ -637,7 +621,7 @@ def main():
         if not args.delete:
             print()
             print("[DRY-RUN] No rows or objects deleted.")
-            print(f"          Re-run with --delete --force to remove "
+            print(f"          Re-run with --delete to remove "
                   f"{scan['orphan_count']} unlinked S3 objects "
                   f"({human_size(scan['orphan_bytes'])}) "
                   f"and {stats['orphan_rows']} database rows.")
