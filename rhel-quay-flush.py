@@ -5,10 +5,13 @@ Flush organization repositories from RHEL-based Quay (container deployment).
 Connects via SSH and auto-detects PostgreSQL container, database, Quay
 container, and S3 config.  Default is dry-run; pass --execute to delete.
 
+This removes an organization and every blob that becomes unreferenced.
+To reclaim S3 space while keeping live repositories, use rhel-quay-s3-gc.py.
+
 Usage:
-  python3 rhel-flush-quay.py cquay1                         # dry-run
-  python3 rhel-flush-quay.py cquay1 --org ocp4 --execute     # delete repos
-  python3 rhel-flush-quay.py cquay1 --org ocp4 --execute --s3-cleanup
+  python3 rhel-quay-flush.py cquay3                          # dry-run
+  python3 rhel-quay-flush.py cquay3 --org ocp4 --execute     # delete repos
+  python3 rhel-quay-s3-gc.py cquay3                          # reclaim unlinked blobs only
 
 Requirements:
   - SSH access with passwordless sudo to the target host
@@ -38,16 +41,31 @@ def run(cmd, check=True, timeout=300):
     return r.stdout.strip()
 
 
-def ssh(host, cmd, check=True):
-    return run(f"ssh {host} {repr(cmd)}", check=check)
+def ssh(host, cmd, check=True, timeout=300, input_text=None):
+    """Run cmd on the remote host. cmd is one remote-shell string, not local-shell quoted."""
+    r = subprocess.run(
+        ["ssh", host, cmd],
+        input=input_text, capture_output=True, text=True, timeout=timeout,
+    )
+    ssh.last_stderr = (r.stderr or "").strip()
+    if check and r.returncode != 0:
+        raise RuntimeError(
+            f"ssh {host} failed ({r.returncode}): {cmd}\n{ssh.last_stderr}")
+    return (r.stdout or "").strip()
+
+
+ssh.last_stderr = ""
 
 
 def ssh_psql(host, pg_ct, db_user, db_name, query, single=False):
     flags = "-t -A" if single else "-t"
-    escaped = query.replace("'", "'\\''")
-    out = ssh(host,
-        f"sudo podman exec {pg_ct} psql -U {db_user} -d {db_name} {flags} -c '{escaped}'",
-        check=False)
+    remote = (
+        f"sudo podman exec -i {pg_ct} psql -U {db_user} -d {db_name} "
+        f"{flags} -v ON_ERROR_STOP=1"
+    )
+    if not query.endswith("\n"):
+        query += "\n"
+    out = ssh(host, remote, check=True, input_text=query)
     return out.strip() if single else out
 
 
@@ -184,6 +202,8 @@ def main():
             "| grep -iE 'postgres|pgsql|postgresql' | grep -v clair | head -1",
             check=False)
     if not pg_ct:
+        if ssh.last_stderr:
+            log_error(ssh.last_stderr.splitlines()[-1])
         log_error(f"Could not find PostgreSQL container on {ssh_host}")
         sys.exit(1)
     log_info(f"PostgreSQL container: {pg_ct}")
@@ -314,8 +334,8 @@ def main():
 
         print("Identifying blobs to keep...")
         keep_out = sql("SELECT DISTINCT content_checksum FROM imagestorage "
-                       "WHERE id IN (SELECT storage_id FROM manifestblob "
-                       "UNION SELECT storage_id FROM uploadedblob);")
+                       "WHERE id IN (SELECT blob_id FROM manifestblob "
+                       "UNION SELECT blob_id FROM uploadedblob);")
         keep_hashes = set()
         for line in keep_out.splitlines():
             h = line.strip().replace("sha256:", "")

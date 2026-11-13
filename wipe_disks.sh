@@ -3,6 +3,9 @@
 # Enhanced ODF/Ceph Disk Wiping Tool
 # 
 # VERSION HISTORY:
+# v1.17 (2026/11/05) - A failed verification is reported and the script moves
+#                on to the next node. The process exits 1 at the end if any
+#                node failed, after the whole list has been attempted.
 # v1.16 (2026/11/03) - Verification output and exit status. The SHA-256 of an
 #                all-zero window is the same on every line, so it is not printed.
 #                nonzero= and compare= are the result. A failed verification
@@ -90,7 +93,7 @@ PATH_SCRIPT="$(cd $(/usr/bin/dirname $(whence -- $0 || echo $0));pwd)"
 cd ${PATH_SCRIPT}
 
 # Script version
-VERSION="1.16"
+VERSION="1.17"
 SCRIPT_NAME="$(basename $0)"
 
 # ANSI color codes (Ansible-style)
@@ -580,8 +583,10 @@ fi
 
 # Extract unique IPs from nodes.txt and process each node (skip comments and empty lines)
 unique_ips=$(awk '!/^#/ && NF > 0 {print $1}' nodes.txt | sort -u)
+failed_nodes=""
 
 for ip in ${unique_ips}; do
+    verification_failed=0
     echo "################## Processing node: ${ip}"
 
     # Note: ssh-keygen -R was removed - it's redundant with UserKnownHostsFile=/dev/null
@@ -921,8 +926,18 @@ for ip in ${unique_ips}; do
             echo -e "  ${COLOR_RED}ERROR: Some disks on ${ip} still have signatures or partition-table bytes after wipe!${COLOR_RESET}"
             echo -e "  ${COLOR_RED}ERROR: An OSD may still be holding the disk, or the controller returned data that flush did not change.${COLOR_RESET}"
             echo -e "  ${COLOR_YELLOW}ACTION: Confirm ceph-osd is gone, then re-run this script.${COLOR_RESET}"
-            exit 1
+            echo -e "  ${COLOR_YELLOW}Continuing with the remaining nodes.${COLOR_RESET}"
+            failed_nodes="${failed_nodes} ${ip}"
         fi
     fi
-    echo -e "################## ${COLOR_GREEN}Completed processing node: ${ip}${COLOR_RESET}"
+    if [[ ${verification_failed} -eq 1 ]]; then
+        echo -e "################## ${COLOR_RED}Finished node ${ip} with verification errors${COLOR_RESET}"
+    else
+        echo -e "################## ${COLOR_GREEN}Completed processing node: ${ip}${COLOR_RESET}"
+    fi
 done  # End of IP processing loop
+
+if [[ -n "${failed_nodes}" ]]; then
+    echo -e "${COLOR_RED}ERROR: Verification failed on:${failed_nodes}${COLOR_RESET}"
+    exit 1
+fi

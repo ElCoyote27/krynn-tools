@@ -50,19 +50,32 @@ def run(cmd, check=True):
     return r.stdout.strip()
 
 
-def ssh(host, cmd, check=True):
-    return run(f"ssh {host} {repr(cmd)}", check=check)
+def ssh(host, cmd, check=True, timeout=300, input_text=None):
+    """Run cmd on the remote host. cmd is one remote-shell string, not local-shell quoted."""
+    r = subprocess.run(
+        ["ssh", host, cmd],
+        input=input_text, capture_output=True, text=True, timeout=timeout,
+    )
+    ssh.last_stderr = (r.stderr or "").strip()
+    if check and r.returncode != 0:
+        raise RuntimeError(
+            f"ssh {host} failed ({r.returncode}): {cmd}\n{ssh.last_stderr}")
+    return (r.stdout or "").strip()
+
+
+ssh.last_stderr = ""
 
 
 def ssh_psql(host, pg_ct, db_user, db_name, sql, single=False):
     flags = "-t -A" if single else "-t"
-    escaped = sql.replace("'", "'\\''")
-    out = ssh(host,
-        f"sudo podman exec {pg_ct} psql -U {db_user} -d {db_name} {flags} -c '{escaped}'",
-        check=False)
-    if single:
-        return out.strip()
-    return out
+    remote = (
+        f"sudo podman exec -i {pg_ct} psql -U {db_user} -d {db_name} "
+        f"{flags} -v ON_ERROR_STOP=1"
+    )
+    if not sql.endswith("\n"):
+        sql += "\n"
+    out = ssh(host, remote, check=True, input_text=sql)
+    return out.strip() if single else out
 
 
 # ─── S3 config extraction ───────────────────────────────────────────
