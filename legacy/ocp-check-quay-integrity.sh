@@ -4,7 +4,19 @@
 #
 # Kubeconfig: uses $KUBECONFIG or ~/.kube/config (same as oc)
 #
-# Requirements: oc, python3
+# Requirements: oc, skopeo (for --fix-missing), python3
+#
+# Self-contained: this script only needs oc, skopeo, and python3.
+# Copy it to any host with kubeconfig access and network connectivity
+# to the Quay endpoints. For --fix-missing (blob repair), run from a
+# jumphost in the same datacenter for fast blob transfers:
+#
+#   scp ocp-check-quay-integrity.sh installer0:
+#   ssh installer0
+#   export KUBECONFIG=/path/to/kubeconfig
+#   ./ocp-check-quay-integrity.sh --namespace quay --fix-missing
+#
+# The pull-secret for skopeo auth is auto-extracted from the cluster.
 #
 # Environment variables:
 #   KUBECONFIG      - Path to kubeconfig (standard oc behavior)
@@ -25,24 +37,6 @@ VERBOSE=false
 BATCH_SIZE="${BATCH_SIZE:-500}"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
-
-# ─── Parse arguments ────────────────────────────────────────────────
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --org)           ORG_NAME="$2"; shift 2 ;;
-        --org=*)         ORG_NAME="${1#*=}"; shift ;;
-        --namespace)     QUAY_NS="$2"; shift 2 ;;
-        --namespace=*)   QUAY_NS="${1#*=}"; shift ;;
-        --list-orgs)     LIST_ORGS=true; shift ;;
-        --fix)           FIX=true; shift ;;
-        --fix-missing)   FIX_MISSING=true; FIX=true; shift ;;
-        --authfile)      AUTHFILE="$2"; shift 2 ;;
-        --authfile=*)    AUTHFILE="${1#*=}"; shift ;;
-        --verbose)       VERBOSE=true; shift ;;
-        -h|--help)       usage; exit 0 ;;
-        *)               echo "Unknown option: $1"; usage; exit 1 ;;
-    esac
-done
 
 usage() {
     cat << 'EOF'
@@ -83,8 +77,37 @@ Examples:
 
   # Just purge stale refs (manual re-mirror after)
   ./ocp-check-quay-integrity.sh --org ocp4 --fix
+
+Jumphost workflow (recommended for --fix-missing):
+  The scan phase uses 'oc exec' for DB queries (fast, works from anywhere).
+  The --fix-missing phase uses 'skopeo copy' for blob transfers, which
+  benefits from network proximity to the Quay endpoints.
+
+  For best performance, copy this script to a jumphost in the same DC:
+    scp ocp-check-quay-integrity.sh installer0:
+    ssh installer0
+    export KUBECONFIG=/path/to/kubeconfig
+    ./ocp-check-quay-integrity.sh --namespace quay --fix-missing
 EOF
 }
+
+# ─── Parse arguments ────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --org)           ORG_NAME="$2"; shift 2 ;;
+        --org=*)         ORG_NAME="${1#*=}"; shift ;;
+        --namespace)     QUAY_NS="$2"; shift 2 ;;
+        --namespace=*)   QUAY_NS="${1#*=}"; shift ;;
+        --list-orgs)     LIST_ORGS=true; shift ;;
+        --fix)           FIX=true; shift ;;
+        --fix-missing)   FIX_MISSING=true; FIX=true; shift ;;
+        --authfile)      AUTHFILE="$2"; shift 2 ;;
+        --authfile=*)    AUTHFILE="${1#*=}"; shift ;;
+        --verbose)       VERBOSE=true; shift ;;
+        -h|--help)       usage; exit 0 ;;
+        *)               echo "Unknown option: $1"; usage; exit 1 ;;
+    esac
+done
 
 log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -171,7 +194,7 @@ fi
 log_step "Extracting S3 storage configuration..."
 
 config_secret=$(oc get secrets -n "$QUAY_NS" -o name 2>/dev/null \
-    | grep -iE 'config-secret' | grep -v clair | head -1 | sed 's|secret/||' || true)
+    | grep -iE 'quay.*config-secret' | grep -v clair | grep -v postgres | head -1 | sed 's|secret/||' || true)
 [[ -z "$config_secret" ]] && config_secret=$(oc get quayregistry -n "$QUAY_NS" \
     -o jsonpath='{.items[0].spec.configBundleSecret}' 2>/dev/null || true)
 [[ -z "$config_secret" ]] && config_secret=$(oc get secrets -n "$QUAY_NS" -o name 2>/dev/null \
@@ -274,13 +297,16 @@ log_step "Running integrity check inside Quay pod (S3 HEAD per blob)..."
 verbose_py="False"; $VERBOSE && verbose_py="True"
 check_script="/tmp/quay_integrity_check_$$.py"
 
-cat << PYEOF > "$check_script"
+cat << 'PYEOF' > "$check_script"
 import boto3, botocore, sys, json, urllib3
 urllib3.disable_warnings()
-s3 = boto3.client('s3', endpoint_url="${S3_ENDPOINT}",
-    aws_access_key_id="${S3_ACCESS_KEY}", aws_secret_access_key="${S3_SECRET_KEY}", verify=False)
-BUCKET, PREFIX, BATCH = "${S3_BUCKET}", "${S3_PATH}", ${BATCH_SIZE}
-VERBOSE = ${verbose_py}
+cfg = json.load(open('/tmp/_integrity_creds.json'))
+s3 = boto3.client('s3', endpoint_url=cfg['endpoint'],
+    aws_access_key_id=cfg['access_key'],
+    aws_secret_access_key=cfg['secret_key'], verify=False)
+BUCKET, PREFIX = cfg['bucket'], cfg['path']
+BATCH   = cfg.get('batch_size', 500)
+VERBOSE = cfg.get('verbose', False)
 missing, checked, ok_count, errors = [], 0, 0, 0
 for line in sys.stdin:
     cs = line.strip()
@@ -307,8 +333,23 @@ print(json.dumps({"checked": checked, "ok": ok_count, "missing": len(missing),
 print("RESULTS_END", flush=True)
 PYEOF
 
+# Write S3 credentials as JSON (avoids shell escaping issues with special chars)
+creds_json="/tmp/quay_integrity_creds_$$.json"
+python3 -c "
+import json, sys
+json.dump({
+    'access_key': sys.argv[1], 'secret_key': sys.argv[2],
+    'bucket': sys.argv[3], 'path': sys.argv[4],
+    'endpoint': sys.argv[5], 'batch_size': int(sys.argv[6]),
+    'verbose': sys.argv[7] == 'True'
+}, open('$creds_json', 'w'))
+" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" "$S3_BUCKET" "$S3_PATH" \
+  "$S3_ENDPOINT" "$BATCH_SIZE" "$verbose_py"
+
 oc cp "$check_script" "$QUAY_NS/$QUAY_POD:/tmp/_integrity_check.py"
 oc cp "$digest_file"  "$QUAY_NS/$QUAY_POD:/tmp/_integrity_digests.txt"
+oc cp "$creds_json"   "$QUAY_NS/$QUAY_POD:/tmp/_integrity_creds.json"
+rm -f "$creds_json"
 
 # ─── Run the check ──────────────────────────────────────────────────
 raw_output=$(oc exec -n "$QUAY_NS" "$QUAY_POD" -- bash -c \

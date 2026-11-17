@@ -661,19 +661,30 @@ AND (t.lifetime_end_ms IS NULL
 
 
 def _digest_tag_query(digest):
-    d = _sql_quote(digest)
+    """Single-digest variant (kept for ad-hoc use). Prefer _digest_tag_query_batch."""
+    return _digest_tag_query_batch([digest])
+
+
+def _digest_tag_query_batch(digests):
+    """Map many missing digests → (repo_id, repo, tag) in one SQL round-trip.
+
+    One oc-exec per digest OOMs / EOF's the API when thousands are missing.
+    """
+    if not digests:
+        return "SELECT NULL WHERE false;"
+    digest_sql = ",".join(f"'{_sql_quote(d)}'" for d in digests)
     return f"""
-SELECT DISTINCT r.id, u.username || '/' || r.name, t.name
+SELECT DISTINCT is2.content_checksum, r.id, u.username || '/' || r.name, t.name
 FROM imagestorage is2
 JOIN manifestblob mb ON mb.blob_id = is2.id
 JOIN manifest m ON mb.manifest_id = m.id
 JOIN repository r ON m.repository_id = r.id
 JOIN public.user u ON r.namespace_user_id = u.id
 JOIN tag t ON t.manifest_id = m.id
-WHERE is2.content_checksum = '{d}'
+WHERE is2.content_checksum IN ({digest_sql})
 AND {_LIVE_TAG}
 UNION
-SELECT DISTINCT r.id, u.username || '/' || r.name, t.name
+SELECT DISTINCT is2.content_checksum, r.id, u.username || '/' || r.name, t.name
 FROM imagestorage is2
 JOIN manifestblob mb ON mb.blob_id = is2.id
 JOIN manifest m ON mb.manifest_id = m.id
@@ -681,7 +692,7 @@ JOIN repository r ON m.repository_id = r.id
 JOIN public.user u ON r.namespace_user_id = u.id
 JOIN manifestchild mc ON mc.child_manifest_id = m.id
 JOIN tag t ON t.manifest_id = mc.manifest_id
-WHERE is2.content_checksum = '{d}'
+WHERE is2.content_checksum IN ({digest_sql})
 AND {_LIVE_TAG}
 """
 
@@ -700,29 +711,39 @@ def _digest_is_referenced(sql, digest):
     return bool(hit)
 
 
-def _blob_ids_for_tag(sql, repo_id, tag, digests):
+def _blob_ids_for_tag(sql, repo_id, tag, digests, chunk_size=100):
+    """Return imagestorage ids for missing digests referenced by a live tag.
+
+    Digests are queried in chunks — a single IN (...) with thousands of
+    sha256s overflows oc exec ARG_MAX (Errno 7 Argument list too long).
+    """
     if not digests:
         return []
-    digest_sql = ",".join(f"'{_sql_quote(d)}'" for d in digests)
     tag_sql = _sql_quote(tag)
-    out = sql(
-        f"SELECT DISTINCT is2.id FROM imagestorage is2 "
-        f"JOIN manifestblob mb ON mb.blob_id = is2.id "
-        f"JOIN manifest m ON mb.manifest_id = m.id "
-        f"LEFT JOIN manifestchild mc ON mc.child_manifest_id = m.id "
-        f"LEFT JOIN tag t_direct ON t_direct.manifest_id = m.id "
-        f"AND t_direct.name = '{tag_sql}' "
-        f"LEFT JOIN tag t_parent ON t_parent.manifest_id = mc.manifest_id "
-        f"AND t_parent.name = '{tag_sql}' "
-        f"WHERE m.repository_id = {int(repo_id)} "
-        f"AND is2.content_checksum IN ({digest_sql}) "
-        f"AND ((t_direct.id IS NOT NULL AND (t_direct.hidden = false OR t_direct.hidden IS NULL) "
-        f"AND (t_direct.lifetime_end_ms IS NULL OR t_direct.lifetime_end_ms > "
-        f"(EXTRACT(EPOCH FROM now()) * 1000))) "
-        f"OR (t_parent.id IS NOT NULL AND (t_parent.hidden = false OR t_parent.hidden IS NULL) "
-        f"AND (t_parent.lifetime_end_ms IS NULL OR t_parent.lifetime_end_ms > "
-        f"(EXTRACT(EPOCH FROM now()) * 1000))));")
-    return [line.strip() for line in out.splitlines() if line.strip()]
+    ids = []
+    digests = list(digests)
+    for i in range(0, len(digests), chunk_size):
+        chunk = digests[i:i + chunk_size]
+        digest_sql = ",".join(f"'{_sql_quote(d)}'" for d in chunk)
+        out = sql(
+            f"SELECT DISTINCT is2.id FROM imagestorage is2 "
+            f"JOIN manifestblob mb ON mb.blob_id = is2.id "
+            f"JOIN manifest m ON mb.manifest_id = m.id "
+            f"LEFT JOIN manifestchild mc ON mc.child_manifest_id = m.id "
+            f"LEFT JOIN tag t_direct ON t_direct.manifest_id = m.id "
+            f"AND t_direct.name = '{tag_sql}' "
+            f"LEFT JOIN tag t_parent ON t_parent.manifest_id = mc.manifest_id "
+            f"AND t_parent.name = '{tag_sql}' "
+            f"WHERE m.repository_id = {int(repo_id)} "
+            f"AND is2.content_checksum IN ({digest_sql}) "
+            f"AND ((t_direct.id IS NOT NULL AND (t_direct.hidden = false OR t_direct.hidden IS NULL) "
+            f"AND (t_direct.lifetime_end_ms IS NULL OR t_direct.lifetime_end_ms > "
+            f"(EXTRACT(EPOCH FROM now()) * 1000))) "
+            f"OR (t_parent.id IS NOT NULL AND (t_parent.hidden = false OR t_parent.hidden IS NULL) "
+            f"AND (t_parent.lifetime_end_ms IS NULL OR t_parent.lifetime_end_ms > "
+            f"(EXTRACT(EPOCH FROM now()) * 1000))));")
+        ids.extend(line.strip() for line in out.splitlines() if line.strip())
+    return ids
 
 
 def _delete_blob_row(sql, blob_id):
@@ -842,27 +863,50 @@ def _fix_missing(args, quay_ns, quay_pod, pg_pod, db_user, db_name,
     log_info(f"Quay registry: {quay_host}")
 
     # Map missing blobs → repos → tags, including tags on a parent manifest list.
+    # Batch to avoid one oc-exec per digest (EOF / API timeout with thousands missing).
     log_step("Mapping missing blobs to repositories and tags...")
     repo_tag_rows = []  # (repo_id, repo_full_name, tag_name, digest)
-    for digest in missing_digests:
-        out = sql(_digest_tag_query(digest))
+    chunk_size = 200
+    total = len(missing_digests)
+    for i in range(0, total, chunk_size):
+        chunk = missing_digests[i:i + chunk_size]
+        print(f"\r  Mapping digests: {min(i + chunk_size, total)} / {total}",
+              end="", flush=True)
+        try:
+            out = sql(_digest_tag_query_batch(chunk))
+        except Exception as e:
+            log_warn(f"\nBatch map failed at {i}: {e} — retrying once")
+            out = sql(_digest_tag_query_batch(chunk))
         for line in out.splitlines():
-            parts = line.strip().split("|")
-            if len(parts) >= 3 and parts[0].strip():
-                repo_tag_rows.append((parts[0].strip(), parts[1].strip(),
-                                      parts[2].strip(), digest))
+            # content_checksum | repo_id | repo_full | tag
+            parts = [p.strip() for p in line.strip().split("|")]
+            if len(parts) >= 4 and parts[1]:
+                repo_tag_rows.append((parts[1], parts[2], parts[3], parts[0]))
+            elif len(parts) >= 3 and parts[0].isdigit():
+                # backward-compat if an old single-digest query shape appears
+                repo_tag_rows.append((parts[0], parts[1], parts[2], ""))
+    print()
 
-    # Unique repos
+    # Unique repos — process smallest tag-sets first so orgs like oneproject
+    # are repaired before monsters such as ocp4/openshift/release (4k+ tags).
     unique_repos = {}
     for rid, rname, tag, digest in repo_tag_rows:
         if rid not in unique_repos:
             unique_repos[rid] = rname
 
-    log_info(f"Affected repositories: {len(unique_repos)}")
+    def _tag_count(rid):
+        return len({t for r, _, t, _ in repo_tag_rows if r == rid and t})
+
+    repos_ordered = sorted(unique_repos.items(), key=lambda kv: _tag_count(kv[0]))
+
+    log_info(f"Affected repositories: {len(repos_ordered)}")
+    if repos_ordered:
+        biggest = repos_ordered[-1]
+        log_info(f"Largest: {biggest[1]} ({_tag_count(biggest[0])} tags) — processed last")
 
     repos_fixed = repos_failed = tags_restored = tags_failed = 0
 
-    for repo_id, repo_full_name in unique_repos.items():
+    for repo_id, repo_full_name in repos_ordered:
         print("────────────────────────────────────────")
         log_step(f"Repo: {repo_full_name} (id={repo_id})")
 
@@ -881,8 +925,12 @@ def _fix_missing(args, quay_ns, quay_pod, pg_pod, db_user, db_name,
 
         tags = sorted(set(tag for rid, _, tag, _ in repo_tag_rows
                           if rid == repo_id and tag))
-        repo_digests = sorted(set(d for rid, _, _, d in repo_tag_rows
-                                   if rid == repo_id))
+        # digests keyed by tag — never dump the whole repo digest set into one SQL
+        digests_by_tag = {}
+        for rid, _, tag, digest in repo_tag_rows:
+            if rid != repo_id or not tag or not digest:
+                continue
+            digests_by_tag.setdefault(tag, set()).add(digest)
 
         if not tags:
             log_warn("No live tags found — may need manual re-mirror")
@@ -913,7 +961,8 @@ def _fix_missing(args, quay_ns, quay_pod, pg_pod, db_user, db_name,
                     continue
                 print(f"  Tag {tag}: ", end="", flush=True)
 
-                for blob_id in _blob_ids_for_tag(sql, repo_id, tag, repo_digests):
+                tag_digests = sorted(digests_by_tag.get(tag, ()))
+                for blob_id in _blob_ids_for_tag(sql, repo_id, tag, tag_digests):
                     try:
                         _delete_blob_row(sql, blob_id)
                     except Exception as e:
