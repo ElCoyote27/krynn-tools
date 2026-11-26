@@ -195,11 +195,11 @@ def main():
     log_info(f"Database: {db_name} (user: {db_user})")
     print()
 
-    def sql(query, single=False):
+    def sql(query, single=False, check=False):
         flags = "-t -A" if single else "-t"
         escaped = query.replace("'", "'\\''")
         out = oc_exec(quay_ns, pg_pod,
-            f"psql -U {db_user} -d {db_name} {flags} -c '{escaped}'", check=False)
+            f"psql -U {db_user} -d {db_name} {flags} -c '{escaped}'", check=check)
         return out.strip() if single else out
 
     # ─── List orgs ──────────────────────────────────────────────────
@@ -355,9 +355,15 @@ def main():
         env = {**os.environ, "AWS_ACCESS_KEY_ID": aws_ak, "AWS_SECRET_ACCESS_KEY": aws_sk}
 
         print("Identifying blobs to keep...")
-        keep_out = sql("SELECT DISTINCT content_checksum FROM imagestorage "
-                       "WHERE id IN (SELECT storage_id FROM manifestblob "
-                       "UNION SELECT storage_id FROM uploadedblob);")
+        # manifestblob and uploadedblob reference imagestorage via blob_id.
+        # storage_id is the column on imagestorageplacement and
+        # imagestoragesignature only. A failed query used to come back
+        # empty and --s3-cleanup would then delete every object.
+        keep_out = sql(
+            "SELECT DISTINCT content_checksum FROM imagestorage "
+            "WHERE id IN (SELECT blob_id FROM manifestblob "
+            "UNION SELECT blob_id FROM uploadedblob);",
+            check=True)
         keep_hashes = set()
         for line in keep_out.splitlines():
             h = line.strip().replace("sha256:", "")
